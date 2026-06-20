@@ -15,6 +15,8 @@ def build_registry() -> Registry:
     import os
     reg = Registry()
     reg.add_provider(native.tools())                       # lane 4 — always on
+    from .tools import web                                 # web search + text-browser — always on
+    reg.add_provider(web.tools())
 
     lanes = []
     if os.path.exists("config/n8n_tools.yaml"):
