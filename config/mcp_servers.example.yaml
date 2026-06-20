@@ -1,0 +1,20 @@
+# Example MCP server manifest. Copy to config/mcp_servers.yaml and edit.
+# Each server is connected at startup; its tools are ingested into the registry
+# so the select() seam controls per-turn exposure (and metrics flow uniformly).
+servers:
+  # Remote MCP server over Streamable HTTP (e.g. Home Assistant MCP integration).
+  # NOTE: verify the actual HA MCP endpoint/transport before relying on this.
+  - name: home_assistant
+    transport: http
+    url: http://nyx:8123/mcp_server/sse
+    headers:
+      Authorization: "Bearer <HA_LONG_LIVED_TOKEN>"
+    tags: [home]
+    timeout: 30
+
+  # Local MCP server over stdio (subprocess):
+  # - name: filesystem
+  #   transport: stdio
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/shane"]
+  #   tags: [files]
