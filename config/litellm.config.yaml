@@ -1,0 +1,13 @@
+# LiteLLM proxy = Argus model layer.
+# Run: litellm --config config/litellm.config.yaml   (OpenAI-compat on :4000, metrics on /metrics)
+model_list:
+  - model_name: local                     # the name the harness asks for
+    litellm_params:
+      model: openai/gemma4-26b            # llama-swap model id
+      api_base: http://anvil:9090/v1      # llama-swap (OpenAI-compatible)
+      api_key: "none"
+  # Add hosted models here as more entries; the harness stays model-agnostic via model_name.
+
+litellm_settings:
+  callbacks: ["prometheus"]               # OSS Prometheus exporter -> /metrics
+  drop_params: true                       # tolerate per-provider param differences

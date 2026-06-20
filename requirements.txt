@@ -1,0 +1,5 @@
+# Argus harness runtime deps. See docs/known-traps.md for version footguns.
+pydantic-ai>=1.0          # loop engine (driven by our harness)
+prometheus-client>=0.20   # harness metrics exporter
+# LiteLLM runs as a SEPARATE proxy process (model layer + /metrics). Install with:
+#   pip install 'litellm[proxy]>=1.0'
