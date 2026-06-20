@@ -1,12 +1,33 @@
-# Example OpenAPI tool manifest. Copy to config/openapi.yaml and edit.
+# Example OpenAPI tool manifest. Copy to config/openapi.yaml and edit (the real
+# file is gitignored — it holds API keys). Two shapes are supported:
+#
+#  (a) single service (legacy): top-level spec/base_url/operations (tools NOT prefixed)
+#  (b) multi service: a `services:` list — each service's tools are prefixed by its
+#      name (radarr_*, sonarr_*, ...) so apps sharing an operationId don't collide.
+#
 # CURATE `operations` — import only the endpoints you use, never the whole spec
-# (a Radarr/Sonarr spec is 100+ endpoints; dumping them blows up the model's context).
-spec: /home/shane/argus/specs/radarr.json   # download the service's OpenAPI spec here
-base_url: http://glassgarden:7878
-headers:
-  X-Api-Key: "<RADARR_API_KEY>"
-operations:
-  - getMovie
-  - addMovie
-tags: [media, movies]
-default_timeout: 30
+# (a Servarr spec is 100+ endpoints; dumping them blows up the model's context).
+# Servarr apps don't serve openapi.json, so hand-curate a minimal spec under specs/.
+
+services:
+  - name: radarr
+    spec: /home/shane/argus/specs/radarr.json
+    base_url: http://glassgarden:7878
+    headers: {X-Api-Key: "<RADARR_API_KEY>"}
+    operations: [getSystemStatus, listMovies, lookupMovie]
+    tags: [media, movies, radarr]
+    default_timeout: 30
+
+  - name: lidarr
+    spec: /home/shane/argus/specs/lidarr.json
+    base_url: http://glassgarden:8686          # Lidarr (music), API base /api/v1
+    headers: {X-Api-Key: "<LIDARR_API_KEY>"}
+    operations: [getSystemStatus, listArtists, lookupArtist]
+    # `fields` (optional): per-operation response projection. Trims each returned
+    # object to this key allowlist so verbose list-* payloads don't overflow a
+    # small-context local model. Applies to a dict or to each dict in a list.
+    fields:
+      listArtists: [id, artistName, status, monitored]
+      lookupArtist: [artistName, foreignArtistId, disambiguation, artistType]
+    tags: [media, music, lidarr]
+    default_timeout: 30

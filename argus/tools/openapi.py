@@ -15,6 +15,22 @@ from ..registry import Tool
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
 
 
+def _project(data, fields):
+    """Trim a response to an allowlist of top-level keys, so verbose APIs (e.g. a
+    Servarr list-* of full objects) don't blow a small-context model. Applies to a
+    dict or to each dict in a list; anything else passes through untouched. Keys not
+    present are simply absent. `fields` falsy = no projection."""
+    if not fields:
+        return data
+    keys = set(fields)
+    if isinstance(data, list):
+        return [{k: v for k, v in x.items() if k in keys} if isinstance(x, dict) else x
+                for x in data]
+    if isinstance(data, dict):
+        return {k: v for k, v in data.items() if k in keys}
+    return data
+
+
 def tools(manifest_path: str = "config/openapi.yaml") -> list[Tool]:
     """Provider entry point. The manifest may be a single service (legacy) or hold a
     'services:' list; each service's tool names are prefixed by its name to avoid
@@ -41,8 +57,9 @@ def _service_tools(service: dict, prefix: str = "") -> list[Tool]:
     headers = service.get("headers", {})
     allowed_operations = service.get("operations", [])
     tags = service.get("tags", [])
+    fields_map = service.get("fields", {})        # operationId -> [keys] response projection
 
-    def make_dispatch(operation_id, method, path_template, path_params, query_params, body_params):
+    def make_dispatch(operation_id, method, path_template, path_params, query_params, body_params, fields):
         def dispatch(**kwargs):
             # Build URL with path parameters
             url = base_url + path_template
@@ -66,7 +83,9 @@ def _service_tools(service: dict, prefix: str = "") -> list[Tool]:
                 if resp.status_code >= 400:
                     raise ModelRetry(f"openapi tool '{operation_id}' returned HTTP {resp.status_code}: {resp.text[:200]}")
                 content_type = resp.headers.get("content-type", "")
-                return resp.json() if "application/json" in content_type else resp.text
+                if "application/json" not in content_type:
+                    return resp.text
+                return _project(resp.json(), fields)
             except (httpx.TimeoutException, httpx.RequestError) as err:
                 raise ModelRetry(f"openapi tool '{operation_id}' failed: {err}")
 
@@ -130,7 +149,7 @@ def _service_tools(service: dict, prefix: str = "") -> list[Tool]:
         
         # Build tool
         description = operation.get("summary", operation.get("description", operation_id))
-        dispatch_func = make_dispatch(operation_id, method.upper(), path_template, path_params, query_params, body_params)
+        dispatch_func = make_dispatch(operation_id, method.upper(), path_template, path_params, query_params, body_params, fields_map.get(operation_id))
         
         tools_list.append(
             Tool(

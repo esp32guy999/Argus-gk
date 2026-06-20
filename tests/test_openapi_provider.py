@@ -152,6 +152,34 @@ services:
         finally:
             os.unlink(mpath3)
 
+        # 7. response projection trims a dict response to the `fields` allowlist
+        proj = f"""
+spec: {spec_path}
+base_url: http://127.0.0.1:{port}
+operations: [getItem]
+fields:
+  getItem: [id]
+tags: [test]
+default_timeout: 10
+"""
+        fd4, mpath4 = tempfile.mkstemp(suffix=".yaml")
+        os.write(fd4, proj.encode()); os.close(fd4)
+        try:
+            pt = openapi.tools(mpath4)[0]
+            out = pt.func(id="abc", verbose=True)
+            assert out == {"id": "abc"}, f"projection should drop 'verbose': {out}"
+            print("PASS: response projection trims dict to fields allowlist")
+        finally:
+            os.unlink(mpath4)
+
+        # 8. _project handles a list of dicts (the list-* case) + passes non-projected through
+        from argus.tools.openapi import _project
+        rows = [{"id": 1, "name": "a", "junk": "x"}, {"id": 2, "name": "b", "junk": "y"}]
+        assert _project(rows, ["id", "name"]) == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+        assert _project(rows, None) == rows, "no fields -> untouched"
+        assert _project("plain", ["id"]) == "plain", "non-dict/list -> untouched"
+        print("PASS: _project handles list-of-dicts + pass-through")
+
         print("\nALL OPENAPI CONTRACT TESTS PASSED")
         return 0
     finally:
