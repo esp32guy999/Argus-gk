@@ -1,8 +1,8 @@
 // ── Claude Desktop Next — frontend ───────────────────────────────────
-// Chat via SSE through /brain/events, widget canvas ported from the legacy
+// Chat via SSE through /argus/events, widget canvas ported from the legacy
 // desktop app, overlays + conversations drawer borrowed from forge.
 
-const BRAIN = '/brain';
+const BRAIN = '/argus';
 
 // ── State ────────────────────────────────────────────────────────────
 const HISTORY_PAGE = 100;
@@ -23,7 +23,6 @@ const state = {
   oldestMsgId:    null,     // id of earliest-loaded message, for lazy paging
   historyExhausted:false,   // true once we've fetched everything older
   historyLoading: false,    // in-flight older-page fetch
-  useHermes:      false,    // route through Hermes for tools/MCP
 };
 
 // ── DOM refs ─────────────────────────────────────────────────────────
@@ -79,7 +78,7 @@ const DOODLE_THEMES = {
 const DOODLE_THEME_ORDER = ['aurora','ember','matrix','synthwave','solar'];
 
 function getDoodleTheme() {
-  const saved = localStorage.getItem('hermes-doodle-theme');
+  const saved = localStorage.getItem('argus-doodle-theme');
   return (saved && DOODLE_THEMES[saved]) ? saved : 'aurora';
 }
 
@@ -128,7 +127,7 @@ function createThinkingCanvas() {
     theme = DOODLE_THEMES[themeName];
     BG = theme.bg;
     palette = theme.colors;
-    localStorage.setItem('hermes-doodle-theme', themeName);
+    localStorage.setItem('argus-doodle-theme', themeName);
     canvas.title = `Theme: ${theme.name} — click to change`;
     // Recolor existing pens
     for (const p of pens) { p.color = palette[Math.floor(Math.random() * palette.length)]; }
@@ -705,7 +704,6 @@ async function send() {
         message:  text,
         conversation_id: state.conversationId,
         attachments: attachments.length ? attachments : undefined,
-        use_hermes: state.useHermes,
       }),
       signal: state.abortCtl.signal,
     });
@@ -839,7 +837,7 @@ function stopSend() {
   if (state.abortCtl) state.abortCtl.abort();
   // Aborting the fetch only cancels the initial POST — the server-side
   // generation keeps running. Tell the server to kill the in-flight bubble
-  // (it cancels its hermes stream and the bridge's claude -p subprocess).
+  // (it cancels the in-flight generation server-side).
   if (state.pendingBubbleId) {
     fetch(`/api/cancel/${state.pendingBubbleId}`, { method: 'POST' }).catch(() => {});
   }
@@ -868,7 +866,7 @@ function processCommandTags(text, bubble) {
 }
 
 // Render any [[IMAGE:url]] tags from `text` as <img> elements appended to `bubble`.
-// URLs starting with "/" are routed through the local server's /brain proxy.
+// URLs starting with "/" are routed through the local server's /argus proxy.
 function renderImageTags(bubble, text) {
   if (!bubble) return;
   const re = /\[\[IMAGE:([^\]]+)\]\]/g;
@@ -1697,10 +1695,11 @@ function switchView(id) {
 // ── UI wiring ───────────────────────────────────────────────────────
 function wireUI() {
   // === Critical-path chat wiring FIRST so a later throw never disables send ===
-  inputEl.addEventListener('input', () => {
-    autosizeInput();
-    sendBtn.disabled = !inputEl.value.trim();
-  });
+  // Robust send-enabling: decoupled from autosize, fired on multiple events, so
+  // the button can never get stuck disabled.
+  const refreshSend = () => { sendBtn.disabled = !inputEl.value.trim(); };
+  ['input', 'keyup', 'change', 'paste'].forEach(ev => inputEl.addEventListener(ev, refreshSend));
+  inputEl.addEventListener('input', autosizeInput);
   inputEl.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1711,28 +1710,11 @@ function wireUI() {
     if (sendBtn.classList.contains('is-stop')) stopSend();
     else send();
   });
-  sendBtn.disabled = true;
+  refreshSend();
   modelSelect.addEventListener('change', () => {
     state.currentModel = modelSelect.value;
-    // Auto-enable Hermes for "nyx", keep user preference for others
-    const cb = $('hermes-cb');
-    if (state.currentModel === 'nyx' && cb) {
-      cb.checked = true;
-      state.useHermes = true;
-    }
     saveLayout();
   });
-  // Hermes toggle
-  const hermesCb = $('hermes-cb');
-  if (hermesCb) {
-    // Restore saved preference
-    state.useHermes = localStorage.getItem('cdn-use-hermes') === '1';
-    hermesCb.checked = state.useHermes;
-    hermesCb.addEventListener('change', () => {
-      state.useHermes = hermesCb.checked;
-      localStorage.setItem('cdn-use-hermes', hermesCb.checked ? '1' : '0');
-    });
-  }
   // Everything below is non-critical; wrap so any single failure can't kill the rest.
   try { _wireUI_rest(); } catch (e) {
     console.error('[wireUI rest failed]', e);

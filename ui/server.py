@@ -39,7 +39,7 @@ def publish(event_name: str, data: Any):
             subscribers.discard(queue)
 
 async def sse_generator():
-    """SSE generator for /brain/events."""
+    """SSE generator for /argus/events."""
     queue = asyncio.Queue()
     subscribers.add(queue)
     try:
@@ -56,7 +56,7 @@ async def sse_generator():
     finally:
         subscribers.discard(queue)
 
-@app.post("/brain/chat")
+@app.post("/argus/chat")
 async def chat(request: Request):
     body = await request.json()
     model_name = body.get("model", DEFAULT_MODEL)
@@ -87,18 +87,18 @@ async def cancel(bubble_id: str):
         task.cancel()
     return JSONResponse({"ok": True})
 
-@app.get("/brain/models")
+@app.get("/argus/models")
 async def get_models():
     # Forge expects [[id, cfg], ...] where cfg has display/backend.
     return JSONResponse([[DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus"}]])
 
-@app.get("/brain/history")
-@app.get("/brain/conversations")
+@app.get("/argus/history")
+@app.get("/argus/conversations")
 async def get_history():
     return JSONResponse([])
 
-@app.delete("/brain/history")
-@app.delete("/brain/conversations")
+@app.delete("/argus/history")
+@app.delete("/argus/conversations")
 async def delete_history():
     return JSONResponse({"ok": True})
 
@@ -116,7 +116,7 @@ async def sw_js():
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
-@app.get("/brain/events")
+@app.get("/argus/events")
 async def events():
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 

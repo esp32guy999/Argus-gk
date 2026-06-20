@@ -14,7 +14,7 @@ class SystemWidget extends WidgetBase {
 
     async _refresh() {
         try {
-            const data = await fetch('/brain/status').then(r => r.json());
+            const data = await fetch('/argus/status').then(r => r.json());
             const gpu  = data.gpu || {};
             if (gpu.vram_used_mib !== undefined) {
                 this._vramHistory.push(gpu.vram_used_mib);

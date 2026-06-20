@@ -13,7 +13,7 @@ class DocsWidget extends WidgetBase {
 
     async _refresh() {
         try {
-            const docs = await fetch('/brain/docs').then(r => r.json());
+            const docs = await fetch('/argus/docs').then(r => r.json());
             this._docs = docs;
             this.render(this._buildHTML(docs));
             this._setupDrop();
@@ -73,7 +73,7 @@ class DocsWidget extends WidgetBase {
         const fd = new FormData();
         fd.append('file', file);
         try {
-            await fetch('/brain/docs/upload', { method: 'POST', body: fd });
+            await fetch('/argus/docs/upload', { method: 'POST', body: fd });
         } catch (e) {
             console.error('Upload failed:', e);
         }
