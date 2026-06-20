@@ -26,6 +26,9 @@ def build_registry() -> Registry:
     if os.path.exists("config/openapi.yaml"):
         from .tools import openapi
         lanes.append(("openapi", "config/openapi.yaml", openapi.tools))
+    if os.path.exists("config/shell_tools.yaml"):
+        from .tools import shell
+        lanes.append(("shell", "config/shell_tools.yaml", shell.tools))
 
     for name, path, load in lanes:
         try:

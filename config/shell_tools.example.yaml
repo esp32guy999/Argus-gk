@@ -1,0 +1,30 @@
+# Shell / CLI tool lane — THE high-blast-radius lane (off unless this file exists as
+# config/shell_tools.yaml). Copy to config/shell_tools.yaml to enable. The guardrails
+# below ARE the lane; read argus/tools/shell.py before loosening any of them.
+
+enabled: true
+
+# false (SAFE DEFAULT): argv-only, no pipes/globs/redirects; allowlist strictly
+#   enforced on argv[0].
+# true: a real shell (pipes/redirects work) — allowlist becomes best-effort per
+#   segment. This is "the CLI tool" mode. Hazards are real; denylist still applies.
+shell: false
+
+timeout: 30                 # seconds; commands over this are killed (ModelRetry)
+max_output_chars: 16000     # stdout/stderr each truncated past this
+cwd: "~"                    # fixed working directory (model cannot change it)
+
+# allowlist: ONLY these binaries may run. Empty/omitted = ALL binaries allowed.
+# Strongly recommended in shell:false mode. Example curated homelab set:
+# allowlist: [systemctl, journalctl, curl, ls, cat, df, free, uptime, nvidia-smi, ip, ping]
+allowlist: []
+
+# denylist: extra regex patterns appended to the always-on catastrophic defaults
+# (rm -rf /, mkfs, dd of=/dev/*, fork bomb, shutdown). These are defense-in-depth.
+# denylist:
+#   - "\\bdocker\\s+system\\s+prune"
+
+tool_name: run_command
+tags: [shell, cli, system, command, exec]
+example:
+  command: "uname -a"
