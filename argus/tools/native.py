@@ -52,6 +52,24 @@ def lookup_memory(query: str) -> list:
     return hits or [{"note": "no matching homelab facts found for that query"}]
 
 
+def start_background_task(task: str) -> dict:
+    """Delegate a long-running or multi-step job to run in the BACKGROUND, detached.
+    It runs on its own and the user is notified on their phone when it finishes. Use
+    this for work that would take a while (extended research, multi-step jobs) instead
+    of attempting a huge job inline. Returns a task id immediately — do NOT wait for
+    it; tell the user it has started and you'll notify them."""
+    from .. import tasks
+    mgr = tasks.manager()
+    if mgr is None:
+        raise ModelRetry(
+            "start_background_task is unavailable here (no background runner). Do the "
+            "task inline if you can, or tell the user it can't be backgrounded."
+        )
+    tid = mgr.submit(task)
+    return {"started": True, "task_id": tid,
+            "note": "running in background; the user will be notified when it finishes"}
+
+
 def tools() -> list[Tool]:
     """Provider entry point: emit native tools in the uniform contract."""
     return [
@@ -77,5 +95,14 @@ def tools() -> list[Tool]:
             tags=["memory", "knowledge", "homelab", "recall", "lookup", "facts", "infra"],
             func=lookup_memory,
             example={"query": "what is nyx's IP address"},
+        ),
+        Tool(
+            name="start_background_task",
+            description=("Delegate a long/multi-step job to run in the background; the "
+                         "user is notified on their phone when it finishes. Use for work "
+                         "too big to do inline. Returns a task id immediately."),
+            tags=["task", "background", "async", "delegate", "long", "job"],
+            func=start_background_task,
+            example={"task": "Research the best PETG settings for the P1S and save a note."},
         ),
     ]

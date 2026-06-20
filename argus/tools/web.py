@@ -100,7 +100,16 @@ def web_fetch(url: str) -> dict:
     ctype = resp.headers.get("content-type", "")
     if "html" not in ctype and "text" not in ctype:
         return {"url": str(resp.url), "text": f"[non-text content: {ctype or 'unknown'}]"}
+    # Prefer trafilatura (readability boilerplate removal); fall back to the stdlib
+    # extractor so the tool still works if trafilatura is absent.
     title, text = _html_to_text(resp.text)
+    try:
+        import trafilatura
+        body = trafilatura.extract(resp.text, include_comments=False, include_tables=True)
+        if body and len(body) > 50:
+            text = body
+    except Exception:
+        pass
     return {"url": str(resp.url), "title": title, "text": text[:_FETCH_MAX],
             "truncated": len(text) > _FETCH_MAX}
 

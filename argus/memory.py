@@ -21,6 +21,7 @@ from .semantic import embed as _default_embed, _cosine
 _DEFAULT_SOURCES = [
     "/home/shane/tools.md",
     "/home/shane/.claude/projects/-home-shane/memory",
+    "/home/shane/argus/notes",          # agent-saved notes (created by save_note)
 ]
 
 
@@ -135,3 +136,17 @@ def build_index(sources: list[str] | None = None, *, embed_fn=None) -> DocMemory
 
 def get_index() -> DocMemory | None:
     return _INDEX
+
+
+def add_note(source: str, text: str) -> bool:
+    """Append a note's chunks to the LIVE index so it's searchable immediately,
+    without a full rebuild. No-op (returns False) if the index isn't built."""
+    idx = _INDEX
+    if idx is None:
+        return False
+    chunks = _chunk(text, source)
+    if not chunks:
+        return False
+    idx.vectors.extend(idx.embed_fn([c["text"] for c in chunks]))
+    idx.chunks.extend(chunks)
+    return True

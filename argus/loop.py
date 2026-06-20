@@ -28,6 +28,9 @@ SYSTEM_PROMPT = (
     "required, then give the result.\n"
     "- If you genuinely cannot do it (no suitable tool, missing information), say so "
     "plainly and stop. Do not pretend something is in progress.\n"
+    "- For a genuinely long or multi-step job the user wants to walk away from, call "
+    "start_background_task to run it detached (the user is notified when it finishes), "
+    "then tell them it's started. Use this instead of trying to do a huge job inline.\n"
     "- Prefer a tool call over guessing. Get homelab facts (IPs, ports, paths) from "
     "lookup_memory, never from memory. If a tool errors, read the message and "
     "correct your next call."
@@ -105,6 +108,39 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
         metrics.NO_PROGRESS.inc()
         return (f"Stopped after the {turn_budget}-turn budget without finishing — "
                 "avoiding a stall. Try rephrasing or narrowing the request.")
+    except Exception:
+        metrics.AGENT_TURNS.labels("error").inc()
+        raise
+    finally:
+        metrics.TASK_DURATION.observe(time.perf_counter() - start)
+
+
+async def run_async(registry: Registry, prompt: str, *, model_name: str = "local",
+                    base_url: str = "http://localhost:4000/v1", turn_budget: int = 12,
+                    message_history=None, on_event=None) -> str:
+    """Non-streaming async run — for the background task runner. Same tool selection
+    + watchdog + budget as run(), returns the final text. Higher default budget since
+    background jobs are expected to be multi-step."""
+    selected = registry.select(prompt)
+    metrics.TOOLS_SELECTED.observe(len(selected))
+    agent = Agent(
+        make_model(model_name, base_url),
+        tools=[t.as_pydantic_tool() for t in selected],
+        system_prompt=SYSTEM_PROMPT,
+        capabilities=[watchdog.make_capability(on_event=on_event)],
+    )
+    start = time.perf_counter()
+    try:
+        result = await agent.run(
+            prompt, message_history=message_history,
+            usage_limits=UsageLimits(request_limit=turn_budget),
+        )
+        metrics.AGENT_TURNS.labels("ok").inc()
+        return result.output
+    except UsageLimitExceeded:
+        metrics.AGENT_TURNS.labels("exhausted").inc()
+        metrics.NO_PROGRESS.inc()
+        return f"Stopped after the {turn_budget}-turn budget without finishing."
     except Exception:
         metrics.AGENT_TURNS.labels("error").inc()
         raise

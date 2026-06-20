@@ -34,11 +34,35 @@ def _cid(value) -> str:
     """Map a missing/empty conversation_id to the single 'default' thread."""
     return value or "default"
 
+
+# Background task runner: long jobs run detached + push a phone notification on done.
+from argus import tasks
+NOTIFY_URL = os.environ.get("ARGUS_NOTIFY_URL", "https://127.0.0.1:8095/notify")
+
+
+def _notify(title, message):
+    try:
+        httpx.post(NOTIFY_URL, json={"title": title, "message": message},
+                   verify=False, timeout=10)
+    except Exception:
+        pass
+
+
+task_mgr = tasks.configure(registry=registry, model_name=DEFAULT_MODEL,
+                           base_url=MODEL_URL, store=store, notifier=_notify)
+
 # Global state
 subscribers: Set[asyncio.Queue] = set()
 TASKS: Dict[str, asyncio.Task] = {}
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+async def _bind_task_loop():
+    # Capture the server's event loop so background tasks can be scheduled onto it
+    # from sync tool calls (run_coroutine_threadsafe).
+    task_mgr.loop = asyncio.get_running_loop()
 
 def publish(event_name: str, data: Any):
     """Publish event to all subscribers."""
@@ -134,6 +158,17 @@ async def get_history(conversation_id: str | None = None, limit: int = 100,
 async def get_conversations():
     convs = await asyncio.to_thread(store.list_conversations)
     return JSONResponse(convs)
+
+@app.get("/argus/tasks")
+async def list_tasks():
+    return JSONResponse(task_mgr.list())
+
+@app.get("/argus/tasks/{tid}")
+async def get_task(tid: str):
+    t = task_mgr.get(tid)
+    if not t:
+        raise HTTPException(status_code=404)
+    return JSONResponse(t)
 
 @app.delete("/argus/history/{message_id}")
 async def delete_message(message_id: int):
