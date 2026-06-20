@@ -1,0 +1,13 @@
+{
+  "name": "Claude Desktop Next",
+  "short_name": "Claude Desktop",
+  "description": "Canvas-based AI chat desktop, rebuilt on FastAPI.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#f97316",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

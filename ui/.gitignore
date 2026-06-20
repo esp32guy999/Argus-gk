@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# auto-saved layout state — written on every drag/resize, would create constant churn.
+# named presets in presets/*.json are still tracked.
+presets/current.json
+
+# editor/agent backup snapshots and scratch planning — not source
+*.bak.*
+.hermes-plans/
