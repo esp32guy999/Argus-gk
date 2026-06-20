@@ -10,8 +10,30 @@ from .tools import native
 
 
 def build_registry() -> Registry:
+    """Native lane is always on; the n8n / MCP / OpenAPI lanes load only if their
+    manifest exists, and a broken one warns + is skipped rather than crashing."""
+    import os
     reg = Registry()
-    reg.add_provider(native.tools())   # lane 4; n8n / MCP / OpenAPI lanes added next
+    reg.add_provider(native.tools())                       # lane 4 — always on
+
+    lanes = []
+    if os.path.exists("config/n8n_tools.yaml"):
+        from .tools import n8n
+        lanes.append(("n8n", "config/n8n_tools.yaml", n8n.tools))
+    if os.path.exists("config/mcp_servers.yaml"):
+        from .tools import mcp_lane
+        lanes.append(("mcp", "config/mcp_servers.yaml", mcp_lane.tools))
+    if os.path.exists("config/openapi.yaml"):
+        from .tools import openapi
+        lanes.append(("openapi", "config/openapi.yaml", openapi.tools))
+
+    for name, path, load in lanes:
+        try:
+            tools = load(path)
+            reg.add_provider(tools)
+            print(f"[argus] {name}: +{len(tools)} tools from {path}")
+        except Exception as e:
+            print(f"[argus] WARNING: {name} lane failed ({path}): {e}")
     return reg
 
 
