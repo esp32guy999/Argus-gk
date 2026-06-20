@@ -13,7 +13,6 @@ config/mcp_servers.yaml
 config/openapi.yaml
 specs/
 
-# vendored Forge: server.py + service units hold secrets/Hermes config — reference only,
-# to be rewritten into a clean secret-free Argus server. Frontend (static/) is safe to track.
-ui/server.py
+# Forge service units (forge.service etc.) hold Hermes config — not tracked; we'll write our own.
+# ui/server.py is now the clean, secret-free Argus server (env-based) and IS tracked.
 ui/*.service
