@@ -32,6 +32,26 @@ def calc(expression: str) -> float:
         raise ModelRetry(f"calc could not evaluate {expression!r}: {e}")
 
 
+def lookup_memory(query: str) -> list:
+    """Search the homelab knowledge base for facts relevant to the query.
+
+    The knowledge base is the curated docs (hosts, IPs, ports, hostnames, service
+    endpoints, file paths, credentials, hardware quirks, operational notes). Use this
+    whenever you need a specific homelab detail instead of guessing — IPs, ports,
+    paths, and quirks must come from here, never from memory. Returns the most
+    relevant snippets, each tagged with its source doc."""
+    from .. import memory
+    idx = memory.get_index()
+    if idx is None:
+        raise ModelRetry(
+            "lookup_memory: the knowledge index is unavailable (embeddings server "
+            "down?). Answer from the current context or say you don't know — do not "
+            "invent IPs/ports/paths."
+        )
+    hits = idx.search(query, k=5)
+    return hits or [{"note": "no matching homelab facts found for that query"}]
+
+
 def tools() -> list[Tool]:
     """Provider entry point: emit native tools in the uniform contract."""
     return [
@@ -48,5 +68,14 @@ def tools() -> list[Tool]:
             tags=["math", "utility"],
             func=calc,
             example={"expression": "3 * (4 + 1)"},
+        ),
+        Tool(
+            name="lookup_memory",
+            description=("Search the homelab knowledge base (curated docs: hosts, IPs, "
+                         "ports, services, paths, hardware quirks, ops notes) for facts "
+                         "relevant to a query. Use before guessing any homelab detail."),
+            tags=["memory", "knowledge", "homelab", "recall", "lookup", "facts", "infra"],
+            func=lookup_memory,
+            example={"query": "what is nyx's IP address"},
         ),
     ]

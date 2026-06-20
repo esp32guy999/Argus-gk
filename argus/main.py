@@ -45,6 +45,16 @@ def build_registry() -> Registry:
         reg.semantic = SemanticSelector(reg.all())
     except Exception as e:
         print(f"[argus] WARNING: semantic selector unavailable: {e}")
+
+    # Phase 1A memory: build the in-memory curated-doc index that lookup_memory reads.
+    try:
+        from . import memory
+        idx = memory.build_index()
+        n = len(idx.chunks) if idx else 0
+        print(f"[argus] memory: indexed {n} doc chunks" if n
+              else "[argus] WARNING: memory index empty (embeddings down or no docs)")
+    except Exception as e:
+        print(f"[argus] WARNING: memory index unavailable: {e}")
     return reg
 
 
