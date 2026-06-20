@@ -37,8 +37,11 @@ def boot():
 async def chat_roundtrip() -> int:
     async with httpx.AsyncClient(timeout=None) as c:
         r = await c.get(f"{BASE}/brain/models")
-        assert r.status_code == 200 and isinstance(r.json(), list), r.text
-        print("PASS: GET /brain/models")
+        m = r.json()
+        # Forge contract: [[id, cfg], ...] with cfg.display — destructured as list.map(([id,cfg])=>...)
+        assert r.status_code == 200 and m and isinstance(m[0], list) and len(m[0]) == 2 \
+            and isinstance(m[0][1], dict) and "display" in m[0][1], f"bad models shape: {m}"
+        print("PASS: GET /brain/models (correct [[id,cfg],...] shape)")
 
         events = []
         async def reader():

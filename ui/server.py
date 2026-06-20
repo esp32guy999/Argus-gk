@@ -43,6 +43,8 @@ async def sse_generator():
     queue = asyncio.Queue()
     subscribers.add(queue)
     try:
+        # unnamed message so the frontend's onmessage fires -> status light goes "up"
+        yield 'data: {"hello": true}\n\n'
         while True:
             try:
                 event_name, data = await asyncio.wait_for(queue.get(), timeout=15.0)
@@ -87,7 +89,8 @@ async def cancel(bubble_id: str):
 
 @app.get("/brain/models")
 async def get_models():
-    return JSONResponse([{"id": DEFAULT_MODEL, "label": "Argus (local 80B)", "backend": "argus"}])
+    # Forge expects [[id, cfg], ...] where cfg has display/backend.
+    return JSONResponse([[DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus"}]])
 
 @app.get("/brain/history")
 @app.get("/brain/conversations")
