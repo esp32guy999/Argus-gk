@@ -111,8 +111,8 @@ function createStatusPill() {
   const timer = setInterval(tick, 1000);
   tick();
 
-  pill._activity = () => { lastActivity = Date.now(); gotToken = true; };       // token/heartbeat
-  pill._status   = (txt) => { phase = txt; lastActivity = Date.now(); tick(); }; // Phase 2: tool/loop labels
+  pill._activity = () => { lastActivity = Date.now(); gotToken = true; phase = ''; tick(); }; // token: streaming supersedes any tool label
+  pill._status   = (txt) => { phase = txt; lastActivity = Date.now(); tick(); };               // Phase 2: tool/loop labels
   pill._stop     = () => { clearInterval(timer); pill.remove(); };
   return pill;
 }
@@ -973,6 +973,16 @@ function connectEvents() {
         if (/\[\[IMAGE:/.test(content)) console.log('[z-edit-debug] bubble_update has IMAGE tag', content.slice(-80));
         state.pendingMsgEl.textContent = content;
         scrollBottom();
+      } catch {}
+    });
+    globalEvents.addEventListener('bubble_status', e => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.id !== state.pendingBubbleId || !state.statusPill) return;
+        const label = d.phase === 'tool' ? `using ${d.detail}`
+                    : d.phase === 'loop' ? `retrying (loop)`
+                    : (d.detail || d.phase);
+        state.statusPill._status(label);
       } catch {}
     });
     globalEvents.addEventListener('bubble_done', e => {

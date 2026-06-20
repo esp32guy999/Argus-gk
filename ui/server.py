@@ -80,12 +80,17 @@ async def chat(request: Request):
     user_row = await asyncio.to_thread(
         store.add_message, conversation_id, "user", message, None)
 
+    def on_event(phase, detail, step):
+        # Live progress for the UI status pill (tool calls, loop caught).
+        publish("bubble_status", {"id": bubble_id, "phase": phase,
+                                  "detail": detail, "step": step})
+
     async def run_chat():
         final = ""
         try:
             async for content in loop.stream_run(
                 registry, message, model_name=model_name, base_url=MODEL_URL,
-                turn_budget=8, message_history=history,
+                turn_budget=8, message_history=history, on_event=on_event,
             ):
                 final = content
                 publish("bubble_update", {"id": bubble_id, "content": content})

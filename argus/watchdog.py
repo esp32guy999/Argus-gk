@@ -32,24 +32,39 @@ class RepeatedCallDetector:
         return False
 
 
-def make_capability(repeat_limit: int = 2) -> Hooks:
+def make_capability(repeat_limit: int = 2, on_event=None) -> Hooks:
     """Build a fresh per-run watchdog as a Pydantic AI capability.
 
     Intervenes when the model repeats an identical (tool, args) call — it's
     looping. We raise ModelRetry so the model gets a corrective nudge instead of
     re-running the same dead-end. A NEW detector per call = per-task scope.
     Pass to Agent(capabilities=[make_capability()]).
+
+    on_event(phase, detail, step) — optional sink for live progress (the UI status
+    pill). Fires "tool" (detail=tool name) on each call and "loop" when one is
+    caught. Never lets a sink error break the run.
     """
     detector = RepeatedCallDetector(limit=repeat_limit)
+    step = {"n": 0}
+
+    def _emit(phase, detail):
+        if on_event:
+            try:
+                on_event(phase, detail, step["n"])
+            except Exception:
+                pass  # a UI sink must never break the agent loop
 
     def before_tool_execute(ctx, *, call, tool_def, args):
+        step["n"] += 1
         key = json.dumps(args, sort_keys=True, default=str)
         if detector.record(tool_def.name, key):
+            _emit("loop", tool_def.name)
             raise ModelRetry(
                 f"You have already called '{tool_def.name}' with these exact "
                 f"arguments and it did not move the task forward. Use different "
                 f"arguments, a different tool, or give your final answer."
             )
+        _emit("tool", tool_def.name)
         return args
 
     return Hooks(before_tool_execute=before_tool_execute)

@@ -33,7 +33,7 @@ def make_model(model_name: str = "local",
 
 async def stream_run(registry: Registry, prompt: str, *, model_name: str = "local",
                      base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
-                     message_history=None):
+                     message_history=None, on_event=None):
     """Async generator yielding CUMULATIVE assistant text as it streams.
 
     Same setup as run() (tool selection + watchdog + turn budget) but uses Pydantic
@@ -47,7 +47,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
         system_prompt=SYSTEM_PROMPT,
-        capabilities=[watchdog.make_capability()],
+        capabilities=[watchdog.make_capability(on_event=on_event)],
     )
     start = time.perf_counter()
     try:
