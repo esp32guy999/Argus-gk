@@ -17,7 +17,7 @@ const state = {
   abortCtl:       null,     // AbortController for active chat
   pendingBubbleId:null,     // SSE id we're listening for
   pendingMsgEl:   null,     // current streaming message DOM node
-  thinkingCanvas: null,     // orbit animation canvas (killed on first token)
+  statusPill:     null,     // live status pill (phase + elapsed timer), killed on done
   pendingDbId:    null,     // DB id of the assistant message after save
   pendingUserId:  null,     // DB id of the user message that prompted it
   oldestMsgId:    null,     // id of earliest-loaded message, for lazy paging
@@ -80,6 +80,41 @@ const DOODLE_THEME_ORDER = ['aurora','ember','matrix','synthwave','solar'];
 function getDoodleTheme() {
   const saved = localStorage.getItem('argus-doodle-theme');
   return (saved && DOODLE_THEMES[saved]) ? saved : 'aurora';
+}
+
+// Status pill: a single themed chip showing phase + a live elapsed timer, with
+// stall/crash escalation. CSS-only animation (opacity breathe) + one 1s interval —
+// far cheaper than the old rAF canvas, and it actually reports liveness:
+//   ticking timer = alive · climbs past STALL = "still working" (amber) ·
+//   past CRASH = "no response" (red, dot stops) · frozen timer = the SSE died.
+function createStatusPill() {
+  const pill = document.createElement('div');
+  pill.className = 'status-pill';
+  const dot   = document.createElement('span'); dot.className = 'sp-dot';
+  const label = document.createElement('span'); label.className = 'sp-label'; label.textContent = 'thinking';
+  const time  = document.createElement('span'); time.className = 'sp-time'; time.textContent = '0s';
+  pill.append(dot, label, time);
+
+  const start = Date.now();
+  let lastActivity = start, gotToken = false, phase = '';
+  const STALL = 20, CRASH = 90;  // seconds since the last signal
+
+  function tick() {
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    const since = (Date.now() - lastActivity) / 1000;
+    time.textContent = elapsed + 's';
+    pill.classList.remove('warn', 'crit');
+    if (since >= CRASH)      { pill.classList.add('crit'); label.textContent = 'no response'; }
+    else if (since >= STALL) { pill.classList.add('warn'); label.textContent = 'still working'; }
+    else                     { label.textContent = phase || (gotToken ? 'responding' : 'thinking'); }
+  }
+  const timer = setInterval(tick, 1000);
+  tick();
+
+  pill._activity = () => { lastActivity = Date.now(); gotToken = true; };       // token/heartbeat
+  pill._status   = (txt) => { phase = txt; lastActivity = Date.now(); tick(); }; // Phase 2: tool/loop labels
+  pill._stop     = () => { clearInterval(timer); pill.remove(); };
+  return pill;
 }
 
 function createThinkingCanvas() {
@@ -690,8 +725,9 @@ async function send() {
     }
   });
   const typingEl = appendMessage('assistant typing', '');
-  const thinkingCanvas = createThinkingCanvas();
-  typingEl.appendChild(thinkingCanvas);
+  const statusPill = createStatusPill();
+  messagesEl.appendChild(statusPill);
+  scrollBottom();
 
   state.abortCtl = new AbortController();
   sendBtn.classList.add('is-stop');
@@ -715,8 +751,8 @@ async function send() {
     const { id: bubbleId } = await res.json();
     console.log('[DBG] chat sent, bubbleId:', bubbleId);
     state.pendingBubbleId = bubbleId;
-    // Keep thinking animation alive until first SSE content arrives.
-    state.thinkingCanvas = thinkingCanvas;
+    // Live status pill (timer + stall/crash detection) until the turn completes.
+    state.statusPill = statusPill;
     state.pendingMsgEl = typingEl;
 
     // Safety timeout: if we somehow miss the done event, release the UI.
@@ -786,6 +822,7 @@ async function send() {
       appendMessage('assistant', `[Error: ${e.message}]`);
     }
   } finally {
+    if (state.statusPill) { state.statusPill._stop(); state.statusPill = null; }
     state.abortCtl = null;
     state.pendingBubbleId = null;
     state.pendingMsgEl = null;
@@ -927,10 +964,9 @@ function connectEvents() {
         const data = JSON.parse(e.data);
         if (data.id !== state.pendingBubbleId || !state.pendingMsgEl) return;
         const content = data.content || '';
-        // Stop thinking animation on first real content
-        if (state.thinkingCanvas) {
-          state.thinkingCanvas._stopThinking();
-          state.thinkingCanvas = null;
+        // Heartbeat: tokens are flowing -> keep the pill alive + reveal the bubble.
+        if (state.statusPill) state.statusPill._activity();
+        if (state.pendingMsgEl.classList.contains('typing')) {
           state.pendingMsgEl.classList.remove('typing');
           state.pendingMsgEl.classList.add('streaming');
         }

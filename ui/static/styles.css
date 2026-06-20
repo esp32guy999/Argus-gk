@@ -1274,3 +1274,31 @@ body {
     width: 100vw;
   }
 }
+
+/* ── Status pill: live thinking/working indicator (replaces the rAF canvas) ── */
+.status-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  align-self: flex-start;
+  width: fit-content;
+  margin: 2px 0 6px 2px;
+  padding: 4px 10px;
+  font-size: 12px; line-height: 1;
+  color: var(--text-dim);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.status-pill .sp-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent);
+  animation: sp-breathe 1.6s ease-in-out infinite;
+}
+.status-pill .sp-time { opacity: .6; font-variant-numeric: tabular-nums; }
+.status-pill.warn { color: var(--yellow); }
+.status-pill.warn .sp-dot { background: var(--yellow); }
+.status-pill.crit { color: var(--red); }
+.status-pill.crit .sp-dot { background: var(--red); animation: none; }
+@keyframes sp-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+/* hide the empty assistant bubble until the first token — the pill stands in */
+.message.typing:empty { display: none; }
+@media (prefers-reduced-motion: reduce) { .status-pill .sp-dot { animation: none; } }
