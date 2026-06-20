@@ -1,0 +1,17 @@
+# Example n8n tool manifest. Copy to config/n8n_tools.yaml and edit.
+# Each entry = one n8n workflow that begins with a Webhook node.
+base_url: http://nyx:5678
+default_timeout: 30
+tools:
+  - name: add_shopping_item
+    description: Add an item to the household shopping list.
+    tags: [home, shopping, tasks]
+    path: /webhook/add-shopping-item
+    method: POST
+    schema:
+      type: object
+      properties:
+        item: {type: string, description: "the item to add"}
+        quantity: {type: integer, description: "how many", default: 1}
+      required: [item]
+    example: {item: "milk", quantity: 2}

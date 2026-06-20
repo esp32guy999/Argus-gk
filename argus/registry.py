@@ -28,10 +28,16 @@ class Tool:
     func: Callable[..., Any]      # plain callable with type hints + docstring
     provider: str = "native"
     example: dict | None = None
+    schema: dict | None = None    # explicit JSON schema for external lanes (n8n/openapi)
 
     def as_pydantic_tool(self) -> PydTool:
-        return PydTool(self._wrapped(), name=self.name, description=self.description,
-                       max_retries=2)
+        wrapped = self._wrapped()
+        if self.schema is not None:   # external lane: model-facing schema from manifest/spec
+            return PydTool.from_schema(
+                wrapped, name=self.name, description=self.description,
+                json_schema=self.schema,
+            )
+        return PydTool(wrapped, name=self.name, description=self.description, max_retries=2)
 
     def _wrapped(self) -> Callable:
         """Instrument dispatch: latency, counts, and teaching-error mapping."""
