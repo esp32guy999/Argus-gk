@@ -31,6 +31,42 @@ def make_model(model_name: str = "local",
     )
 
 
+async def stream_run(registry: Registry, prompt: str, *, model_name: str = "local",
+                     base_url: str = "http://localhost:4000/v1", turn_budget: int = 8):
+    """Async generator yielding CUMULATIVE assistant text as it streams.
+
+    Same setup as run() (tool selection + watchdog + turn budget) but uses Pydantic
+    AI's run_stream so a server can emit bubble_update events. stream_text() yields
+    the full text-so-far each step, matching Forge's {content} contract.
+    """
+    selected = registry.select(prompt)
+    metrics.TOOLS_SELECTED.observe(len(selected))
+    agent = Agent(
+        make_model(model_name, base_url),
+        tools=[t.as_pydantic_tool() for t in selected],
+        system_prompt=SYSTEM_PROMPT,
+        capabilities=[watchdog.make_capability()],
+    )
+    start = time.perf_counter()
+    try:
+        async with agent.run_stream(
+            prompt, usage_limits=UsageLimits(request_limit=turn_budget)
+        ) as result:
+            async for text in result.stream_text():   # cumulative text-so-far
+                yield text
+        metrics.AGENT_TURNS.labels("ok").inc()
+    except UsageLimitExceeded:
+        metrics.AGENT_TURNS.labels("exhausted").inc()
+        metrics.NO_PROGRESS.inc()
+        yield (f"Stopped after the {turn_budget}-turn budget without finishing — "
+               "avoiding a stall.")
+    except Exception:
+        metrics.AGENT_TURNS.labels("error").inc()
+        raise
+    finally:
+        metrics.TASK_DURATION.observe(time.perf_counter() - start)
+
+
 def run(registry: Registry, prompt: str, *, model_name: str = "local",
         base_url: str = "http://localhost:4000/v1", turn_budget: int = 8) -> str:
     selected = registry.select(prompt)
