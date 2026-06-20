@@ -16,18 +16,31 @@ _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "tr
 
 
 def tools(manifest_path: str = "config/openapi.yaml") -> list[Tool]:
-    """Provider entry point: emit OpenAPI tools in the uniform contract."""
+    """Provider entry point. The manifest may be a single service (legacy) or hold a
+    'services:' list; each service's tool names are prefixed by its name to avoid
+    collisions across Servarr apps that share operationIds (e.g. getSystemStatus)."""
     with open(manifest_path, "r") as f:
         manifest = yaml.safe_load(f)
+    services = manifest.get("services")
+    if services is None:
+        return _service_tools(manifest)            # legacy single-service (no prefix)
+    out: list[Tool] = []
+    for svc in services:
+        prefix = f"{svc['name']}_" if svc.get("name") else ""
+        out.extend(_service_tools(svc, prefix))
+    return out
 
-    with open(manifest["spec"], "r") as f:
+
+def _service_tools(service: dict, prefix: str = "") -> list[Tool]:
+    """Build tools for one OpenAPI service definition (one spec + base_url + ops)."""
+    with open(service["spec"], "r") as f:
         spec = yaml.safe_load(f)
 
-    base_url = manifest["base_url"].rstrip("/")
-    default_timeout = manifest.get("default_timeout", 30)
-    headers = manifest.get("headers", {})
-    allowed_operations = manifest.get("operations", [])
-    tags = manifest.get("tags", [])
+    base_url = service["base_url"].rstrip("/")
+    default_timeout = service.get("default_timeout", 30)
+    headers = service.get("headers", {})
+    allowed_operations = service.get("operations", [])
+    tags = service.get("tags", [])
 
     def make_dispatch(operation_id, method, path_template, path_params, query_params, body_params):
         def dispatch(**kwargs):
@@ -121,7 +134,7 @@ def tools(manifest_path: str = "config/openapi.yaml") -> list[Tool]:
         
         tools_list.append(
             Tool(
-                name=operation_id,
+                name=prefix + operation_id,
                 description=description,
                 tags=tags,
                 func=dispatch_func,

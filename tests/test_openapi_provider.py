@@ -134,6 +134,24 @@ default_timeout: 10
             assert "getItem" in str(e) or "500" in str(e), str(e)
             print("PASS: HTTP error -> teaching ModelRetry")
 
+        # 6. multi-service manifest prefixes tool names by service
+        multi = f"""
+services:
+  - name: svc
+    spec: {spec_path}
+    base_url: http://127.0.0.1:{port}
+    operations: [getItem]
+    tags: [m]
+"""
+        fd3, mpath3 = tempfile.mkstemp(suffix=".yaml")
+        os.write(fd3, multi.encode()); os.close(fd3)
+        try:
+            names = {t.name for t in openapi.tools(mpath3)}
+            assert names == {"svc_getItem"}, names
+            print("PASS: multi-service manifest prefixes tool names by service")
+        finally:
+            os.unlink(mpath3)
+
         print("\nALL OPENAPI CONTRACT TESTS PASSED")
         return 0
     finally:
