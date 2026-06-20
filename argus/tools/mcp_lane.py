@@ -5,7 +5,8 @@ server runs on its own persistent background event loop and we bridge sync->asyn
 via run_coroutine_threadsafe. The client contexts are entered AND exited inside one
 long-lived task (`_manage`) to avoid anyio's "cancel scope in a different task" error.
 
-Transports: 'stdio' (local subprocess) and 'http' (Streamable HTTP, for remote).
+Transports: 'stdio' (local subprocess), 'http' (Streamable HTTP), and 'sse'
+(legacy SSE, used by e.g. Home Assistant's MCP server).
 Exposes the same synchronous registry.Tool contract as every other lane.
 """
 from __future__ import annotations
@@ -54,6 +55,9 @@ class MCPConnection:
         if transport == "http":
             from mcp.client.streamable_http import streamablehttp_client
             cm = streamablehttp_client(self.spec["url"], headers=self.spec.get("headers"))
+        elif transport == "sse":
+            from mcp.client.sse import sse_client
+            cm = sse_client(self.spec["url"], headers=self.spec.get("headers"))
         else:
             from mcp.client.stdio import stdio_client, StdioServerParameters
             cm = stdio_client(StdioServerParameters(
