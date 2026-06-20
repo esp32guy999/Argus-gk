@@ -6,6 +6,7 @@ the SAME signature. Dispatch is wrapped here so every tool call is timed + count
 and raw errors become model-readable teaching messages (ModelRetry).
 """
 from __future__ import annotations
+import functools
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -29,12 +30,14 @@ class Tool:
     example: dict | None = None
 
     def as_pydantic_tool(self) -> PydTool:
-        return PydTool(self._wrapped(), name=self.name, description=self.description)
+        return PydTool(self._wrapped(), name=self.name, description=self.description,
+                       max_retries=2)
 
     def _wrapped(self) -> Callable:
         """Instrument dispatch: latency, counts, and teaching-error mapping."""
         fn, provider, name = self.func, self.provider, self.name
 
+        @functools.wraps(fn)  # copy real signature (__wrapped__) so Pydantic AI binds args by name
         def runner(*args, **kwargs):
             start = time.perf_counter()
             try:
@@ -54,10 +57,6 @@ class Tool:
                     time.perf_counter() - start
                 )
 
-        # preserve signature metadata so Pydantic AI can build the schema
-        runner.__name__ = fn.__name__
-        runner.__doc__ = fn.__doc__
-        runner.__annotations__ = getattr(fn, "__annotations__", {})
         return runner
 
 
