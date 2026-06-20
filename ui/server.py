@@ -36,14 +36,19 @@ def _cid(value) -> str:
 
 
 # Background task runner: long jobs run detached + push a phone notification on done.
+# Notify via Home Assistant DIRECTLY (Argus already has HA creds) — no dependency on
+# the separate iMessage UI app on :8095, which is just a wrapper around this service.
 from argus import tasks
-NOTIFY_URL = os.environ.get("ARGUS_NOTIFY_URL", "https://127.0.0.1:8095/notify")
+NOTIFY_SERVICE = os.environ.get("ARGUS_NOTIFY_SERVICE", "notify/mobile_app_shanes_iphone")
 
 
 def _notify(title, message):
+    if not HA_URL or not HA_TOKEN:
+        return
     try:
-        httpx.post(NOTIFY_URL, json={"title": title, "message": message},
-                   verify=False, timeout=10)
+        httpx.post(f"{HA_URL}/api/services/{NOTIFY_SERVICE}",
+                   headers={"Authorization": f"Bearer {HA_TOKEN}"},
+                   json={"title": title, "message": message}, timeout=10)
     except Exception:
         pass
 
