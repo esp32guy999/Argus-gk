@@ -1,0 +1,12 @@
+# Example OpenAPI tool manifest. Copy to config/openapi.yaml and edit.
+# CURATE `operations` — import only the endpoints you use, never the whole spec
+# (a Radarr/Sonarr spec is 100+ endpoints; dumping them blows up the model's context).
+spec: /home/shane/argus/specs/radarr.json   # download the service's OpenAPI spec here
+base_url: http://glassgarden:7878
+headers:
+  X-Api-Key: "<RADARR_API_KEY>"
+operations:
+  - getMovie
+  - addMovie
+tags: [media, movies]
+default_timeout: 30
