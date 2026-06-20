@@ -34,6 +34,14 @@ def build_registry() -> Registry:
             print(f"[argus] {name}: +{len(tools)} tools from {path}")
         except Exception as e:
             print(f"[argus] WARNING: {name} lane failed ({path}): {e}")
+
+    # Attach semantic select() over everything loaded (lazy-embeds on first use;
+    # falls back to all tools if the embeddings server is unreachable).
+    try:
+        from .semantic import SemanticSelector
+        reg.semantic = SemanticSelector(reg.all())
+    except Exception as e:
+        print(f"[argus] WARNING: semantic selector unavailable: {e}")
     return reg
 
 

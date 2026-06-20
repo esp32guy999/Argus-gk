@@ -69,6 +69,7 @@ class Tool:
 class Registry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self.semantic = None   # optional SemanticSelector; set by build_registry
 
     def add(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -81,9 +82,16 @@ class Registry:
         return list(self._tools.values())
 
     def select(self, context: str, *, tags: set[str] | None = None) -> list[Tool]:
-        """The seam. v1: filter by tag overlap; if no tags requested or none match,
-        fall back to all (registry is small). Swap for semantic retrieval later
-        WITHOUT changing callers."""
+        """The seam. Prefer semantic retrieval (top-K by embedding similarity) when a
+        SemanticSelector is attached; on any failure (e.g. embeddings server down)
+        fall back to tag overlap, then to all. Callers never change."""
+        if self.semantic is not None:
+            try:
+                result = self.semantic.select(context)
+                if result:
+                    return result
+            except Exception:
+                pass  # embeddings unavailable -> fall through
         if tags:
             hit = [t for t in self.all() if tags.intersection(t.tags)]
             if hit:
