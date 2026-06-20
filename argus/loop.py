@@ -32,12 +32,14 @@ def make_model(model_name: str = "local",
 
 
 async def stream_run(registry: Registry, prompt: str, *, model_name: str = "local",
-                     base_url: str = "http://localhost:4000/v1", turn_budget: int = 8):
+                     base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
+                     message_history=None):
     """Async generator yielding CUMULATIVE assistant text as it streams.
 
     Same setup as run() (tool selection + watchdog + turn budget) but uses Pydantic
     AI's run_stream so a server can emit bubble_update events. stream_text() yields
     the full text-so-far each step, matching Forge's {content} contract.
+    `message_history` (prior turns) is what gives the model memory across turns.
     """
     selected = registry.select(prompt)
     metrics.TOOLS_SELECTED.observe(len(selected))
@@ -50,7 +52,8 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     start = time.perf_counter()
     try:
         async with agent.run_stream(
-            prompt, usage_limits=UsageLimits(request_limit=turn_budget)
+            prompt, message_history=message_history,
+            usage_limits=UsageLimits(request_limit=turn_budget),
         ) as result:
             async for text in result.stream_text():   # cumulative text-so-far
                 yield text
@@ -68,7 +71,8 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
 
 
 def run(registry: Registry, prompt: str, *, model_name: str = "local",
-        base_url: str = "http://localhost:4000/v1", turn_budget: int = 8) -> str:
+        base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
+        message_history=None) -> str:
     selected = registry.select(prompt)
     metrics.TOOLS_SELECTED.observe(len(selected))
     agent = Agent(
@@ -80,7 +84,8 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
     start = time.perf_counter()
     try:
         result = agent.run_sync(
-            prompt, usage_limits=UsageLimits(request_limit=turn_budget)
+            prompt, message_history=message_history,
+            usage_limits=UsageLimits(request_limit=turn_budget),
         )
         metrics.AGENT_TURNS.labels("ok").inc()
         return result.output

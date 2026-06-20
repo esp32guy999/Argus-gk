@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from argus.main import build_registry
 from argus import loop
+from argus.storage import Store
 import httpx
 
 STATIC = pathlib.Path(__file__).parent / "static"
@@ -22,6 +23,16 @@ HA_TOKEN = os.environ.get("HA_TOKEN")
 
 # Build registry once at startup
 registry = build_registry()
+
+# Conversation store (the DA seam) — gives the model memory + backs the history UI.
+DB_PATH = os.environ.get("ARGUS_DB", "argus.db")
+HISTORY_TURNS = int(os.environ.get("ARGUS_HISTORY_TURNS", "20"))  # max prior msgs fed to model
+store = Store(DB_PATH)
+
+
+def _cid(value) -> str:
+    """Map a missing/empty conversation_id to the single 'default' thread."""
+    return value or "default"
 
 # Global state
 subscribers: Set[asyncio.Queue] = set()
@@ -61,16 +72,31 @@ async def chat(request: Request):
     body = await request.json()
     model_name = body.get("model", DEFAULT_MODEL)
     message = body.get("message", "")
+    conversation_id = _cid(body.get("conversation_id"))
     bubble_id = uuid.uuid4().hex
 
+    # Load prior turns (memory) BEFORE persisting this one, then record the user msg.
+    history = await asyncio.to_thread(store.model_history, conversation_id, HISTORY_TURNS)
+    user_row = await asyncio.to_thread(
+        store.add_message, conversation_id, "user", message, None)
+
     async def run_chat():
+        final = ""
         try:
             async for content in loop.stream_run(
-                registry, message, model_name=model_name, base_url=MODEL_URL, turn_budget=8
+                registry, message, model_name=model_name, base_url=MODEL_URL,
+                turn_budget=8, message_history=history,
             ):
+                final = content
                 publish("bubble_update", {"id": bubble_id, "content": content})
-            publish("bubble_done", {"id": bubble_id, "db_id": None, "user_id": None})
+            row = await asyncio.to_thread(
+                store.add_message, conversation_id, "assistant", final, model_name)
+            publish("bubble_done", {"id": bubble_id, "db_id": row["id"],
+                                    "user_id": user_row["id"], "conversation_id": conversation_id})
         except asyncio.CancelledError:
+            if final:  # persist whatever streamed before cancel so memory stays consistent
+                await asyncio.to_thread(
+                    store.add_message, conversation_id, "assistant", final, model_name)
             publish("bubble_done", {"id": bubble_id, "cancelled": True})
         except Exception as e:
             publish("bubble_done", {"id": bubble_id, "error": str(e)})
@@ -93,13 +119,31 @@ async def get_models():
     return JSONResponse([[DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus"}]])
 
 @app.get("/argus/history")
+async def get_history(conversation_id: str | None = None, limit: int = 100,
+                     before_id: int | None = None):
+    msgs = await asyncio.to_thread(
+        store.get_messages, _cid(conversation_id), limit, before_id)
+    return JSONResponse(msgs)
+
 @app.get("/argus/conversations")
-async def get_history():
-    return JSONResponse([])
+async def get_conversations():
+    convs = await asyncio.to_thread(store.list_conversations)
+    return JSONResponse(convs)
+
+@app.delete("/argus/history/{message_id}")
+async def delete_message(message_id: int):
+    await asyncio.to_thread(store.delete_message, message_id)
+    return JSONResponse({"ok": True})
 
 @app.delete("/argus/history")
-@app.delete("/argus/conversations")
-async def delete_history():
+async def delete_history(conversation_id: str | None = None):
+    # No conversation_id -> wipe everything; otherwise just that thread.
+    await asyncio.to_thread(store.clear, conversation_id)
+    return JSONResponse({"ok": True})
+
+@app.delete("/argus/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    await asyncio.to_thread(store.clear, conversation_id)
     return JSONResponse({"ok": True})
 
 @app.get("/")
