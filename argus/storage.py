@@ -85,7 +85,13 @@ class Store:
         args.append(limit)
         with self._lock:
             rows = self._conn.execute(q, args).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        out = []
+        for r in reversed(rows):
+            d = dict(r)
+            # Frontend reads `timestamp` and does new Date(...), which wants ms.
+            d["timestamp"] = round(d["ts"] * 1000)
+            out.append(d)
+        return out
 
     def list_conversations(self) -> list[dict]:
         """One entry per conversation: id, a title from the first user message,
