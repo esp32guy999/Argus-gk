@@ -11,8 +11,9 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
+from pydantic_ai.exceptions import UsageLimitExceeded
 
-from . import metrics
+from . import metrics, watchdog
 from .registry import Registry
 
 SYSTEM_PROMPT = (
@@ -38,6 +39,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
         system_prompt=SYSTEM_PROMPT,
+        capabilities=[watchdog.make_capability()],   # anti-stall: repeated-call detection
     )
     start = time.perf_counter()
     try:
@@ -46,6 +48,11 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
         )
         metrics.AGENT_TURNS.labels("ok").inc()
         return result.output
+    except UsageLimitExceeded:                        # turn budget hit -> give up gracefully
+        metrics.AGENT_TURNS.labels("exhausted").inc()
+        metrics.NO_PROGRESS.inc()
+        return (f"Stopped after the {turn_budget}-turn budget without finishing — "
+                "avoiding a stall. Try rephrasing or narrowing the request.")
     except Exception:
         metrics.AGENT_TURNS.labels("error").inc()
         raise
