@@ -13,6 +13,7 @@ config/mcp_servers.yaml
 config/openapi.yaml
 config/shell_tools.yaml
 config/navidrome.yaml
+config/audiobook.yaml
 specs/
 
 # Forge service units (forge.service etc.) hold Hermes config — not tracked; we'll write our own.

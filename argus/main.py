@@ -15,10 +15,15 @@ def build_registry() -> Registry:
     import os
     reg = Registry()
     reg.add_provider(native.tools())                       # lane 4 — always on
-    from .tools import web, notes, audiobook                # web + notes + audiobook — always on
+    from .tools import web, notes                           # web + notes — always on
     reg.add_provider(web.tools())
     reg.add_provider(notes.tools())
-    reg.add_provider(audiobook.tools())
+    from .tools import audiobook                             # ABB direct (needs VPN + config)
+    if audiobook.has_config():
+        try:
+            reg.add_provider(audiobook.tools())
+        except Exception as e:
+            print(f"[argus] WARNING: audiobook lane failed: {e}")
 
     lanes = []
     if os.path.exists("config/n8n_tools.yaml"):

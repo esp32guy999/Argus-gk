@@ -1,0 +1,11 @@
+# Copy to config/audiobook.yaml. ABB is scraped from the Argus host, which MUST have
+# network access to AudiobookBay (e.g. a VPN — the home ISP IP is blocked). The magnet
+# is added to qBittorrent (which does the actual torrenting; no ABB access needed there).
+abb_base: https://audiobookbay.lu
+qbt_url: http://glassgarden:8090
+qbt_user: shane
+qbt_pass: "<QBT_PASSWORD>"
+category: audiobooks
+trackers:
+  - udp://tracker.opentrackr.org:1337/announce
+  - udp://open.stealth.si:80/announce
