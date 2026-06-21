@@ -9,7 +9,12 @@ Technique mined from Shane's peace app (the hard-won bits, written fresh here):
   copy goes stale ~8h and 401s otherwise);
 - 64MB stdout readline limit (stream-json emits one big JSON line per event);
 - --session-id (new) / --resume (existing transcript) for durable per-thread sessions;
-- neutral workdir + --setting-sources user so it doesn't absorb a project CLAUDE.md.
+- workdir ~/argus + --setting-sources user,project so it picks up the homelab context
+  (cc walks up from ~/argus and finds ~/CLAUDE.md, which @imports tools.md etc.).
+
+NOTE: with cwd=~/argus and --dangerously-skip-permissions, this CC can READ AND WRITE
+the whole ~/argus tree (its own code) and up-tree ~ — a Forge chat is a fully capable
+agent on this box, not a sandbox.
 """
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ from pathlib import Path
 CLAUDE = os.environ.get("ARGUS_CLAUDE_BIN",
                         os.path.expanduser("~/.npm-global/bin/claude"))
 CONFIG_DIR = os.environ.get("ARGUS_CC_CONFIG_DIR", os.path.expanduser("~/argus/.cchome"))
-WORKDIR = os.environ.get("ARGUS_CC_WORKDIR", os.path.expanduser("~/argus/.ccwork"))
+WORKDIR = os.environ.get("ARGUS_CC_WORKDIR", os.path.expanduser("~/argus"))  # homelab context via ~/CLAUDE.md up-tree
 SESSIONS_FILE = Path(os.path.expanduser("~/argus/.cc_sessions.json"))
 IDLE_TIMEOUT = float(os.environ.get("ARGUS_CC_IDLE", "1800"))   # evict sessions idle > 30 min
 _WORKDIR_SLUG = WORKDIR.replace("/", "-")
@@ -91,7 +96,7 @@ class CCSession:
             sid = str(uuid.uuid4())
             sid_args = ["--session-id", sid]
         args = [CLAUDE, "-p", "--input-format", "stream-json", "--output-format",
-                "stream-json", "--verbose", *sid_args, "--setting-sources", "user",
+                "stream-json", "--verbose", *sid_args, "--setting-sources", "user,project",
                 "--dangerously-skip-permissions"]
         self.proc = await asyncio.create_subprocess_exec(
             *args, cwd=WORKDIR, env=_clean_env(),
