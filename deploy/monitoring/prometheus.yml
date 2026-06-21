@@ -1,19 +1,19 @@
-# Argus monitoring — scrapes localhost (co-located on anvil; no cross-host routing).
+# Argus monitoring — runs on glassgarden (Docker), scrapes anvil over the LAN.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
 scrape_configs:
   - job_name: argus
-    metrics_path: /metrics/        # ui/server.py mounts make_asgi_app at /metrics (bare 307s)
+    metrics_path: /metrics/          # ui/server.py mounts make_asgi_app at /metrics (bare 307s)
     static_configs:
-      - targets: ['localhost:8210']
+      - targets: ['192.168.6.220:8210']   # anvil
 
   - job_name: llama-swap
     metrics_path: /metrics
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ['192.168.6.220:9090']   # anvil
 
   - job_name: prometheus
     static_configs:
-      - targets: ['localhost:9091']
+      - targets: ['localhost:9090']        # self (inside the container)

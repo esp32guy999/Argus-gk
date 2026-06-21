@@ -15,16 +15,18 @@ authoritative index is `/home/shane/CLAUDE.md` + `/home/shane/tools.md` — Read
 anything not covered below.)
 
 ### Hosts (Tailscale MagicDNS hostnames)
-- **anvil** — GPU workstation (RTX 5080). Runs **Argus** (UI `:8210`), **llama-swap** `:9090`
-  (local model server, OpenAI-compat), **embeddings** `:8091` (nomic, CPU), the
-  **claude-shim** `:8100`, **Prometheus** `:9091` + **Grafana** `:3000` (monitoring —
-  see `deploy/monitoring/`), and has a **VPN (`tun0`)** — the only host that reaches
-  AudiobookBay. This is where Argus runs. NB: anvil default-routes via the VPN, so it's
-  reachable from the LAN/other hosts only over Tailscale, not by direct cross-host IP.
+- **anvil** — GPU workstation (RTX 5080), LAN `192.168.6.220` (ethernet `eno1`; wifi disabled).
+  Runs **Argus** (UI `:8210`), **llama-swap** `:9090` (local model server, OpenAI-compat),
+  **embeddings** `:8091` (nomic, CPU), the **claude-shim** `:8100`. Its internet egress is
+  transparently **behind PIA via gg's Tailscale exit node** (`gg-pia-exit`), fail-closed —
+  toggle with `anvil-vpn on|off` (tray icon). So anvil still reaches AudiobookBay. No local VPN
+  anymore (PIA was uninstalled; see `docs/network-and-vpn.md`). This is where Argus runs.
 - **nyx** — Home Assistant (`:8123`, Docker), Forge/legacy UIs, the **peace** app, the
   retired Hermes. On the home ISP IP (no VPN).
-- **glassgarden** — Unraid NAS (`192.168.4.206`, user `root`, `ssh unraid`). Hosts all
-  media services + downloaders.
+- **glassgarden** — Unraid NAS (`192.168.4.206`, user `root`, `ssh unraid`). Hosts media
+  services + downloaders, the **PIA VPN exit** (gluetun + `gg-pia-exit` Tailscale exit node
+  that anvil routes through), and **Prometheus `:9091` + Grafana `:3000`** monitoring (Docker,
+  scrapes anvil; see `deploy/monitoring/`).
 - **claude-box** — Ubuntu VM.
 
 ### Services on glassgarden

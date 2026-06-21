@@ -107,13 +107,14 @@ Made persistent via a watchdog (see below) since they don't survive a gluetun re
   10s poll, autostarts (`~/.config/autostart/anvil-vpn-tray.desktop`).
 - [x] cleanup: `:8888` proxy disabled (gluetun rebuilt `HTTPPROXY=off`), parked backups removed,
   orphan `my-Gluetun.xml` deleted
-- [~] re-home Prometheus/Grafana off anvil → gg: **deferred.** Blocked: gg still can't reach
-  anvil (000, can't even ping `.6.220`) — NOT PIA (it's gone). Cause is the `.4`-vs-`.6` split:
-  gg has BOTH `br0` (192.168.4.206/22) and `shim-br0` (192.168.4.205/22, pi-hole macvlan) on the
-  same /22, so gg routes `.6.x` out `shim-br0` (macvlan) and it dies. Recommendation: **leave
-  Prom/Grafana on anvil** — they're GPU-free + tiny (no real cost to model perf), and untangling
-  gg's macvlan routing (touches pi-hole DNS) isn't worth it for these. Real long-term fix would be
-  putting anvil on the `.4` /24 like everything else (eero DHCP reservation) — separate project.
+- [x] **gg→anvil routing fixed**: gg had `br0` + pi-hole macvlan `shim-br0` both on the `/22`,
+  mis-routing `.6.x` out the macvlan. Fix: `ip route replace 192.168.6.0/24 dev br0` (persisted in
+  `/boot/config/go`); pi-hole DNS unaffected. (anvil being back on ethernet was the other half.)
+- [x] **Prometheus + Grafana re-homed to gg** (Docker, `monitoring` network): `prometheus` `:9091`
+  scrapes anvil `192.168.6.220:8210`+`:9090` over LAN; `grafana` `:3000` provisions the datasource
+  + Argus dashboard. anvil's systemd copies stopped+disabled. **Bonus:** gg-based Prom now *sees*
+  anvil-unreachable events (localhost-scraping on anvil was blind to them). New URLs:
+  `http://glassgarden:3000` / `:9091`.
 - [ ] disable WiFi on anvil + nyx · control CLI/toggle · re-home Prom/Grafana
 
 ## Robustness notes + a gotcha that bit us
