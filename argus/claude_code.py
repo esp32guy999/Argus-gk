@@ -72,6 +72,44 @@ def _transcript_exists(sid: str) -> bool:
     return (Path(CONFIG_DIR) / "projects" / _WORKDIR_SLUG / f"{sid}.jsonl").is_file()
 
 
+def _parse_event(evt: dict) -> list[tuple]:
+    """Map one stream-json event to internal queue items (pure, so it's testable).
+
+    Returns a list of (kind, data) tuples:
+      ("text", str)                                       — cumulative chat text
+      ("event", {"kind":"thinking","text":...})           — reasoning block
+      ("event", {"kind":"tool_use","name":...,"input":...})
+      ("event", {"kind":"tool_result","text":...})        — truncated to 2000 chars
+      ("done",  {"is_error":bool,"cost":float|None,"duration_ms":int|None})
+    The `system/init` session-id capture stays in _read_stdout (it mutates state).
+    """
+    out: list[tuple] = []
+    t = evt.get("type")
+    if t == "assistant":
+        for block in evt.get("message", {}).get("content", []):
+            bt = block.get("type")
+            if bt == "text" and block.get("text", "").strip():
+                out.append(("text", block["text"]))
+            elif bt == "thinking" and block.get("thinking", "").strip():
+                out.append(("event", {"kind": "thinking", "text": block["thinking"]}))
+            elif bt == "tool_use":
+                out.append(("event", {"kind": "tool_use",
+                                      "name": block.get("name", "tool"),
+                                      "input": block.get("input", {})}))
+    elif t == "user":
+        # tool_result blocks ride back on a synthetic user-role message
+        for block in evt.get("message", {}).get("content", []):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                content = block.get("content")
+                text = content if isinstance(content, str) else json.dumps(content)
+                out.append(("event", {"kind": "tool_result", "text": text[:2000]}))
+    elif t == "result":
+        out.append(("done", {"is_error": evt.get("is_error", False),
+                             "cost": evt.get("total_cost_usd"),
+                             "duration_ms": evt.get("duration_ms")}))
+    return out
+
+
 class CCSession:
     """One persistent `claude` stream-json subprocess for one conversation."""
 
@@ -128,24 +166,19 @@ class CCSession:
                 evt = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            t = evt.get("type")
-            if t == "system" and evt.get("subtype") == "init":
+            if evt.get("type") == "system" and evt.get("subtype") == "init":
                 self.session_id = evt.get("session_id", self.session_id)
                 _save_sid(self.cid, self.session_id)
-            elif t == "assistant":
-                for block in evt.get("message", {}).get("content", []):
-                    if block.get("type") == "text" and block.get("text", "").strip():
-                        if self._q:
-                            await self._q.put(("text", block["text"]))
-                    elif block.get("type") == "tool_use" and self._q:
-                        await self._q.put(("tool", block.get("name", "tool")))
-            elif t == "result":
+            for item in _parse_event(evt):
                 if self._q:
-                    await self._q.put(("done", evt.get("is_error", False)))
+                    await self._q.put(item)
 
     async def send(self, text: str):
         """Yield cumulative assistant text for this turn (loop.stream_run contract).
-        Yields ('__tool__', name) markers too so the server can drive the status pill."""
+        Also yields ('__event__', {...}) activity markers so the server can drive the
+        status pill AND the tap-to-expand activity stream (claude-code path only):
+          {"kind":"thinking","text":...}, {"kind":"tool_use","name":...,"input":...},
+          {"kind":"tool_result","text":...}, {"kind":"done","cost":...,"duration_ms":...}."""
         async with self._lock:
             await self._ensure()
             self.last_used = time.monotonic()
@@ -160,9 +193,11 @@ class CCSession:
                 if kind == "text":
                     acc += ("\n\n" if acc else "") + data
                     yield acc
-                elif kind == "tool":
-                    yield ("__tool__", data)
+                elif kind == "event":
+                    yield ("__event__", data)
                 elif kind == "done":
+                    yield ("__event__", {"kind": "done", "cost": data.get("cost"),
+                                         "duration_ms": data.get("duration_ms")})
                     break
                 elif kind == "error":
                     if not acc:

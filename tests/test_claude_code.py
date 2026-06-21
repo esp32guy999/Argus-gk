@@ -52,6 +52,44 @@ def main() -> int:
     assert s1 is s2, "one persistent session object per conversation"
     print("PASS: one session per conversation id")
 
+    # 5. _parse_event maps stream-json events to structured activity markers
+    # assistant: text + thinking + tool_use in one event, in order
+    asst = {"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "hello"},
+        {"type": "thinking", "thinking": "let me think"},
+        {"type": "tool_use", "name": "Read", "input": {"path": "/tmp/x"}},
+        {"type": "text", "text": "   "},          # whitespace-only text is dropped
+    ]}}
+    items = cc._parse_event(asst)
+    assert items == [
+        ("text", "hello"),
+        ("event", {"kind": "thinking", "text": "let me think"}),
+        ("event", {"kind": "tool_use", "name": "Read", "input": {"path": "/tmp/x"}}),
+    ], items
+    print("PASS: _parse_event yields text + thinking + tool_use (drops blank text)")
+
+    # tool_result rides on a user-role event; string content passes through, truncated to 2000
+    long = "z" * 5000
+    user_evt = {"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": long},
+        {"type": "tool_result", "content": [{"type": "text", "text": "obj"}]},  # non-str -> json
+    ]}}
+    items = cc._parse_event(user_evt)
+    assert items[0][0] == "event" and items[0][1]["kind"] == "tool_result"
+    assert len(items[0][1]["text"]) == 2000, "tool_result truncated to 2000 chars"
+    assert isinstance(items[1][1]["text"], str) and "obj" in items[1][1]["text"], "non-str content json-encoded"
+    print("PASS: _parse_event truncates tool_result and json-encodes non-str content")
+
+    # result event carries cost + duration on a done marker
+    res = {"type": "result", "is_error": False,
+           "total_cost_usd": 0.0421, "duration_ms": 12345}
+    items = cc._parse_event(res)
+    assert items == [("done", {"is_error": False, "cost": 0.0421, "duration_ms": 12345})], items
+    # missing cost/duration degrade to None (the frontend tolerates it)
+    assert cc._parse_event({"type": "result"}) == [
+        ("done", {"is_error": False, "cost": None, "duration_ms": None})], "graceful when fields absent"
+    print("PASS: _parse_event emits done with cost + duration_ms")
+
     print("\nALL CLAUDE_CODE TESTS PASSED")
     return 0
 
