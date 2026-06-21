@@ -578,6 +578,25 @@ body {
   pointer-events: none;
 }
 .swipe-row.swiping .swipe-delete-bg { opacity: 1; }
+.swipe-quote-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.swipe-row.swiping .swipe-quote-bg { opacity: 1; }
 .swipe-row .message {
   transition: transform 0.25s ease;
   will-change: transform;

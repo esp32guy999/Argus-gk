@@ -448,15 +448,19 @@ function _buildMessageNodes(msgs) {
 function _wrapSwipeDelete(msgEl) {
   const row = document.createElement('div');
   row.className = 'swipe-row';
-  const bg = document.createElement('div');
+  const quoteBg = document.createElement('div');   // revealed on RIGHT swipe
+  quoteBg.className = 'swipe-quote-bg';
+  quoteBg.textContent = '↩ Quote';
+  const bg = document.createElement('div');         // revealed on LEFT swipe
   bg.className = 'swipe-delete-bg';
   bg.textContent = 'Delete';
+  row.appendChild(quoteBg);
   row.appendChild(bg);
   // Transfer the message into the wrapper
   msgEl.parentNode?.insertBefore(row, msgEl);
   row.appendChild(msgEl);
 
-  let startX = 0, startY = 0, dx = 0, tracking = false;
+  let startX = 0, startY = 0, dx = 0, tracking = false, capturedSel = '';
   const THRESHOLD = 0.30; // 30% of row width
 
   row.addEventListener('touchstart', e => {
@@ -465,6 +469,14 @@ function _wrapSwipeDelete(msgEl) {
     startY = t.clientY;
     dx = 0;
     tracking = true;
+    // Capture any active text selection inside THIS bubble NOW — iOS clears it
+    // the moment a swipe begins, so we can't read it at touchend.
+    capturedSel = '';
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()
+        && msgEl.contains(sel.anchorNode) && msgEl.contains(sel.focusNode)) {
+      capturedSel = sel.toString().trim();
+    }
     row.classList.add('swiping');
   }, { passive: true });
 
@@ -480,8 +492,8 @@ function _wrapSwipeDelete(msgEl) {
       msgEl.style.transform = '';
       return;
     }
-    dx = Math.min(0, deltaX); // only allow left swipe
-    if (dx < 0) e.preventDefault(); // prevent scroll while swiping
+    dx = deltaX; // both directions: left = delete, right = quote
+    if (Math.abs(dx) > 4) e.preventDefault(); // prevent scroll while swiping
     msgEl.style.transform = `translateX(${dx}px)`;
   }, { passive: false });
 
@@ -491,8 +503,8 @@ function _wrapSwipeDelete(msgEl) {
     row.classList.remove('swiping');
     const pct = Math.abs(dx) / row.offsetWidth;
     const id = msgEl.dataset.msgId;
-    if (pct >= THRESHOLD && id) {
-      // Animate out then delete
+    if (pct >= THRESHOLD && dx < 0 && id) {
+      // LEFT swipe -> delete: animate out then DELETE from the store
       msgEl.style.transition = 'transform 0.2s ease';
       msgEl.style.transform = `translateX(-${row.offsetWidth}px)`;
       msgEl.addEventListener('transitionend', async () => {
@@ -501,6 +513,11 @@ function _wrapSwipeDelete(msgEl) {
         } catch {}
         row.remove();
       }, { once: true });
+    } else if (pct >= THRESHOLD && dx > 0) {
+      // RIGHT swipe -> quote-reply: the captured selection, else the whole bubble
+      quoteToInput(capturedSel || _bubbleText(msgEl));
+      msgEl.style.transition = 'transform 0.2s ease';
+      msgEl.style.transform = '';
     } else {
       msgEl.style.transform = '';
     }
@@ -513,6 +530,24 @@ function _wrapSwipeDelete(msgEl) {
   }, { passive: true });
 
   return row;
+}
+
+// The bubble's message text, minus the meta line (model · time · cost).
+function _bubbleText(msgEl) {
+  const clone = msgEl.cloneNode(true);
+  clone.querySelectorAll('.msg-meta').forEach(e => e.remove());
+  return clone.textContent.trim();
+}
+
+// Drop quoted text into the chat input as a markdown blockquote, ready to send.
+function quoteToInput(text) {
+  if (!text) return;
+  const quoted = text.split('\n').map(l => '> ' + l).join('\n');
+  const cur = inputEl.value;
+  inputEl.value = quoted + '\n\n' + cur;
+  inputEl.focus();
+  try { inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length); } catch {}
+  inputEl.dispatchEvent(new Event('input', { bubbles: true })); // auto-grow + enable send
 }
 
 function renderHistory(msgs) {
