@@ -1273,6 +1273,11 @@ body {
   #conv-drawer-panel {
     width: 100vw;
   }
+
+  /* Canvas panels must never exceed the phone screen (clamp regardless of saved w) */
+  .panel {
+    max-width: calc(100vw - 16px);
+  }
 }
 
 /* ── Status pill: live thinking/working indicator (replaces the rAF canvas) ── */

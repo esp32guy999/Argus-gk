@@ -3,7 +3,7 @@ class AudiobookWidget extends WidgetBase {
     static type     = 'audiobook';
     static label    = 'Audiobooks';
     static icon     = '🎧';
-    static defaultW = 460;
+    static defaultW = 360;   // fits a phone (iPhone 13 = 390px) out of the box
     static defaultH = 520;
 
     init() {
