@@ -1323,3 +1323,24 @@ body {
 /* hide the empty assistant bubble until the first token — the pill stands in */
 .message.typing:empty { display: none; }
 @media (prefers-reduced-motion: reduce) { .status-pill .sp-dot { animation: none; } }
+
+/* ── Tap-to-expand activity stream (claude-code path only) ── */
+.status-pill-wrap { display: flex; flex-direction: column; align-self: flex-start; width: fit-content; max-width: 92%; }
+.status-pill .sp-cost  { opacity: .6; font-variant-numeric: tabular-nums; }
+.status-pill .sp-caret { opacity: .45; font-size: 9px; transition: transform .15s ease; }
+.status-pill:not(.expandable) .sp-caret { display: none; }   /* only show the caret once it's tappable */
+.status-pill.expandable { cursor: pointer; }
+.status-pill-wrap.open .sp-caret { transform: rotate(90deg); }
+.sp-activity {
+  display: none;
+  margin: 2px 0 6px 2px;
+  max-width: 100%; max-height: 40vh; overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px 9px;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+  font-size: 11.5px; line-height: 1.45;
+}
+.status-pill-wrap.open .sp-activity { display: block; }
+.sp-activity .act-think  { color: var(--text-dim); font-style: italic; white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
+.sp-activity .act-tool   { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; margin: 3px 0; }
+.sp-activity .act-result { color: var(--text-dim); opacity: .8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; margin: 2px 0 4px; }

@@ -20,6 +20,7 @@ const state = {
   statusPill:     null,     // live status pill (phase + elapsed timer), killed on done
   pendingDbId:    null,     // DB id of the assistant message after save
   pendingUserId:  null,     // DB id of the user message that prompted it
+  pendingCostMeta:null,     // " · $0.04 · 12s" from the CC done event, appended to bubble meta
   oldestMsgId:    null,     // id of earliest-loaded message, for lazy paging
   historyExhausted:false,   // true once we've fetched everything older
   historyLoading: false,    // in-flight older-page fetch
@@ -88,15 +89,24 @@ function getDoodleTheme() {
 //   ticking timer = alive · climbs past STALL = "still working" (amber) ·
 //   past CRASH = "no response" (red, dot stops) · frozen timer = the SSE died.
 function createStatusPill() {
-  const pill = document.createElement('div');
+  // Wrap = the always-on pill chip + a collapsed activity panel beneath it.
+  // The pill stays the default health gauge for every model; for the claude-code
+  // path it becomes tappable and reveals the live thinking/tool activity stream.
+  const wrap  = document.createElement('div');
+  wrap.className = 'status-pill-wrap';
+  const pill  = document.createElement('div');
   pill.className = 'status-pill';
   const dot   = document.createElement('span'); dot.className = 'sp-dot';
   const label = document.createElement('span'); label.className = 'sp-label'; label.textContent = 'thinking';
   const time  = document.createElement('span'); time.className = 'sp-time'; time.textContent = '0s';
-  pill.append(dot, label, time);
+  const cost  = document.createElement('span'); cost.className = 'sp-cost';   // filled from the done event
+  const caret = document.createElement('span'); caret.className = 'sp-caret'; caret.textContent = '▸';
+  pill.append(dot, label, time, cost, caret);
+  const panel = document.createElement('div'); panel.className = 'sp-activity';
+  wrap.append(pill, panel);
 
   const start = Date.now();
-  let lastActivity = start, gotToken = false, phase = '';
+  let lastActivity = start, gotToken = false, phase = '', hasActivity = false;
   const STALL = 20, CRASH = 90;  // seconds since the last signal
 
   function tick() {
@@ -111,10 +121,60 @@ function createStatusPill() {
   const timer = setInterval(tick, 1000);
   tick();
 
-  pill._activity = () => { lastActivity = Date.now(); gotToken = true; phase = ''; tick(); }; // token: streaming supersedes any tool label
-  pill._status   = (txt) => { phase = txt; lastActivity = Date.now(); tick(); };               // Phase 2: tool/loop labels
-  pill._stop     = () => { clearInterval(timer); pill.remove(); };
-  return pill;
+  // Tap to expand — only meaningful once activity has streamed (claude-code path).
+  pill.addEventListener('click', () => {
+    if (!hasActivity) return;
+    wrap.classList.toggle('open');
+    if (wrap.classList.contains('open')) panel.scrollTop = panel.scrollHeight;
+  });
+
+  wrap._activity = () => { lastActivity = Date.now(); gotToken = true; phase = ''; tick(); }; // token: streaming supersedes any tool label
+  wrap._status   = (txt) => { phase = txt; lastActivity = Date.now(); tick(); };               // tool/loop labels
+  wrap._event    = (ev) => {                                                                   // CC activity stream
+    if (!ev || ev.kind === 'done') return;
+    hasActivity = true; pill.classList.add('expandable');
+    appendActivityEntry(panel, ev);
+    if (wrap.classList.contains('open')) panel.scrollTop = panel.scrollHeight;
+  };
+  wrap._cost     = (txt) => { cost.textContent = txt; };                                        // "· $0.04 · 12s"
+  wrap._collapse = () => { wrap.classList.remove('open'); };
+  wrap._stop     = () => { clearInterval(timer); wrap.remove(); };
+  return wrap;
+}
+
+// Render one activity entry into the expandable panel. CSS-light, append-only DOM.
+function appendActivityEntry(panel, ev) {
+  const row = document.createElement('div');
+  if (ev.kind === 'thinking') {
+    row.className = 'act-think';
+    row.textContent = (ev.text || '').slice(0, 2000);
+  } else if (ev.kind === 'tool_use') {
+    row.className = 'act-tool';
+    row.textContent = `🔧 ${ev.name || 'tool'}(${fmtToolInput(ev.input)})`;
+  } else if (ev.kind === 'tool_result') {
+    row.className = 'act-result';
+    row.textContent = (ev.text || '').slice(0, 2000);
+  } else {
+    return;
+  }
+  panel.appendChild(row);
+}
+
+// Compact one-line summary of a tool's input args for the activity panel.
+function fmtToolInput(input) {
+  if (!input || typeof input !== 'object') return '';
+  try {
+    const s = JSON.stringify(input);
+    return s.length > 80 ? s.slice(0, 79) + '…' : s;
+  } catch { return ''; }
+}
+
+// "· $0.04 · 12s" from the done event's cost + duration_ms (either may be missing).
+function fmtCostDuration(cost, durationMs) {
+  const parts = [];
+  if (typeof cost === 'number') parts.push('$' + (cost < 0.1 ? cost.toFixed(4) : cost.toFixed(2)));
+  if (typeof durationMs === 'number') parts.push(Math.round(durationMs / 1000) + 's');
+  return parts.length ? '· ' + parts.join(' · ') : '';
 }
 
 function createThinkingCanvas() {
@@ -801,7 +861,7 @@ async function send() {
       }
 
       state.pendingMsgEl.textContent = stripCommandTags(raw);
-      addMeta(state.pendingMsgEl, `${state.currentModel} · ${fmtTime(new Date())}`);
+      addMeta(state.pendingMsgEl, `${state.currentModel} · ${fmtTime(new Date())}${state.pendingCostMeta || ''}`);
       processCommandTags(raw, state.pendingMsgEl);
       if (state.pendingDbId) {
         state.pendingMsgEl.dataset.msgId = state.pendingDbId;
@@ -829,6 +889,7 @@ async function send() {
     state.pendingResolve = null;
     state.pendingDbId = null;
     state.pendingUserId = null;
+    state.pendingCostMeta = null;
     sendBtn.classList.remove('is-stop');
   }
 }
@@ -985,6 +1046,21 @@ function connectEvents() {
         state.statusPill._status(label);
       } catch {}
     });
+    // Rich per-turn activity for the claude-code path: thinking / tool calls /
+    // tool results feed the tap-to-expand panel; the done event carries cost+duration.
+    globalEvents.addEventListener('bubble_activity', e => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.id !== state.pendingBubbleId || !state.statusPill) return;
+        const ev = d.event || {};
+        if (ev.kind === 'done') {
+          const meta = fmtCostDuration(ev.cost, ev.duration_ms);
+          if (meta) { state.statusPill._cost(' ' + meta); state.pendingCostMeta = ' ' + meta; }
+        } else {
+          state.statusPill._event(ev);
+        }
+      } catch {}
+    });
     globalEvents.addEventListener('bubble_done', e => {
       let data;
       try { data = JSON.parse(e.data); } catch { return; }
@@ -998,6 +1074,7 @@ function connectEvents() {
       if (data.cancelled && state.pendingMsgEl && !state.pendingMsgEl.textContent.trim()) {
         state.pendingMsgEl.textContent = '[Cancelled]';
       }
+      if (state.statusPill) state.statusPill._collapse();   // fold the activity panel back up
       state.pendingDbId   = data.db_id   ?? null;
       state.pendingUserId = data.user_id ?? null;
       if (state.pendingResolve) state.pendingResolve();
