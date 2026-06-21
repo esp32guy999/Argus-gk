@@ -1274,10 +1274,26 @@ body {
     width: 100vw;
   }
 
-  /* Canvas panels must never exceed the phone screen (clamp regardless of saved w) */
-  .panel {
-    max-width: calc(100vw - 16px);
+  /* On a phone the free-floating drag canvas is unusable (laggy, panels off-screen
+     and hard to move). Stack panels vertically full-width in a normal scroll instead. */
+  #canvas-body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px;
+    background: none;            /* drop the dot-grid paint */
   }
+  #canvas-body .panel {
+    position: relative !important;
+    left: auto !important;
+    top: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 0 10px 0 !important;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);   /* lighter = far less paint while scrolling */
+  }
+  /* Dragging/resizing make no sense in the stack — neutralize for smoothness */
+  #canvas-body .panel .resize-handle { display: none; }
+  #canvas-body .panel-header { cursor: default; }
 }
 
 /* ── Status pill: live thinking/working indicator (replaces the rAF canvas) ── */
