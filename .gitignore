@@ -19,3 +19,6 @@ specs/
 # Forge service units (forge.service etc.) hold Hermes config — not tracked; we'll write our own.
 # ui/server.py is now the clean, secret-free Argus server (env-based) and IS tracked.
 ui/*.service
+.cchome/
+.ccwork/
+.cc_sessions.json

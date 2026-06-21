@@ -78,35 +78,9 @@ def publish(event_name: str, data: Any):
         except asyncio.QueueFull:
             subscribers.discard(queue)
 
-# Claude Code as a selectable model — routes to the OpenAI-compat claude-shim (CLI via
-# OAuth). Bypasses the harness + llama-swap entirely, so NO GPU model is loaded/unloaded.
-CLAUDE_SHIM_URL = os.environ.get("ARGUS_CLAUDE_SHIM_URL", "http://localhost:8100/v1/chat/completions")
-
-
-async def stream_claude_shim(messages):
-    """Stream Claude Code's reply (cumulative text) from the shim. Mirrors
-    loop.stream_run's contract (yields full text-so-far) so the chat path is identical."""
-    payload = {"model": "claude", "messages": messages, "stream": True}
-    acc = ""
-    async with httpx.AsyncClient(timeout=900) as client:
-        async with client.stream("POST", CLAUDE_SHIM_URL, json=payload) as r:
-            r.raise_for_status()
-            async for line in r.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(data)
-                except Exception:
-                    continue
-                delta = (obj.get("choices") or [{}])[0].get("delta", {}).get("content")
-                if delta:
-                    acc += delta
-                    yield acc
-    if acc:
-        yield acc
+# Claude Code as a selectable model — routes to a PERSISTENT per-conversation `claude`
+# session (argus/claude_code.py). Bypasses the harness + llama-swap, so NO GPU model
+# is loaded/unloaded; each Forge thread keeps native CC context across turns.
 
 
 async def sse_generator():
@@ -149,15 +123,18 @@ async def chat(request: Request):
         final = ""
         try:
             if model_name == "claude-code":
-                # Full conversation (incl. the user msg just stored) -> Claude Code shim.
-                rows = await asyncio.to_thread(store.get_messages, conversation_id, HISTORY_TURNS)
-                msgs = [{"role": r["role"], "content": r["content"]} for r in rows]
-                source = stream_claude_shim(msgs)
+                # Persistent per-conversation CC session keeps its own context, so we
+                # send only the new message (not the full history).
+                from argus import claude_code
+                source = claude_code.send(conversation_id, message)
             else:
                 source = loop.stream_run(
                     registry, message, model_name=model_name, base_url=MODEL_URL,
                     turn_budget=8, message_history=history, on_event=on_event)
             async for content in source:
+                if isinstance(content, tuple) and content[0] == "__tool__":
+                    on_event("tool", content[1], 0)   # drive the status pill on CC tool use
+                    continue
                 final = content
                 publish("bubble_update", {"id": bubble_id, "content": content})
             row = await asyncio.to_thread(
