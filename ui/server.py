@@ -78,6 +78,37 @@ def publish(event_name: str, data: Any):
         except asyncio.QueueFull:
             subscribers.discard(queue)
 
+# Claude Code as a selectable model — routes to the OpenAI-compat claude-shim (CLI via
+# OAuth). Bypasses the harness + llama-swap entirely, so NO GPU model is loaded/unloaded.
+CLAUDE_SHIM_URL = os.environ.get("ARGUS_CLAUDE_SHIM_URL", "http://localhost:8100/v1/chat/completions")
+
+
+async def stream_claude_shim(messages):
+    """Stream Claude Code's reply (cumulative text) from the shim. Mirrors
+    loop.stream_run's contract (yields full text-so-far) so the chat path is identical."""
+    payload = {"model": "claude", "messages": messages, "stream": True}
+    acc = ""
+    async with httpx.AsyncClient(timeout=900) as client:
+        async with client.stream("POST", CLAUDE_SHIM_URL, json=payload) as r:
+            r.raise_for_status()
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except Exception:
+                    continue
+                delta = (obj.get("choices") or [{}])[0].get("delta", {}).get("content")
+                if delta:
+                    acc += delta
+                    yield acc
+    if acc:
+        yield acc
+
+
 async def sse_generator():
     """SSE generator for /argus/events."""
     queue = asyncio.Queue()
@@ -117,10 +148,16 @@ async def chat(request: Request):
     async def run_chat():
         final = ""
         try:
-            async for content in loop.stream_run(
-                registry, message, model_name=model_name, base_url=MODEL_URL,
-                turn_budget=8, message_history=history, on_event=on_event,
-            ):
+            if model_name == "claude-code":
+                # Full conversation (incl. the user msg just stored) -> Claude Code shim.
+                rows = await asyncio.to_thread(store.get_messages, conversation_id, HISTORY_TURNS)
+                msgs = [{"role": r["role"], "content": r["content"]} for r in rows]
+                source = stream_claude_shim(msgs)
+            else:
+                source = loop.stream_run(
+                    registry, message, model_name=model_name, base_url=MODEL_URL,
+                    turn_budget=8, message_history=history, on_event=on_event)
+            async for content in source:
                 final = content
                 publish("bubble_update", {"id": bubble_id, "content": content})
             row = await asyncio.to_thread(
@@ -150,7 +187,10 @@ async def cancel(bubble_id: str):
 @app.get("/argus/models")
 async def get_models():
     # Forge expects [[id, cfg], ...] where cfg has display/backend.
-    return JSONResponse([[DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus"}]])
+    return JSONResponse([
+        [DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus"}],
+        ["claude-code", {"display": "Claude Code", "backend": "claude"}],
+    ])
 
 @app.get("/argus/history")
 async def get_history(conversation_id: str | None = None, limit: int = 100,
