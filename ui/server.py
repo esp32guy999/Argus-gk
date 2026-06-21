@@ -76,6 +76,10 @@ async def _bind_task_loop():
     task_mgr.loop = asyncio.get_running_loop()
     # Kill any login procs orphaned by a previous server life (see relogin.py).
     relogin.manager.sweep_orphans()
+    # Self-observer: watch our own metrics + buzz on trouble (the consumer that makes
+    # the Prometheus cornerstone actually function instead of being scraped by nobody).
+    from argus import observability
+    asyncio.create_task(observability.SelfObserver(_notify).run())
 
 
 @app.on_event("shutdown")
