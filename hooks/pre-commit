@@ -1,0 +1,21 @@
+#!/bin/sh
+# Argus pre-commit — mechanical doc/test enforcement (see docs/CONTRIBUTING.md).
+# Enable once per clone:  git config core.hooksPath hooks
+cd "$(git rev-parse --show-toplevel)" || exit 0
+
+# HARD: doc/test coverage invariant must hold (fast, no external deps).
+if [ -x .venv/bin/python ]; then
+  if ! PYTHONPATH=. .venv/bin/python tests/test_docs.py >/tmp/argus-doccheck 2>&1; then
+    echo "✗ pre-commit blocked — doc/test coverage failed:"; sed 's/^/    /' /tmp/argus-doccheck
+    echo "  Add the missing test/doc, or bypass once with: git commit --no-verify"
+    exit 1
+  fi
+fi
+
+# SOFT: changed argus/ code but touched no docs/ or tests/ — nudge (non-blocking).
+staged=$(git diff --cached --name-only)
+if echo "$staged" | grep -q '^argus/.*\.py$' && ! echo "$staged" | grep -qE '^(docs/|tests/|CLAUDE\.md)'; then
+  echo "⚠ pre-commit: argus/ code changed but no docs/ or tests/ in this commit."
+  echo "  Consider a test and/or a note in the session log. (not blocking)"
+fi
+exit 0

@@ -66,6 +66,17 @@ dispatch (latency/count/error metrics) and `select()` surfaces it semantically.
   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. Push to the private GitHub remote
   after substantive work.
 
+## Doc/test enforcement (not just a request)
+A written "remember to update docs" rule rots. These are mechanical:
+- **`tests/test_docs.py`** (in the suite) fails if any `argus/tools/` lane has no test, or
+  an onboarding doc is missing. Green-is-the-bar enforces coverage.
+- **`hooks/pre-commit`** (version-controlled) **blocks** a commit that breaks that invariant
+  and **nudges** when you change `argus/` code without touching `docs/` or `tests/`.
+  Enable once per clone: `git config core.hooksPath hooks`. Bypass once with `--no-verify`.
+
+What can't be mechanized (accurate prose / a fresh session log) stays on the honor system —
+but the hook reminds you, and CLAUDE.md tells new sessions to read the latest session log.
+
 ## Run it
 `PYTHONPATH=. ARGUS_MODEL_URL=http://localhost:8099/v1 .venv/bin/python -m argus.main "what time is it?"`
 (CLI one-shot). The UI server is `argus-ui.service` (anvil :8210); restart with
