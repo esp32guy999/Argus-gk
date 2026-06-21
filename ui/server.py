@@ -9,8 +9,9 @@ from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from argus.main import build_registry
-from argus import loop
+from argus import loop, metrics
 from argus.storage import Store
+from prometheus_client import make_asgi_app
 import httpx
 import relogin
 
@@ -63,6 +64,9 @@ subscribers: Set[asyncio.Queue] = set()
 TASKS: Dict[str, asyncio.Task] = {}
 
 app = FastAPI()
+# Expose harness metrics on the LIVE server (the CLI path called metrics.serve(); the
+# server never did, so until now everything was scraped by nobody). Scrape :8210/metrics.
+app.mount("/metrics", make_asgi_app())
 
 
 @app.on_event("startup")
@@ -146,12 +150,18 @@ async def chat(request: Request):
                     # Keep the always-on status pill driven on tool use (as before)...
                     if ev.get("kind") == "tool_use":
                         on_event("tool", ev.get("name", "tool"), 0)
+                    elif ev.get("kind") == "done":   # CC metrics: real spend + turn time
+                        metrics.CC_COST.inc(ev.get("cost") or 0)
+                        if ev.get("duration_ms"):
+                            metrics.CC_DURATION.observe(ev["duration_ms"] / 1000)
                     # ...and forward the rich activity to the tap-to-expand panel
                     # (claude-code path only; the 80B path never yields __event__).
                     publish("bubble_activity", {"id": bubble_id, "event": ev})
                     continue
                 final = content
                 publish("bubble_update", {"id": bubble_id, "content": content})
+            if model_name == "claude-code":
+                metrics.CC_TURNS.labels("ok").inc()
             row = await asyncio.to_thread(
                 store.add_message, conversation_id, "assistant", final, model_name)
             publish("bubble_done", {"id": bubble_id, "db_id": row["id"],
@@ -162,6 +172,8 @@ async def chat(request: Request):
                     store.add_message, conversation_id, "assistant", final, model_name)
             publish("bubble_done", {"id": bubble_id, "cancelled": True})
         except Exception as e:
+            if model_name == "claude-code":
+                metrics.CC_TURNS.labels("error").inc()
             publish("bubble_done", {"id": bubble_id, "error": str(e)})
 
     task = asyncio.create_task(run_chat())

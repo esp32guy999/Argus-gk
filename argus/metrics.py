@@ -28,6 +28,11 @@ TOOLS_SELECTED = Histogram(
     buckets=(1, 2, 5, 10, 20, 40, 80),
 )
 
+# --- Claude Code lane (bypasses the loop/registry, so it needs its own sensors) ---
+CC_TURNS = Counter("argus_claude_code_turns_total", "Claude Code turns", ["outcome"])
+CC_COST = Counter("argus_claude_code_cost_usd_total", "Claude Code spend (USD)")
+CC_DURATION = Histogram("argus_claude_code_turn_seconds", "Claude Code turn wall-clock seconds")
+
 
 def serve(port: int = 9101) -> None:
     """Start the harness metrics endpoint (separate from LiteLLM's /metrics)."""
