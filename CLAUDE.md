@@ -3,9 +3,10 @@
 This is the Argus project: an orchestrator driving a Pydantic AI loop over local models,
 with tool lanes, SQLite storage, and a forked-Forge UI. See `SPEC.md` and `docs/`.
 
-**Catch up on recent work first:** read the latest `docs/session-*.md` (e.g.
-`docs/session-2026-06-20.md`) and `git log --oneline -25` before doing project work —
-they're the running log of what changed and the hard-won gotchas.
+**New here? Start with `docs/CONTRIBUTING.md`** — the dev loop: how to add a tool lane,
+how to run the tests (no pytest — standalone scripts), and the conventions/rules.
+**Then catch up:** read the latest `docs/session-*.md` and `git log --oneline -25` —
+the running log of what changed and the hard-won gotchas.
 
 ## Homelab context
 
