@@ -435,35 +435,11 @@ function _buildMessageNodes(msgs) {
       renderImageTags(el, msg.content);
       renderVideoTags(el, msg.content);
     }
-    _attachDeleteButton(el, msg.id);
-    // Wrap in swipe-to-delete row, then append the wrapper
+    // Wrap in swipe-to-delete row, then append the wrapper (swipe is the only delete)
     const row = _wrapSwipeDelete(el);
     frag.appendChild(row);
   });
   return frag;
-}
-
-// Hover-shown × that deletes the message (and any image files it generated)
-// from the DB, then removes the element from the DOM.
-function _attachDeleteButton(el, msgId) {
-  if (!msgId) return;
-  const x = document.createElement('span');
-  x.className = 'msg-delete';
-  x.textContent = '×';
-  x.title = 'Delete message';
-  x.addEventListener('click', async (ev) => {
-    ev.stopPropagation();
-    if (!confirm('Delete this message?')) return;
-    let r;
-    try {
-      r = await fetch(`${BRAIN}/history/${encodeURIComponent(msgId)}`, {method: 'DELETE'});
-    } catch (e) {
-      alert(`Delete failed: ${e.message}`); return;
-    }
-    if (!r.ok) { alert(`Delete failed: HTTP ${r.status}`); return; }
-    el.remove();
-  });
-  el.appendChild(x);
 }
 
 // Swipe-left-to-delete on touch devices.  Wraps a message element in a
@@ -863,17 +839,16 @@ async function send() {
       state.pendingMsgEl.textContent = stripCommandTags(raw);
       addMeta(state.pendingMsgEl, `${state.currentModel} · ${fmtTime(new Date())}${state.pendingCostMeta || ''}`);
       processCommandTags(raw, state.pendingMsgEl);
+      // dataset.msgId is what swipe-to-delete reads (the only delete affordance now).
       if (state.pendingDbId) {
         state.pendingMsgEl.dataset.msgId = state.pendingDbId;
-        _attachDeleteButton(state.pendingMsgEl, state.pendingDbId);
       }
-      // Also tag the matching user bubble (the previous user-role sibling) so it can be deleted too.
+      // Also tag the matching user bubble (the previous user-role sibling) so it can be swiped too.
       if (state.pendingUserId) {
         let prev = state.pendingMsgEl.previousElementSibling;
         while (prev && !prev.classList.contains('user')) prev = prev.previousElementSibling;
         if (prev && !prev.dataset.msgId) {
           prev.dataset.msgId = state.pendingUserId;
-          _attachDeleteButton(prev, state.pendingUserId);
         }
       }
     }

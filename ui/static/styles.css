@@ -550,25 +550,6 @@ body {
 
 /* Per-message delete × — hover-shown in the corner of each bubble. */
 .message { position: relative; }
-.message .msg-delete {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 18px;
-  height: 18px;
-  line-height: 16px;
-  text-align: center;
-  font-size: 14px;
-  border-radius: 50%;
-  background: rgba(0,0,0,0.4);
-  color: #ddd;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s;
-  user-select: none;
-}
-.message:hover .msg-delete { opacity: 1; }
-.message .msg-delete:hover { background: var(--red); color: #fff; }
 
 /* ── Swipe-to-delete ──────────────────────────────────────────────── */
 .swipe-row {
