@@ -141,8 +141,14 @@ async def chat(request: Request):
                     registry, message, model_name=model_name, base_url=MODEL_URL,
                     turn_budget=8, message_history=history, on_event=on_event)
             async for content in source:
-                if isinstance(content, tuple) and content[0] == "__tool__":
-                    on_event("tool", content[1], 0)   # drive the status pill on CC tool use
+                if isinstance(content, tuple) and content[0] == "__event__":
+                    ev = content[1]
+                    # Keep the always-on status pill driven on tool use (as before)...
+                    if ev.get("kind") == "tool_use":
+                        on_event("tool", ev.get("name", "tool"), 0)
+                    # ...and forward the rich activity to the tap-to-expand panel
+                    # (claude-code path only; the 80B path never yields __event__).
+                    publish("bubble_activity", {"id": bubble_id, "event": ev})
                     continue
                 final = content
                 publish("bubble_update", {"id": bubble_id, "content": content})
