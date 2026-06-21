@@ -32,6 +32,9 @@ def build_registry() -> Registry:
     if os.path.exists("config/shell_tools.yaml"):
         from .tools import shell
         lanes.append(("shell", "config/shell_tools.yaml", shell.tools))
+    if os.path.exists("config/navidrome.yaml"):
+        from .tools import navidrome
+        lanes.append(("navidrome", "config/navidrome.yaml", navidrome.tools))
 
     for name, path, load in lanes:
         try:

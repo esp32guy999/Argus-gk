@@ -1,0 +1,6 @@
+# Copy to config/navidrome.yaml. Subsonic auth uses salt+token (md5(password+salt));
+# the plaintext password stays here (gitignored) and never goes on the wire.
+base_url: http://glassgarden:4533
+username: shane
+password: "<NAVIDROME_PASSWORD>"
+default_count: 30
