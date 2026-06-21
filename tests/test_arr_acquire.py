@@ -39,6 +39,14 @@ class _H(BaseHTTPRequestHandler):
             self._j(200, [{"id": 1, "name": "Standard"}])
         elif p.endswith("/rootfolder"):
             self._j(200, [{"path": "/media"}])
+        elif p.endswith("/album"):   # lidarr_get_album: albums for an artist
+            self._j(200, [
+                {"id": 111, "title": "She’s So Unusual", "monitored": False,
+                 "statistics": {"trackFileCount": 0, "trackCount": 23}},
+                {"id": 112, "title": "True Colors", "monitored": True,
+                 "statistics": {"trackFileCount": 10, "trackCount": 10}}])
+        elif p.endswith("/artist"):   # lidarr library list (not /artist/lookup)
+            self._j(200, [{"id": 13, "artistName": "Cyndi Lauper", "monitored": True}])
         else:
             self._j(404, {})
 
@@ -47,6 +55,12 @@ class _H(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(n).decode() or "{}")
         POSTS[urlparse(self.path).path] = body
         self._j(201, {**body, "id": 99})
+
+    def do_PUT(self):
+        n = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(n).decode() or "{}")
+        POSTS[urlparse(self.path).path] = body
+        self._j(202, body)
 
 
 def main() -> int:
@@ -66,9 +80,9 @@ def main() -> int:
     os.close(fd)
     try:
         by = {t.name: t for t in arr_acquire.tools(mpath)}
-        assert set(by) == {"radarr_add_movie", "sonarr_add_series",
-                           "lidarr_add_artist", "readarr_add_author"}, list(by)
-        print("PASS: all four add tools registered (incl. readarr)")
+        assert set(by) == {"radarr_add_movie", "sonarr_add_series", "lidarr_add_artist",
+                           "readarr_add_author", "lidarr_get_album"}, list(by)
+        print("PASS: add tools + lidarr_get_album registered")
 
         # param names come through to the schema (movie/series/artist/author)
         for tool in by.values():
@@ -131,11 +145,36 @@ def main() -> int:
         assert b["qualityProfileId"] == 1, b  # lidarr prefers "Any"
         print("PASS: lidarr_add_artist body (metadata profile, searchForMissingAlbums, Any)")
 
-        # already-in-library -> no POST
+        # already-in-library -> NOT a dead end: triggers a missing-items search command
         POSTS.clear()
         out = by["radarr_add_movie"].func(movie="existing thing")
-        assert out["already_in_library"] and not out["added"] and not POSTS, out
-        print("PASS: already-in-library short-circuits (no POST)")
+        assert out["already_in_library"] and not out["added"] and out["searching"], out
+        assert POSTS["/api/v3/command"]["name"] == "MoviesSearch", POSTS
+        assert POSTS["/api/v3/command"]["movieIds"] == [5], POSTS
+        print("PASS: already-in-library now searches missing (MoviesSearch), not 'nothing to do'")
+
+        # lidarr_get_album: targets ONE album by an existing artist + fires AlbumSearch
+        POSTS.clear()
+        out = by["lidarr_get_album"].func(artist="Cyndi Lauper", album="she's so unusual")
+        assert out["album"] == "She’s So Unusual" and out["searching"], out
+        assert out["have_tracks"] == 0 and out["total_tracks"] == 23, out
+        assert POSTS["/api/v1/album/monitor"] == {"albumIds": [111], "monitored": True}, POSTS
+        assert POSTS["/api/v1/command"] == {"name": "AlbumSearch", "albumIds": [111]}, POSTS
+        print("PASS: lidarr_get_album monitors + AlbumSearches just the named album")
+
+        # fuzzy: a wrong-but-close title still lands on the real album (the user's case)
+        POSTS.clear()
+        out = by["lidarr_get_album"].func(artist="Cyndi Lauper", album="she's so strange")
+        assert out["album"] == "She’s So Unusual", out
+        print("PASS: fuzzy album match ('strange' -> 'Unusual')")
+
+        # genuinely unknown album -> teaching ModelRetry that lists the real albums
+        try:
+            by["lidarr_get_album"].func(artist="Cyndi Lauper", album="Polka Party Live")
+            print("FAIL: expected ModelRetry on unknown album"); return 1
+        except ModelRetry as e:
+            assert "She’s So Unusual" in str(e), str(e)
+        print("PASS: unknown album -> teaching ModelRetry lists real albums")
 
         # no match -> ModelRetry
         try:
