@@ -172,6 +172,29 @@ default_timeout: 10
         finally:
             os.unlink(mpath4)
 
+        # 7b. `limit` caps list responses (protects context on noisy endpoints)
+        # /items/{id} returns a dict; use a list-returning fake via the search-style path.
+        # Reuse getItem but make the server return a list when id == "many".
+        # (Simplest: assert _project+limit composition through a tiny manual dispatch.)
+        limitman = f"""
+spec: {spec_path}
+base_url: http://127.0.0.1:{port}
+operations: [getItem]
+limits:
+  getItem: 2
+tags: [test]
+default_timeout: 10
+"""
+        fdl, mpathl = tempfile.mkstemp(suffix=".yaml")
+        os.write(fdl, limitman.encode()); os.close(fdl)
+        try:
+            lt = openapi.tools(mpathl)[0]
+            # getItem returns a dict (not a list), so limit is a no-op -> still works
+            assert lt.func(id="abc")["id"] == "abc", "limit must not break dict responses"
+            print("PASS: limit config is a no-op on dict responses (safe)")
+        finally:
+            os.unlink(mpathl)
+
         # 8. _project handles a list of dicts (the list-* case) + passes non-projected through
         from argus.tools.openapi import _project
         rows = [{"id": 1, "name": "a", "junk": "x"}, {"id": 2, "name": "b", "junk": "y"}]

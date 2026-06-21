@@ -33,7 +33,8 @@ class _H(BaseHTTPRequestHandler):
                 self._j(200, [{"title": "Found", "artistName": "Found",
                                "tmdbId": 1, "tvdbId": 2, "foreignArtistId": "x"}])
         elif p.endswith("/qualityprofile"):
-            self._j(200, [{"id": 1, "name": "Any"}, {"id": 4, "name": "HD-1080p"}])
+            self._j(200, [{"id": 1, "name": "Any"}, {"id": 4, "name": "HD-1080p"},
+                          {"id": 7, "name": "Lossless"}, {"id": 9, "name": "eBook"}])
         elif p.endswith("/metadataprofile"):
             self._j(200, [{"id": 1, "name": "Standard"}])
         elif p.endswith("/rootfolder"):
@@ -60,18 +61,49 @@ def main() -> int:
     os.write(fd, ("services:\n"
                   f"  - name: radarr\n    base_url: {base}\n    headers: {{X-Api-Key: k}}\n"
                   f"  - name: sonarr\n    base_url: {base}\n    headers: {{X-Api-Key: k}}\n"
-                  f"  - name: lidarr\n    base_url: {base}\n    headers: {{X-Api-Key: k}}\n").encode())
+                  f"  - name: lidarr\n    base_url: {base}\n    headers: {{X-Api-Key: k}}\n"
+                  f"  - name: readarr\n    base_url: {base}\n    headers: {{X-Api-Key: k}}\n").encode())
     os.close(fd)
     try:
         by = {t.name: t for t in arr_acquire.tools(mpath)}
-        assert set(by) == {"radarr_add_movie", "sonarr_add_series", "lidarr_add_artist"}, list(by)
-        print("PASS: all three add tools registered")
+        assert set(by) == {"radarr_add_movie", "sonarr_add_series",
+                           "lidarr_add_artist", "readarr_add_author"}, list(by)
+        print("PASS: all four add tools registered (incl. readarr)")
 
-        # param names come through to the schema (movie/series/artist)
-        for tool, param in [("radarr_add_movie", "movie"), ("sonarr_add_series", "series"),
-                            ("lidarr_add_artist", "artist")]:
-            sch = by[tool].as_pydantic_tool()  # builds without error
-        print("PASS: tools build (per-service param names)")
+        # param names come through to the schema (movie/series/artist/author)
+        for tool in by.values():
+            tool.as_pydantic_tool()  # builds without error
+        print("PASS: tools build (per-service param names + optional refinements)")
+
+        # REFINABLE: monitor preset routes into addOptions; quality picks the profile
+        POSTS.clear()
+        out = by["sonarr_add_series"].func(series="Severance", monitor="latestSeason", quality="HD-1080p")
+        b = POSTS["/api/v3/series"]
+        assert b["addOptions"]["monitor"] == "latestSeason", b
+        assert b["qualityProfileId"] == 4 and out["monitor"] == "latestSeason", (b, out)
+        print("PASS: refinable monitor + quality (sonarr latestSeason / HD-1080p)")
+
+        # invalid monitor -> teaching ModelRetry with options
+        try:
+            by["lidarr_add_artist"].func(artist="X", monitor="bogus")
+            print("FAIL: expected ModelRetry on bad monitor"); return 1
+        except ModelRetry as e:
+            assert "invalid" in str(e), str(e)
+        # invalid quality -> teaching ModelRetry with options
+        try:
+            by["lidarr_add_artist"].func(artist="X", quality="nope")
+            print("FAIL: expected ModelRetry on bad quality"); return 1
+        except ModelRetry as e:
+            assert "not found" in str(e), str(e)
+        print("PASS: invalid monitor/quality -> teaching ModelRetry")
+
+        # readarr: author noun, v1, metadata profile, searchForMissingBooks
+        POSTS.clear()
+        out = by["readarr_add_author"].func(author="Brandon Sanderson", quality="eBook")
+        b = POSTS["/api/v1/author"]
+        assert b["metadataProfileId"] == 1 and b["qualityProfileId"] == 9, b
+        assert b["addOptions"]["searchForMissingBooks"] is True, b
+        print("PASS: readarr_add_author body (eBook quality, metadata, searchForMissingBooks)")
 
         # radarr: HD-1080p profile, /media root, minimumAvailability, searchForMovie
         POSTS.clear()

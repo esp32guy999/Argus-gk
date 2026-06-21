@@ -58,8 +58,9 @@ def _service_tools(service: dict, prefix: str = "") -> list[Tool]:
     allowed_operations = service.get("operations", [])
     tags = service.get("tags", [])
     fields_map = service.get("fields", {})        # operationId -> [keys] response projection
+    limits_map = service.get("limits", {})        # operationId -> max list items returned
 
-    def make_dispatch(operation_id, method, path_template, path_params, query_params, body_params, fields):
+    def make_dispatch(operation_id, method, path_template, path_params, query_params, body_params, fields, limit):
         def dispatch(**kwargs):
             # Build URL with path parameters
             url = base_url + path_template
@@ -85,7 +86,10 @@ def _service_tools(service: dict, prefix: str = "") -> list[Tool]:
                 content_type = resp.headers.get("content-type", "")
                 if "application/json" not in content_type:
                     return resp.text
-                return _project(resp.json(), fields)
+                data = resp.json()
+                if limit and isinstance(data, list):   # cap noisy list endpoints (e.g. search)
+                    data = data[:limit]
+                return _project(data, fields)
             except (httpx.TimeoutException, httpx.RequestError) as err:
                 raise ModelRetry(f"openapi tool '{operation_id}' failed: {err}")
 
@@ -149,7 +153,7 @@ def _service_tools(service: dict, prefix: str = "") -> list[Tool]:
         
         # Build tool
         description = operation.get("summary", operation.get("description", operation_id))
-        dispatch_func = make_dispatch(operation_id, method.upper(), path_template, path_params, query_params, body_params, fields_map.get(operation_id))
+        dispatch_func = make_dispatch(operation_id, method.upper(), path_template, path_params, query_params, body_params, fields_map.get(operation_id), limits_map.get(operation_id))
         
         tools_list.append(
             Tool(
