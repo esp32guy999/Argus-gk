@@ -164,6 +164,39 @@ async def get_conversations():
     convs = await asyncio.to_thread(store.list_conversations)
     return JSONResponse(convs)
 
+@app.get("/argus/audiobook/search")
+async def ab_search(q: str):
+    from argus.tools import audiobook
+    try:
+        return JSONResponse(await asyncio.to_thread(audiobook.search, q))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+@app.get("/argus/audiobook/latest")
+async def ab_latest(limit: int = 24):
+    from argus.tools import audiobook
+    try:
+        return JSONResponse(await asyncio.to_thread(audiobook.latest, limit))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+@app.get("/argus/audiobook/genres")
+async def ab_genres():
+    from argus.tools import audiobook
+    return JSONResponse(audiobook.genres())
+
+@app.post("/argus/audiobook/grab")
+async def ab_grab(request: Request):
+    from argus.tools import audiobook
+    body = await request.json()
+    url = body.get("url", "")
+    if not url:
+        raise HTTPException(status_code=400, detail="missing url")
+    try:
+        return JSONResponse(await asyncio.to_thread(audiobook.grab, url, body.get("title", "")))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
 @app.get("/argus/tasks")
 async def list_tasks():
     return JSONResponse(task_mgr.list())

@@ -5,13 +5,9 @@ audiobookbay.lu — the home ISP IP is blocked, so the old nyx audiobook-getter 
 never reach ABB. The magnet is then added straight to qBittorrent on glassgarden
 (qBt does the torrenting; it needs no ABB access). The nyx getter is OUT of the loop.
 
-Written fresh for Argus (the approach is inspired by Shane's audiobook-getter, but
-nothing is ported — and it's not Hermes). Uses lxml for parsing.
-
-Tools:
-- audiobook_search(query): ABB HTML search -> {title, url}.
-- audiobook_get(query): search -> scrape the page's info-hash -> build magnet ->
-  add to qBittorrent in one call. Asynchronous: it downloads then appears in the library.
+Written fresh for Argus (approach inspired by Shane's audiobook-getter, nothing ported;
+not Hermes). Module-level functions (search/latest/genres/grab/cover) are reused by
+both the chat tools and the Forge audiobook widget (via ui/server.py endpoints).
 """
 from __future__ import annotations
 
@@ -30,12 +26,25 @@ from ..registry import Tool
 _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 _HASH = re.compile(r"\b[a-fA-F0-9]{40}\b")
 _CFG = "config/audiobook.yaml"
+_DEFAULT_GENRES = ["Fantasy", "Sci-Fi", "Thriller", "LitRPG", "Horror",
+                   "Romance", "Mystery", "Non-Fiction"]
 
 # Politeness throttle: ABB rate-limits (and serves its homepage) under rapid hits, so
-# enforce a minimum gap between requests regardless of how often the tool is called or
-# retried. Module-level so it spans search+hash-scrape and every call. Tests set it 0.
+# enforce a minimum gap between requests regardless of how often we call or retry it.
 _MIN_INTERVAL = 3.0
 _last_request = [0.0]
+_cfg_cache: dict | None = None
+
+
+def has_config(path: str = _CFG) -> bool:
+    return os.path.exists(path)
+
+
+def _cfg() -> dict:
+    global _cfg_cache
+    if _cfg_cache is None:
+        _cfg_cache = yaml.safe_load(open(_CFG)) or {}
+    return _cfg_cache
 
 
 def _throttle() -> None:
@@ -45,131 +54,160 @@ def _throttle() -> None:
     _last_request[0] = _time.monotonic()
 
 
-def has_config(path: str = _CFG) -> bool:
-    return os.path.exists(path)
+def _abb_get(url: str) -> str:
+    _throttle()
+    try:
+        r = httpx.get(url, headers={"User-Agent": _UA}, timeout=25, follow_redirects=True)
+        r.raise_for_status()
+    except httpx.HTTPError as e:
+        raise ModelRetry(f"audiobook: could not reach AudiobookBay ({e}). Is the VPN up?")
+    return r.text
+
+
+def _abb_base() -> str:
+    return str(_cfg()["abb_base"]).rstrip("/")
+
+
+def _posts(doc) -> list[dict]:
+    """Extract result posts (title, url, cover) from a #content listing/search page."""
+    out, seen = [], set()
+    for post in doc.xpath('//div[@id="content"]//div[contains(@class,"post")]'):
+        a = post.xpath('.//h2/a[contains(@href,"/abss/")] | .//h3/a[contains(@href,"/abss/")]')
+        if not a:
+            continue
+        href = a[0].get("href", "")
+        if not href or href in seen:
+            continue
+        title = " ".join(a[0].text_content().split()).strip()
+        if not title:
+            continue
+        seen.add(href)
+        cover = ""
+        for img in post.xpath(".//img"):
+            src = img.get("src", "")
+            if any(h in src for h in ("media-amazon", "ptpimg", "imgur", "audiobookbay")):
+                cover = src
+                break
+        out.append({"title": title,
+                    "url": href if href.startswith("http") else _abb_base() + href,
+                    "cover": cover})
+    return out
+
+
+def search(query: str) -> list[dict]:
+    """ABB search, filtered to query-term matches (ABB serves its homepage when rate-
+    limited; the throttle spaces requests and the filter rejects homepage noise)."""
+    terms = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) >= 3]
+
+    def _match(item):
+        t = item["title"].lower()
+        hits = sum(1 for w in terms if w in t)
+        return hits if (hits and (hits >= len(terms) - 1 or hits >= 2 or not terms)) else 0
+
+    for _ in range(3):
+        posts = _posts(_lxml.fromstring(_abb_get(f"{_abb_base()}/?s={quote_plus(query)}")))
+        ranked = sorted(((_match(p), p) for p in posts), key=lambda x: x[0], reverse=True)
+        relevant = [p for s, p in ranked if s > 0]
+        if relevant or not terms:
+            return relevant or posts
+    return []
+
+
+def latest(limit: int = 24) -> list[dict]:
+    """Latest audiobook uploads (the ABB homepage listing)."""
+    return _posts(_lxml.fromstring(_abb_get(f"{_abb_base()}/")))[:limit]
+
+
+def genres() -> list[str]:
+    return _cfg().get("genres", _DEFAULT_GENRES)
+
+
+def cover(page_url: str) -> str:
+    """Scrape an ABB book page for its cover image."""
+    doc = _lxml.fromstring(_abb_get(page_url))
+    for img in doc.xpath("//img"):
+        src = img.get("src", "")
+        if any(h in src for h in ("media-amazon", "ptpimg", "imgur")):
+            return src
+    return ""
+
+
+def _magnet(info_hash: str, title: str = "") -> str:
+    mag = f"magnet:?xt=urn:btih:{info_hash}"
+    if title:
+        mag += f"&dn={quote_plus(title)}"
+    for tr in _cfg().get("trackers", []):
+        mag += f"&tr={quote_plus(tr)}"
+    return mag
+
+
+def _qbt_add(magnet: str) -> None:
+    cfg = _cfg()
+    qbt = str(cfg["qbt_url"]).rstrip("/")
+    with httpx.Client(timeout=25, headers={"Referer": qbt}) as c:
+        login = c.post(f"{qbt}/api/v2/auth/login",
+                       data={"username": cfg.get("qbt_user", ""), "password": cfg.get("qbt_pass", "")})
+        if login.status_code >= 300:
+            raise ModelRetry(f"audiobook: qBittorrent login failed (HTTP {login.status_code}).")
+        add = c.post(f"{qbt}/api/v2/torrents/add",
+                     data={"urls": magnet, "category": cfg.get("category", "audiobooks")})
+        if add.status_code >= 300:
+            raise ModelRetry(f"audiobook: qBittorrent rejected the add (HTTP {add.status_code}).")
+
+
+def grab(page_url: str, title: str = "") -> dict:
+    """Grab a specific ABB result by its page URL: scrape hash -> magnet -> qBittorrent."""
+    info_hash = _scrape_hash(page_url)
+    if not info_hash:
+        raise ModelRetry(f"audiobook: could not read the torrent hash for '{title or page_url}'.")
+    _qbt_add(_magnet(info_hash, title))
+    return {"grabbed": True, "title": title or page_url, "source": "AudiobookBay",
+            "note": "downloading; it will appear in the audiobook library once imported"}
+
+
+def _scrape_hash(page_url: str) -> str | None:
+    text = _lxml.fromstring(_abb_get(page_url)).text_content()
+    m = re.search(r"info\s*hash[^0-9a-fA-F]{0,20}([a-fA-F0-9]{40})", text, re.I)
+    if m:
+        return m.group(1).lower()
+    found = [h.lower() for h in _HASH.findall(text)]
+    return found[0] if found else None
+
+
+# --- chat tools ---------------------------------------------------------------
+def _search_tool(query: str) -> list:
+    """Search AudiobookBay for audiobooks by title or author. Use audiobook_get to download one."""
+    res = search(query)
+    if not res:
+        raise ModelRetry(f"no audiobooks found on AudiobookBay for '{query}'. Try another title/author.")
+    return [{"title": r["title"]} for r in res[:10]]
+
+
+def _get_tool(query: str) -> dict:
+    """Find and DOWNLOAD an audiobook from AudiobookBay by title/author in one step
+    (picks the top match). Asynchronous — report it's downloading."""
+    res = search(query)
+    if not res:
+        raise ModelRetry(f"no audiobooks found on AudiobookBay for '{query}'.")
+    return grab(res[0]["url"], res[0]["title"])
 
 
 def tools(manifest_path: str = _CFG) -> list[Tool]:
-    cfg = yaml.safe_load(open(manifest_path)) or {}
-    abb = str(cfg["abb_base"]).rstrip("/")
-    qbt = str(cfg["qbt_url"]).rstrip("/")
-    quser, qpass = cfg.get("qbt_user", ""), cfg.get("qbt_pass", "")
-    category = cfg.get("category", "audiobooks")
-    trackers = cfg.get("trackers", [])
-
-    def _abb_get(url: str) -> str:
-        _throttle()   # enforce a polite minimum gap between ABB requests
-        try:
-            r = httpx.get(url, headers={"User-Agent": _UA}, timeout=25, follow_redirects=True)
-            r.raise_for_status()
-        except httpx.HTTPError as e:
-            raise ModelRetry(f"audiobook: could not reach AudiobookBay ({e}). "
-                             "Is the VPN up on this host?")
-        return r.text
-
-    def _scrape_results(query: str) -> list[dict]:
-        doc = _lxml.fromstring(_abb_get(f"{abb}/?s={quote_plus(query)}"))
-        seen, out = set(), []
-        # Results live in #content; each post's TITLE is the h2/h3 anchor (other
-        # /abss/ anchors like "Audiobook Details" and the sidebar widget are excluded).
-        for a in doc.xpath('//div[@id="content"]//h2/a[contains(@href,"/abss/")] | '
-                           '//div[@id="content"]//h3/a[contains(@href,"/abss/")]'):
-            href = a.get("href", "")
-            if not href or "/abss/" not in href or href in seen:
-                continue
-            title = " ".join(a.text_content().split()).strip()
-            if not title:
-                continue
-            seen.add(href)
-            out.append({"title": title,
-                        "url": href if href.startswith("http") else abb + href})
-        return out
-
-    def _search(query: str) -> list[dict]:
-        # ABB intermittently serves its homepage (same #content layout) when rate-
-        # limited, so keep only results that actually match the query terms, and retry
-        # once if a fetch comes back with none (a fresh request usually returns results).
-        terms = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) >= 3]
-
-        def _match(item):
-            t = item["title"].lower()
-            hits = sum(1 for w in terms if w in t)
-            return hits if (hits and (hits >= len(terms) - 1 or hits >= 2 or not terms)) else 0
-
-        # _abb_get throttles each request, so retries are already spaced out.
-        for attempt in range(3):
-            results = _scrape_results(query)
-            relevant = sorted(((_match(r), r) for r in results), key=lambda x: x[0], reverse=True)
-            relevant = [r for score, r in relevant if score > 0]
-            if relevant or not terms:
-                return relevant or results
-        return []
-
-    def _scrape_hash(page_url: str) -> str | None:
-        doc = _lxml.fromstring(_abb_get(page_url))
-        # Prefer a hash right after an "Info Hash" label; else a lone 40-hex on the page.
-        text = doc.text_content()
-        m = re.search(r"info\s*hash[^0-9a-fA-F]{0,20}([a-fA-F0-9]{40})", text, re.I)
-        if m:
-            return m.group(1).lower()
-        found = _HASH.findall(text)
-        return found[0].lower() if len(set(h.lower() for h in found)) == 1 else (
-            found[0].lower() if found else None)
-
-    def _magnet(info_hash: str, title: str = "") -> str:
-        mag = f"magnet:?xt=urn:btih:{info_hash}"
-        if title:
-            mag += f"&dn={quote_plus(title)}"
-        for tr in trackers:
-            mag += f"&tr={quote_plus(tr)}"
-        return mag
-
-    def _qbt_add(magnet: str) -> None:
-        with httpx.Client(timeout=25, headers={"Referer": qbt}) as c:
-            login = c.post(f"{qbt}/api/v2/auth/login",
-                           data={"username": quser, "password": qpass})
-            if login.status_code >= 300:   # this qBt returns 200/204 on success
-                raise ModelRetry(f"audiobook: qBittorrent login failed (HTTP {login.status_code}).")
-            add = c.post(f"{qbt}/api/v2/torrents/add",
-                         data={"urls": magnet, "category": category})
-            if add.status_code >= 300:
-                raise ModelRetry(f"audiobook: qBittorrent rejected the add (HTTP {add.status_code}).")
-
-    def audiobook_search(query: str) -> list:
-        """Search AudiobookBay for audiobooks by title or author. Returns matching
-        titles. Use audiobook_get to actually download one."""
-        results = _search(query)
-        if not results:
-            raise ModelRetry(f"no audiobooks found on AudiobookBay for '{query}'. "
-                             "Try a different title or author.")
-        return [{"title": r["title"]} for r in results[:10]]
-
-    def audiobook_get(query: str) -> dict:
-        """Find and DOWNLOAD an audiobook from AudiobookBay by title/author in one step
-        (picks the top match). Starts the torrent in qBittorrent; it appears in the
-        audiobook library once downloaded. Asynchronous — report it's downloading."""
-        results = _search(query)
-        if not results:
-            raise ModelRetry(f"no audiobooks found on AudiobookBay for '{query}'.")
-        best = results[0]
-        info_hash = _scrape_hash(best["url"])
-        if not info_hash:
-            raise ModelRetry(f"audiobook: found '{best['title']}' but could not read its "
-                             "torrent hash from the page. Try audiobook_search and another title.")
-        _qbt_add(_magnet(info_hash, best["title"]))
-        return {"grabbed": True, "title": best["title"], "source": "AudiobookBay",
-                "note": "downloading; it will appear in the audiobook library once imported"}
-
+    global _cfg_cache, _CFG
+    if manifest_path != _CFG:   # allow tests to point at a temp config
+        _CFG = manifest_path
+        _cfg_cache = None
+    _cfg()  # validate config loads
     return [
         Tool(name="audiobook_search",
              description=("Search AudiobookBay for audiobooks by title or author. "
                           "Use audiobook_get to download one."),
              tags=["audiobook", "books", "search", "audiobookbay", "abb", "find", "listen"],
-             func=audiobook_search, provider="audiobook", example={"query": "Project Hail Mary"}),
+             func=_search_tool, provider="audiobook", example={"query": "Project Hail Mary"}),
         Tool(name="audiobook_get",
              description=("Find and download an audiobook from AudiobookBay by title/"
                           "author in one step. Asynchronous download."),
              tags=["audiobook", "books", "get", "acquire", "download", "audiobookbay", "abb"],
-             func=audiobook_get, provider="audiobook",
+             func=_get_tool, provider="audiobook",
              example={"query": "Project Hail Mary by Andy Weir"}),
     ]
