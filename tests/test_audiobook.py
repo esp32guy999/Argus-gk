@@ -59,6 +59,7 @@ class _H(BaseHTTPRequestHandler):
 def main() -> int:
     from pydantic_ai.exceptions import ModelRetry
     from argus.tools import audiobook
+    audiobook._MIN_INTERVAL = 0   # disable politeness throttle for fast tests
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -95,6 +96,17 @@ def main() -> int:
         except ModelRetry as e:
             assert "no audiobooks found" in str(e), str(e)
         print("PASS: empty search -> teaching ModelRetry")
+
+        # throttle actually enforces a minimum gap between ABB requests
+        import time as _t
+        audiobook._MIN_INTERVAL = 0.4
+        audiobook._last_request[0] = 0.0
+        t0 = _t.monotonic()
+        by["audiobook_search"].func(query="project hail mary")  # 1 throttled request
+        by["audiobook_search"].func(query="project hail mary")  # 2nd waits >= 0.4s
+        assert _t.monotonic() - t0 >= 0.4, "throttle should space requests"
+        audiobook._MIN_INTERVAL = 0
+        print("PASS: politeness throttle enforces min interval")
 
         print("\nALL AUDIOBOOK TESTS PASSED")
         return 0

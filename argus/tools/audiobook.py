@@ -31,6 +31,19 @@ _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ch
 _HASH = re.compile(r"\b[a-fA-F0-9]{40}\b")
 _CFG = "config/audiobook.yaml"
 
+# Politeness throttle: ABB rate-limits (and serves its homepage) under rapid hits, so
+# enforce a minimum gap between requests regardless of how often the tool is called or
+# retried. Module-level so it spans search+hash-scrape and every call. Tests set it 0.
+_MIN_INTERVAL = 3.0
+_last_request = [0.0]
+
+
+def _throttle() -> None:
+    wait = _MIN_INTERVAL - (_time.monotonic() - _last_request[0])
+    if wait > 0:
+        _time.sleep(wait)
+    _last_request[0] = _time.monotonic()
+
 
 def has_config(path: str = _CFG) -> bool:
     return os.path.exists(path)
@@ -45,6 +58,7 @@ def tools(manifest_path: str = _CFG) -> list[Tool]:
     trackers = cfg.get("trackers", [])
 
     def _abb_get(url: str) -> str:
+        _throttle()   # enforce a polite minimum gap between ABB requests
         try:
             r = httpx.get(url, headers={"User-Agent": _UA}, timeout=25, follow_redirects=True)
             r.raise_for_status()
@@ -82,14 +96,13 @@ def tools(manifest_path: str = _CFG) -> list[Tool]:
             hits = sum(1 for w in terms if w in t)
             return hits if (hits and (hits >= len(terms) - 1 or hits >= 2 or not terms)) else 0
 
+        # _abb_get throttles each request, so retries are already spaced out.
         for attempt in range(3):
             results = _scrape_results(query)
             relevant = sorted(((_match(r), r) for r in results), key=lambda x: x[0], reverse=True)
             relevant = [r for score, r in relevant if score > 0]
             if relevant or not terms:
                 return relevant or results
-            if attempt < 2:
-                _time.sleep(2.5)   # ABB served its homepage (rate-limit) — back off + retry
         return []
 
     def _scrape_hash(page_url: str) -> str | None:
