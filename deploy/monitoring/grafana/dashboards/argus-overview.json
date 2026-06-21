@@ -1,0 +1,66 @@
+{
+  "uid": "argus-overview",
+  "title": "Argus — Overview",
+  "tags": ["argus"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Agent turns / sec by outcome",
+      "datasource": { "type": "prometheus", "uid": "argus-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by(outcome) (rate(argus_agent_turns_total[5m]))", "legendFormat": "{{outcome}}" } ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Tool calls / sec by tool",
+      "datasource": { "type": "prometheus", "uid": "argus-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by(tool) (rate(argus_tool_calls_total[5m]))", "legendFormat": "{{tool}}" } ]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Tool latency p95 (s) by tool",
+      "datasource": { "type": "prometheus", "uid": "argus-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by(le, tool) (rate(argus_tool_latency_seconds_bucket[5m])))", "legendFormat": "{{tool}}" } ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Tool errors / sec by tool",
+      "datasource": { "type": "prometheus", "uid": "argus-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by(tool) (rate(argus_tool_errors_total[5m]))", "legendFormat": "{{tool}}" } ]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Claude Code spend (total $)",
+      "datasource": { "type": "prometheus", "uid": "argus-prom" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 20 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "argus_claude_code_cost_usd_total", "instant": true } ]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Claude Code turns / sec by outcome",
+      "datasource": { "type": "prometheus", "uid": "argus-prom" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by(outcome) (rate(argus_claude_code_turns_total[5m]))", "legendFormat": "{{outcome}}" } ]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Watchdog: loops / no-progress (total)",
+      "datasource": { "type": "prometheus", "uid": "argus-prom" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "argus_agent_loop_detected_total", "legendFormat": "loops", "instant": true },
+        { "refId": "B", "expr": "argus_agent_no_progress_total", "legendFormat": "no-progress", "instant": true }
+      ]
+    }
+  ]
+}

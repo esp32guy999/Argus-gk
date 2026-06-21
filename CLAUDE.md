@@ -17,8 +17,10 @@ anything not covered below.)
 ### Hosts (Tailscale MagicDNS hostnames)
 - **anvil** — GPU workstation (RTX 5080). Runs **Argus** (UI `:8210`), **llama-swap** `:9090`
   (local model server, OpenAI-compat), **embeddings** `:8091` (nomic, CPU), the
-  **claude-shim** `:8100`, and has a **VPN (`tun0`)** — the only host that reaches
-  AudiobookBay. This is where Argus runs.
+  **claude-shim** `:8100`, **Prometheus** `:9091` + **Grafana** `:3000` (monitoring —
+  see `deploy/monitoring/`), and has a **VPN (`tun0`)** — the only host that reaches
+  AudiobookBay. This is where Argus runs. NB: anvil default-routes via the VPN, so it's
+  reachable from the LAN/other hosts only over Tailscale, not by direct cross-host IP.
 - **nyx** — Home Assistant (`:8123`, Docker), Forge/legacy UIs, the **peace** app, the
   retired Hermes. On the home ISP IP (no VPN).
 - **glassgarden** — Unraid NAS (`192.168.4.206`, user `root`, `ssh unraid`). Hosts all

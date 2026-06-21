@@ -1,0 +1,16 @@
+[Unit]
+Description=Prometheus (Argus metrics TSDB)
+After=network-online.target
+
+[Service]
+ExecStart=/home/shane/prometheus/prometheus \
+  --config.file=/home/shane/prometheus/prometheus.yml \
+  --storage.tsdb.path=/home/shane/prometheus/data \
+  --storage.tsdb.retention.time=90d \
+  --web.listen-address=0.0.0.0:9091 \
+  --web.enable-lifecycle
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

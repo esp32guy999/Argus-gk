@@ -1,0 +1,22 @@
+[Unit]
+Description=Grafana (Argus dashboards)
+After=network-online.target prometheus.service
+
+[Service]
+EnvironmentFile=/home/shane/.config/secrets/credentials.env
+Environment=GF_SERVER_HTTP_ADDR=0.0.0.0
+Environment=GF_SERVER_HTTP_PORT=3000
+Environment=GF_PATHS_DATA=/home/shane/grafana/data
+Environment=GF_PATHS_LOGS=/home/shane/grafana/data/log
+Environment=GF_PATHS_PLUGINS=/home/shane/grafana/data/plugins
+Environment=GF_PATHS_PROVISIONING=/home/shane/grafana/conf/provisioning
+Environment=GF_SECURITY_ADMIN_USER=admin
+Environment=GF_ANALYTICS_REPORTING_ENABLED=false
+Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
+WorkingDirectory=/home/shane/grafana
+ExecStart=/home/shane/grafana/bin/grafana server --homepath=/home/shane/grafana
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
