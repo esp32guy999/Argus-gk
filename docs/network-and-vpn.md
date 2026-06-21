@@ -90,18 +90,42 @@ Made persistent via a watchdog (see below) since they don't survive a gluetun re
 - [x] **PIA fully removed from anvil** (uninstaller stopped+disabled daemon, removed files +
   all 4 `piavpn*` routing tables). anvil default route now `dev tailscale0` (exit node);
   exit IP = gg PIA `151.240.94.x`; dns/lan/ts all ok; no PIA processes or rules remain.
-- [x] **WiFi disabled, both hosts** → both single-homed on ethernet: anvil via
-  `nmcli radio wifi off` (reversible: `nmcli radio wifi on`); nyx via networkd
-  `00-wlx-down.network` (ActivationPolicy=always-down) **+** `rtw_8821cu` module blacklist
-  (`/etc/modprobe.d/disable-usb-wifi.conf`). nyx default route is now single via eno1.
-- [ ] build `anvil-vpn status|open|close` toggle CLI → tray app / Forge widget
-- [ ] cleanup: sync gluetun Unraid template (`HTTPPROXY=on`), remove parked `GluetunVPN_bak2`,
-  delete orphan `my-Gluetun.xml`; re-home Prometheus/Grafana off anvil (now reachable)
+- [x] **WiFi disabled, both hosts** → both single-homed on ethernet.
+  - **anvil:** `nmcli radio wifi off` ALONE was NOT enough — it reverted when eno1 briefly
+    deactivated and NM auto-failed-over to wifi (radio got re-enabled). Hardened properly:
+    `Wired connection 1` → `autoconnect-priority 100`, `autoconnect-retries 0` (infinite);
+    `Hogwarts` (wifi) → `connection.autoconnect no` (+ radio off). Now wifi can't take over.
+  - **nyx:** networkd `00-wlx-down.network` (ActivationPolicy=always-down) **+** `rtw_8821cu`
+    blacklist (`/etc/modprobe.d/disable-usb-wifi.conf`).
+  - NB: eno1 was found *deactivated by NM* (carrier was fine the whole time) — root cause of
+    that NM deactivation unknown; the autoconnect priority/retries should keep eth sticky.
+    Watch for recurrence (could be a DHCP-renewal hiccup from the eero).
+- [x] **`anvil-vpn` CLI + tray icon**: `/usr/local/bin/anvil-vpn {status|on|off|toggle|ip}`
+  (privileged ops via root `/usr/local/sbin/anvil-vpn-apply on|off` + scoped NOPASSWD
+  `/etc/sudoers.d/anvil-vpn`). GNOME tray app `~/.local/bin/anvil-vpn-tray`
+  (AyatanaAppIndicator3): 🟢 protected / 🟡 bypassed / 🔴 exit-node down, click-menu toggle,
+  10s poll, autostarts (`~/.config/autostart/anvil-vpn-tray.desktop`).
+- [x] cleanup: `:8888` proxy disabled (gluetun rebuilt `HTTPPROXY=off`), parked backups removed,
+  orphan `my-Gluetun.xml` deleted
+- [~] re-home Prometheus/Grafana off anvil → gg: **deferred.** Blocked: gg still can't reach
+  anvil (000, can't even ping `.6.220`) — NOT PIA (it's gone). Cause is the `.4`-vs-`.6` split:
+  gg has BOTH `br0` (192.168.4.206/22) and `shim-br0` (192.168.4.205/22, pi-hole macvlan) on the
+  same /22, so gg routes `.6.x` out `shim-br0` (macvlan) and it dies. Recommendation: **leave
+  Prom/Grafana on anvil** — they're GPU-free + tiny (no real cost to model perf), and untangling
+  gg's macvlan routing (touches pi-hole DNS) isn't worth it for these. Real long-term fix would be
+  putting anvil on the `.4` /24 like everything else (eero DHCP reservation) — separate project.
 - [ ] disable WiFi on anvil + nyx · control CLI/toggle · re-home Prom/Grafana
 
-## Robustness debts specific to this design
-- ts-pia-exit shares gluetun's netns → if gluetun restarts, ts-pia-exit loses networking and
-  must be restarted; and the legacy fwd rules must be re-asserted. Both handled by the watchdog.
+## Robustness notes + a gotcha that bit us
+- ts-pia-exit shares gluetun's netns. `--network container:GluetunVPN` binds to gluetun's
+  **container ID at creation** — so when gluetun is rebuilt (new ID/netns), ts-pia-exit must be
+  **RECREATED (`docker rm`+`run`), NOT restarted** (`restart` errors "cannot join network of a
+  non running container"). The watchdog now does the recreate; this self-heals a gluetun rebuild
+  in ≤2 min. (Learned the hard way 2026-06-21: a `restart` during the proxy-off rebuild killed
+  the exit node → anvil lost internet until Bypass was hit.)
+- LESSON: don't trust `anvil-vpn status` ("protected") for destructive cleanup — Tailscale can
+  lag marking a peer offline. Gate on **actual egress** (`anvil-vpn ip` non-empty) before
+  deleting a rollback container.
 - Exit node sits behind PIA NAT → anvil↔exit likely DERP-relayed (works, slightly higher latency).
 
 ## Cleanup debts (reconcile at the end)
