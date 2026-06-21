@@ -36,9 +36,9 @@ def build_registry() -> Registry:
         from .tools import navidrome
         lanes.append(("navidrome", "config/navidrome.yaml", navidrome.tools))
     if os.path.exists("config/openapi.yaml"):
-        from .tools import lidarr
-        if lidarr.has_config():                            # music acquisition (write side)
-            lanes.append(("lidarr-acquire", "config/openapi.yaml", lidarr.tools))
+        from .tools import arr_acquire
+        if arr_acquire.has_any():                          # *arr acquisition (write side)
+            lanes.append(("arr-acquire", "config/openapi.yaml", arr_acquire.tools))
 
     for name, path, load in lanes:
         try:
