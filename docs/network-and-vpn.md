@@ -1,0 +1,111 @@
+# Homelab network & VPN gateway
+
+Living doc for the 2026-06-21 network fix. **No secrets in here, ever.**
+
+## TL;DR
+The "flaky home network" is **not** the switch/cables. Root cause = the **PIA
+full-tunnel VPN running on anvil** (its killswitch blocks anvil's own LAN, breaks DNS,
+clamps MTU) plus **dual-homed WiFi** left up on anvil & nyx. Fix: move VPN egress **off
+anvil onto gg's gluetun** (already a healthy PIA exit), route anvil through it
+**fail-closed**, and disable WiFi on the wired servers.
+
+## Evidence (read-only diagnosis, 2026-06-21)
+- anvil `eno1`: 0 RX/TX errors, 0 carrier flaps over 7d → physical layer is healthy.
+- **Dual-homed:** anvil `eno1` 192.168.6.220 **+** WiFi `wlp9s0` 192.168.6.231, both with
+  default routes. nyx the same (`eno1` 192.168.4.29 + flaky Realtek USB WiFi 192.168.4.22).
+- anvil **PIA** (`pia-openvpn`, `tun0`): owns default via the `0/1`+`128/1` split; killswitch
+  (`fwmark 0x3214`, `suppress_prefixlength 1`, an `unreachable` rule); MTU clamped 1419;
+  Tailscale health check reports **DNS broken**.
+- Smoking gun: `ip route get 192.168.4.206` is **clean via eno1**, yet the TCP connection is
+  **blocked** → it's PIA's fwmark/iptables killswitch, not routing. Tailscale survives only
+  through PIA's table-52 carve-out. ⇒ **anvil's own VPN firewalls it off its LAN.**
+- gg host routing is clean (`default via br0`). gg runs two PIA containers:
+  `binhex-qbittorrentvpn` (qBit, healthy) and **`GluetunVPN` (idle — nothing rides it)**.
+
+## Decisions
+- VPN exit lives on **gg**, not a spare Pi: a container network namespace already isolates
+  the VPN from the host (that's why gg's host routing stays clean), so a Pi only adds
+  hardware for isolation we already get free.
+- Use the **idle GluetunVPN** (PIA) as the dedicated anvil exit; leave binhex for qBit.
+- Coverage = **whole-machine transparent** (all anvil traffic). **Fail-closed**, with
+  `192.168.0.0/16` + Tailscale `100.64.0.0/10` + gg carved out so the box is never
+  unreachable — only its internet egress pauses if the tunnel drops.
+- Transport anvil→gg = **WireGuard** into gluetun's namespace (anvil WG client → WG server
+  in gluetun ns → PIA). The gg→PIA leg stays OpenVPN.
+
+## Crack found (verify-before-build)
+gluetun does **not** support PIA over WireGuard — PIA is **OpenVPN-only** in gluetun (its WG
+list is Mullvad/Proton/Nord/etc., or `custom`). So WG can't be the gg→PIA protocol; it's only
+the anvil↔gg transport. gg→PIA = PIA OpenVPN (healthy, fine). Found via a test switch +
+clean rollback — no harm.
+
+## Plan / sequence (nothing destructive without a checkpoint)
+0. **Foundation proof:** enable gluetun's HTTP proxy, prove anvil→gg→PIA egress. ⟵ *running*
+1. WG server in gluetun's namespace on gg; publish its UDP port; allow via gluetun firewall.
+2. Disable PIA on anvil (heals LAN/DNS/MTU) — brief, accepted protection gap.
+3. anvil WG client → gg; policy routing: default→WG, exclude LAN + Tailscale + gg;
+   **fail-closed**. Verify exit IP = PIA via gg.
+4. Uninstall PIA on anvil via its **own uninstaller**; verify the heal.
+5. Disable WiFi on anvil + nyx (kill dual-homing / the flaky Realtek).
+6. Control CLI `anvil-vpn status|open|close` (scoped NOPASSWD) → later a tray app / Forge
+   widget: status display, fail-closed default, click toggles open.
+7. Re-home Prometheus/Grafana off anvil once it's a clean LAN citizen.
+
+## Safety / access lifelines
+- I run **on anvil** (local). LAN lifeline to gg = `ssh unraid` (192.168.4.206, non-Tailscale).
+  nyx LAN = 192.168.4.29.
+- Rollbacks: parked gluetun containers; PIA's own uninstaller; the fail-closed carve-outs
+  keep LAN + Tailscale up so the box is always reachable.
+
+## Security note
+The one shared password (anvil login/sudo + qBt/ABS/Navidrome/PIA) is a single point of total
+compromise and was exposed in chat → **top of the rotation list**. Mitigation: SSH key +
+scoped passwordless helper so day-to-day doesn't need it. The value is never written to any
+file/doc/commit.
+
+## Transport: Tailscale exit node (chosen over hand-rolled WireGuard)
+gg runs **`ts-pia-exit`** (image `tailscale/tailscale`, `--network container:GluetunVPN`,
+kernel mode, `--advertise-exit-node`), tailnet IP `100.111.127.31`, approved as exit node.
+anvil will just `tailscale set --exit-node=gg-pia-exit --exit-node-allow-lan-access` — **no
+anvil-side WG config / routing / killswitch**, and the toggle app becomes a one-liner
+(`--exit-node=` cleared vs set).
+
+**Gotcha fixed:** gluetun (iptables-**legacy**, `FORWARD` policy DROP) and Tailscale
+(iptables-**nft**) write to different netfilter backends, so gluetun silently dropped the
+forwarded traffic. Fix, added to gluetun's **legacy** tables:
+`FORWARD ACCEPT tailscale0<->tun0` + `nat POSTROUTING MASQUERADE -s 100.64.0.0/10 -o tun0`.
+Made persistent via a watchdog (see below) since they don't survive a gluetun restart.
+
+## Status
+- [x] root cause = PIA on anvil; physical layer fine
+- [x] gluetun = healthy PIA exit (OpenVPN + HTTP proxy `:8888`)
+- [x] `ts-pia-exit` built + approved as exit node
+- [x] **PROVEN from nyx**: routed via gg-pia-exit → exit IP PIA `151.240.94.x`, DNS+routing
+  both egress PIA, LAN preserved, clean revert
+- [x] persistence watchdog: `/boot/config/scripts/ts-pia-exit-watchdog.sh`, cron `*/2`,
+  go-file boot-recreate; re-asserts fwd rules + recovers ts-pia-exit on gluetun restart
+- [x] **anvil cutover verified GREEN**: PIA daemon stopped, exit-node set; anvil exit IP =
+  gg's PIA `151.240.94.x`, DNS ok, LAN+Tailscale ok, network healed (tun0/fwmark gone,
+  anvil→gg LAN open). *Reversible state* — PIA stopped but still installed+enabled.
+- [x] **PIA fully removed from anvil** (uninstaller stopped+disabled daemon, removed files +
+  all 4 `piavpn*` routing tables). anvil default route now `dev tailscale0` (exit node);
+  exit IP = gg PIA `151.240.94.x`; dns/lan/ts all ok; no PIA processes or rules remain.
+- [x] **WiFi disabled, both hosts** → both single-homed on ethernet: anvil via
+  `nmcli radio wifi off` (reversible: `nmcli radio wifi on`); nyx via networkd
+  `00-wlx-down.network` (ActivationPolicy=always-down) **+** `rtw_8821cu` module blacklist
+  (`/etc/modprobe.d/disable-usb-wifi.conf`). nyx default route is now single via eno1.
+- [ ] build `anvil-vpn status|open|close` toggle CLI → tray app / Forge widget
+- [ ] cleanup: sync gluetun Unraid template (`HTTPPROXY=on`), remove parked `GluetunVPN_bak2`,
+  delete orphan `my-Gluetun.xml`; re-home Prometheus/Grafana off anvil (now reachable)
+- [ ] disable WiFi on anvil + nyx · control CLI/toggle · re-home Prom/Grafana
+
+## Robustness debts specific to this design
+- ts-pia-exit shares gluetun's netns → if gluetun restarts, ts-pia-exit loses networking and
+  must be restarted; and the legacy fwd rules must be re-asserted. Both handled by the watchdog.
+- Exit node sits behind PIA NAT → anvil↔exit likely DERP-relayed (works, slightly higher latency).
+
+## Cleanup debts (reconcile at the end)
+- gluetun now runs from a `docker run` (proxy enabled) that **diverges from the Unraid
+  template** — sync the template (`HTTPPROXY=on`) so a UI recreate doesn't revert it.
+- Remove parked containers (`GluetunVPN_bak2`) once the build is finalized.
+- Delete the orphan `my-Gluetun.xml` template.
