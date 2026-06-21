@@ -3,6 +3,7 @@ import json
 import uuid
 import asyncio
 import pathlib
+import ipaddress
 from typing import Set, Dict, Any
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -11,6 +12,7 @@ from argus.main import build_registry
 from argus import loop
 from argus.storage import Store
 import httpx
+import relogin
 
 STATIC = pathlib.Path(__file__).parent / "static"
 PRESETS = pathlib.Path(__file__).parent / "presets"
@@ -68,6 +70,13 @@ async def _bind_task_loop():
     # Capture the server's event loop so background tasks can be scheduled onto it
     # from sync tool calls (run_coroutine_threadsafe).
     task_mgr.loop = asyncio.get_running_loop()
+    # Kill any login procs orphaned by a previous server life (see relogin.py).
+    relogin.manager.sweep_orphans()
+
+
+@app.on_event("shutdown")
+async def _relogin_shutdown():
+    relogin.manager.shutdown()
 
 def publish(event_name: str, data: Any):
     """Publish event to all subscribers."""
@@ -214,6 +223,22 @@ async def ab_grab(request: Request):
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
+@app.get("/argus/weather/current")
+async def weather_current(location: str = "Dahlonega, GA"):
+    from argus.tools import weather
+    try:
+        return JSONResponse(await asyncio.to_thread(weather.current, location))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+@app.get("/argus/weather/forecast")
+async def weather_forecast(location: str = "Dahlonega, GA", days: int = 5):
+    from argus.tools import weather
+    try:
+        return JSONResponse(await asyncio.to_thread(weather.forecast, location, days))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
 @app.get("/argus/tasks")
 async def list_tasks():
     return JSONResponse(task_mgr.list())
@@ -323,6 +348,53 @@ async def ha_proxy(path: str, request: Request):
             )
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
+
+# ── Remote Claude re-login ────────────────────────────────────────────────────
+# Complete a forced `claude auth login` from a phone (see ui/relogin.py). The app
+# binds 0.0.0.0, so these routes — which can rewrite credentials — are gated to
+# loopback + Tailscale (100.64.0.0/10) only, never the public/LAN interface.
+_TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _relogin_guard(request: Request):
+    host = request.client.host if request.client else ""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not (ip.is_loopback or ip in _TAILSCALE_NET):
+        raise HTTPException(status_code=403,
+                            detail="re-login is allowed only from loopback or Tailscale")
+
+
+@app.get("/relogin/status")
+async def relogin_status(request: Request):
+    _relogin_guard(request)
+    return JSONResponse(await asyncio.to_thread(relogin.manager.auth_status))
+
+
+@app.post("/relogin/start")
+async def relogin_start(request: Request):
+    _relogin_guard(request)
+    try:
+        return JSONResponse(await asyncio.to_thread(relogin.manager.start))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/relogin/code")
+async def relogin_code(request: Request):
+    _relogin_guard(request)
+    body = await request.json()
+    sid = body.get("session_id", "")
+    code = body.get("code", "")
+    if not sid or not code:
+        raise HTTPException(status_code=400, detail="missing session_id or code")
+    try:
+        return JSONResponse(await asyncio.to_thread(relogin.manager.submit_code, sid, code))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
