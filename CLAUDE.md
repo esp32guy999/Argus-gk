@@ -21,13 +21,13 @@ anything not covered below.)
   transparently **behind PIA via gg's Tailscale exit node** (`gg-pia-exit`), fail-closed —
   toggle with `anvil-vpn on|off` (tray icon). So anvil still reaches AudiobookBay. No local VPN
   anymore (PIA was uninstalled; see `docs/network-and-vpn.md`). This is where Argus runs.
-- **nyx** — Forge/legacy UIs, the **peace** app, hermes-gateway, the retired Hermes. On the
-  home ISP IP (no VPN). (Home Assistant moved off nyx to glassgarden 2026-06-21.)
+- **nyx** — **Home Assistant** (`:8123`, Docker), Forge/legacy UIs, the **peace** app,
+  hermes-gateway, the retired Hermes. On the home ISP IP (no VPN). (A gg HA migration was
+  attempted 2026-06-21 but PAUSED — HA stays on nyx; see `docs/network-and-vpn.md` + memory.)
 - **glassgarden** — Unraid NAS (`192.168.4.206`, user `root`, `ssh unraid`). Hosts media
-  services + downloaders, **Home Assistant** (`:8123`, Docker, migrated from nyx), the
-  **PIA VPN exit** (gluetun + `gg-pia-exit` Tailscale exit node that anvil routes through),
-  and **Prometheus `:9091` + Grafana `:3000`** monitoring (Docker, scrapes anvil; see
-  `deploy/monitoring/`).
+  services + downloaders, the **PIA VPN exit** (gluetun + `gg-pia-exit` Tailscale exit node
+  that anvil routes through), and **Prometheus `:9091` + Grafana `:3000`** monitoring (Docker,
+  scrapes anvil; see `deploy/monitoring/`). (Has a stopped HA container from the paused migration.)
 - **claude-box** — Ubuntu VM.
 
 ### Services on glassgarden
@@ -37,7 +37,7 @@ Audiobookshelf `:13378`. (API keys live in `/home/shane/tools.md` /
 `~/.claude/projects/-home-shane/memory/` — Read when needed; don't guess.)
 
 ### Other
-- Home Assistant: `http://glassgarden:8123` (Docker on gg; token in credentials.env). Atlanta, GA / Eastern time.
+- Home Assistant: `http://nyx:8123` (Docker on nyx; token in credentials.env — note: stale, needs reissue). Atlanta, GA / Eastern time.
 - 3D printer: Bambu P1S `192.168.4.31`.
 - Local chat models via llama-swap on `anvil:9090` (gemma4-26b, Qwen3-80B, …).
 
