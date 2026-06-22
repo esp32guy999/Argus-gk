@@ -1,5 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#0f1115"/>
-  <circle cx="256" cy="256" r="150" fill="none" stroke="#7c5cff" stroke-width="20"/>
-  <g transform="translate(180.69 350.00) scale(0.26331 -0.26331)"><path d="M97 0V714H182V626Q325 609 400.0 548.0Q475 487 475 367Q475 289 450.5 237.5Q426 186 384.0 155.5Q342 125 290.0 109.5Q238 94 182 88V0ZM182 164Q247 175 291.0 193.5Q335 212 357.5 251.5Q380 291 380 364Q380 453 331.5 493.5Q283 534 182 546Z" fill="#7c5cff"/></g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="46%" r="62%">
+      <stop offset="0%" stop-color="#18161f"/>
+      <stop offset="100%" stop-color="#090910"/>
+    </radialGradient>
+    <radialGradient id="iris" cx="42%" cy="40%" r="62%">
+      <stop offset="0%" stop-color="#ffaa50"/>
+      <stop offset="100%" stop-color="#cd500a"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f97316" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#f97316" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="200" fill="url(#glow)"/>
+  <!-- almond eye outline -->
+  <path d="M102 256 A181.8 181.8 0 0 1 410 256 A181.8 181.8 0 0 1 102 256 Z"
+        fill="#14101a" stroke="#ff963c" stroke-width="14" stroke-linejoin="round"/>
+  <circle cx="256" cy="256" r="64" fill="url(#iris)"/>
+  <circle cx="256" cy="256" r="27" fill="#0e0b10"/>
+  <circle cx="236" cy="230" r="12" fill="#f0eefa"/>
 </svg>
