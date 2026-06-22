@@ -450,7 +450,7 @@ function _wrapSwipeDelete(msgEl) {
   row.className = 'swipe-row';
   const quoteBg = document.createElement('div');   // revealed on RIGHT swipe
   quoteBg.className = 'swipe-quote-bg';
-  quoteBg.textContent = '↩ Quote';
+  quoteBg.textContent = '⧉ Copy';
   const bg = document.createElement('div');         // revealed on LEFT swipe
   bg.className = 'swipe-delete-bg';
   bg.textContent = 'Delete';
@@ -514,8 +514,10 @@ function _wrapSwipeDelete(msgEl) {
         row.remove();
       }, { once: true });
     } else if (pct >= THRESHOLD && dx > 0) {
-      // RIGHT swipe -> quote-reply: the captured selection, else the whole bubble
-      quoteToInput(capturedSel || _bubbleText(msgEl));
+      // RIGHT swipe -> open a copy sheet with the bubble's content (captured
+      // selection, else whole bubble). The sheet uses native iOS selection, which
+      // works where the programmatic clipboard API doesn't over plain http.
+      showCopySheet(capturedSel || _bubbleText(msgEl));
       msgEl.style.transition = 'transform 0.2s ease';
       msgEl.style.transform = '';
     } else {
@@ -539,15 +541,93 @@ function _bubbleText(msgEl) {
   return clone.textContent.trim();
 }
 
-// Drop quoted text into the chat input as a markdown blockquote, ready to send.
-function quoteToInput(text) {
+// Copy text to the clipboard. navigator.clipboard requires a secure context
+// (https/localhost); the Forge UI is served plain-http on the LAN, so on iOS it
+// falls back to the legacy textarea+execCommand path (works inside the swipe's
+// touch gesture, which counts as user activation).
+function copyToClipboard(text) {
+  if (!text) return false;
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => _legacyCopy(text));
+    return true;
+  }
+  return _legacyCopy(text);
+}
+
+function _legacyCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  // iOS needs an editable, on-screen-ish, ≥16px element to allow a copy.
+  ta.contentEditable = 'true';
+  ta.readOnly = false;
+  ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;font-size:16px;background:transparent;';
+  document.body.appendChild(ta);
+  ta.focus();
+  const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (isIOS) {
+    // iOS won't copy from a plain .select(); it needs a real Range selection.
+    const range = document.createRange();
+    range.selectNodeContents(ta);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    ta.setSelectionRange(0, text.length);
+  } else {
+    ta.select();
+  }
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  try { window.getSelection().removeAllRanges(); } catch {}
+  ta.remove();
+  return ok;
+}
+
+// Tiny transient toast (bottom-center) for actions with no other visible result.
+function showToast(msg) {
+  let t = document.getElementById('app-toast');
+  if (!t) { t = document.createElement('div'); t.id = 'app-toast'; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => t.classList.remove('show'), 1400);
+}
+
+// Copy sheet — present the text pre-selected so iOS's NATIVE copy (the selection
+// callout / long-press → Copy) does the work. The programmatic clipboard API is
+// unavailable over plain http on iOS, so we lean on the OS instead of fighting it.
+function showCopySheet(text) {
   if (!text) return;
-  const quoted = text.split('\n').map(l => '> ' + l).join('\n');
-  const cur = inputEl.value;
-  inputEl.value = quoted + '\n\n' + cur;
-  inputEl.focus();
-  try { inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length); } catch {}
-  inputEl.dispatchEvent(new Event('input', { bubbles: true })); // auto-grow + enable send
+  document.getElementById('copy-sheet')?.remove();
+  const sheet = document.createElement('div');
+  sheet.id = 'copy-sheet';
+  sheet.innerHTML = `
+    <div class="cs-backdrop"></div>
+    <div class="cs-panel">
+      <div class="cs-head">Copy <span class="cs-hint">— selected; tap <b>Copy</b> in the iOS menu, or the button</span></div>
+      <textarea class="cs-text" readonly autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+      <div class="cs-actions">
+        <button class="cs-copy">Copy</button>
+        <button class="cs-close">Done</button>
+      </div>
+    </div>`;
+  document.body.appendChild(sheet);
+  const ta = sheet.querySelector('.cs-text');
+  ta.value = text;
+  const close = () => sheet.remove();
+  sheet.querySelector('.cs-backdrop').onclick = close;
+  sheet.querySelector('.cs-close').onclick = close;
+  // A clean button tap is the most reliable user-gesture for the legacy copy path.
+  sheet.querySelector('.cs-copy').onclick = () => {
+    const ok = copyToClipboard(text);
+    if (ok) { showToast('⧉ Copied'); close(); }
+    else showToast('Select the text above → Copy');
+  };
+  // Auto-select so iOS surfaces its native Copy callout immediately.
+  setTimeout(() => {
+    ta.focus();
+    try { ta.setSelectionRange(0, text.length); } catch {}
+  }, 60);
 }
 
 function renderHistory(msgs) {

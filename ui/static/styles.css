@@ -1344,3 +1344,48 @@ body {
 .sp-activity .act-think  { color: var(--text-dim); font-style: italic; white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
 .sp-activity .act-tool   { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; margin: 3px 0; }
 .sp-activity .act-result { color: var(--text-dim); opacity: .8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; margin: 2px 0 4px; }
+
+/* Transient toast (e.g. swipe-to-copy confirmation) */
+#app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 76px);
+  transform: translateX(-50%) translateY(8px);
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s, transform .18s;
+  z-index: 9999;
+}
+#app-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Copy sheet — native-iOS-selection copy (right-swipe) */
+#copy-sheet { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: flex-end; }
+#copy-sheet .cs-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.5); }
+#copy-sheet .cs-panel {
+  position: relative; width: 100%;
+  background: var(--surface, #16161c); border-top: 1px solid var(--border);
+  border-radius: 16px 16px 0 0; padding: 14px 14px calc(env(safe-area-inset-bottom, 0px) + 14px);
+  box-shadow: 0 -8px 30px rgba(0,0,0,0.4);
+}
+#copy-sheet .cs-head { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+#copy-sheet .cs-hint { font-size: 11px; font-weight: 400; color: var(--text-dim); }
+#copy-sheet .cs-text {
+  width: 100%; min-height: 120px; max-height: 45vh; resize: none;
+  background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px; font-size: 16px; /* >=16px stops iOS zoom */
+  line-height: 1.4; -webkit-user-select: text; user-select: text;
+}
+#copy-sheet .cs-actions { display: flex; gap: 8px; margin-top: 10px; }
+#copy-sheet .cs-copy, #copy-sheet .cs-close {
+  flex: 1; padding: 11px; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer;
+}
+#copy-sheet .cs-copy { background: var(--accent); color: #fff; border: none; }
+#copy-sheet .cs-close { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
