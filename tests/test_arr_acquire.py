@@ -34,7 +34,8 @@ class _H(BaseHTTPRequestHandler):
                                "tmdbId": 1, "tvdbId": 2, "foreignArtistId": "x"}])
         elif p.endswith("/qualityprofile"):
             self._j(200, [{"id": 1, "name": "Any"}, {"id": 4, "name": "HD-1080p"},
-                          {"id": 7, "name": "Lossless"}, {"id": 9, "name": "eBook"}])
+                          {"id": 7, "name": "Lossless"}, {"id": 9, "name": "eBook"},
+                          {"id": 11, "name": "Spoken"}])
         elif p.endswith("/metadataprofile"):
             self._j(200, [{"id": 1, "name": "Standard"}])
         elif p.endswith("/rootfolder"):
@@ -111,13 +112,13 @@ def main() -> int:
             assert "not found" in str(e), str(e)
         print("PASS: invalid monitor/quality -> teaching ModelRetry")
 
-        # readarr: author noun, v1, metadata profile, searchForMissingBooks
+        # readarr/bookshelf: defaults to the Spoken (audiobook) profile, not eBook
         POSTS.clear()
-        out = by["readarr_add_author"].func(author="Brandon Sanderson", quality="eBook")
+        out = by["readarr_add_author"].func(author="Brandon Sanderson")
         b = POSTS["/api/v1/author"]
-        assert b["metadataProfileId"] == 1 and b["qualityProfileId"] == 9, b
+        assert b["metadataProfileId"] == 1 and b["qualityProfileId"] == 11, b  # Spoken, not eBook(9)
         assert b["addOptions"]["searchForMissingBooks"] is True, b
-        print("PASS: readarr_add_author body (eBook quality, metadata, searchForMissingBooks)")
+        print("PASS: readarr_add_author defaults to Spoken/audiobook profile")
 
         # radarr: HD-1080p profile, /media root, minimumAvailability, searchForMovie
         POSTS.clear()

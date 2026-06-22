@@ -59,12 +59,13 @@ SPECS = {
                    desc="Add a music artist to Lidarr and start downloading their albums.",
                    example={"artist": "Cyndi Lauper", "monitor": "latest"}),
     "readarr": dict(api="v1", noun="author", param="author", tool="readarr_add_author",
-                    lookup="/author/lookup", add="/author", qp_prefer="eBook",
+                    lookup="/author/lookup", add="/author", qp_prefer="Spoken",
                     metadata=True, monitor_values=_MUSIC_MON, monitor_default="all",
                     search_opt="searchForMissingBooks", extra=None,
                     search_cmd=("AuthorSearch", "authorId", False),
-                    tags=["book", "readarr", "add", "acquire", "download", "get", "author", "ebook"],
-                    desc="Add an author to Readarr and start downloading their books.",
+                    tags=["audiobook", "readarr", "bookshelf", "add", "acquire", "download", "get", "author"],
+                    desc="Add an author to Readarr/Bookshelf and download their audiobooks "
+                         "(Spoken profile; imports to the Audiobookshelf library).",
                     example={"author": "Brandon Sanderson"}),
 }
 
