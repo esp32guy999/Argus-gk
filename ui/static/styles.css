@@ -1389,3 +1389,7 @@ body {
 }
 #copy-sheet .cs-copy { background: var(--accent); color: #fff; border: none; }
 #copy-sheet .cs-close { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+
+/* Panoptes nav icon set — linework follows currentColor (dim/active), focal "eye" stays lit */
+#side-nav svg .ico { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#side-nav svg .eye { fill: var(--accent, #7c5cff); stroke: none; }

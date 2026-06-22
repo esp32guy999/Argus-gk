@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Argus — Rune Icon Set (draft)</title>
+<style>
+  :root{
+    --bg:#0a0a0f; --surface:#16161c; --surface2:#1f1f28; --border:#2a2a36;
+    --text:#e8e8ef; --dim:#8a8a9a; --accent:#7c5cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.5 ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif;padding:28px 18px 60px}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{color:var(--dim);margin:0 0 22px;font-size:13px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+    padding:16px 12px 12px;display:flex;flex-direction:column;align-items:center;gap:10px}
+  .glyph{color:var(--text)}
+  .sizes{display:flex;align-items:center;gap:12px;color:var(--dim)}
+  .sizes svg{display:block}
+  .label{font-weight:600;font-size:13px}
+  .runename{color:var(--accent);font-size:11px;letter-spacing:.04em}
+  /* shared icon style — matches the nav: 24x24, currentColor, carved (square joins) */
+  .ico{fill:none;stroke:currentColor;stroke-width:1.8;
+    stroke-linecap:square;stroke-linejoin:miter}
+  .ico .node{fill:currentColor;stroke:none}
+  .ico .half{fill:currentColor;stroke:none;opacity:.9}
+  .row2{display:flex;gap:22px;flex-wrap:wrap;align-items:center;margin-top:26px;
+    padding:14px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:12px}
+  .row2 .label{color:var(--dim);font-weight:500}
+  .navbar{display:flex;gap:6px;background:#000;border:1px solid var(--border);
+    border-radius:12px;padding:8px}
+  .navbar a{color:var(--dim);padding:7px;border-radius:8px}
+  .navbar a:hover{color:var(--text);background:var(--surface2)}
+  .navbar a.active{color:var(--accent);background:rgba(124,92,255,.12)}
+</style>
+</head>
+<body>
+<h1>Argus — Rune Icon Set <span style="color:var(--accent)">(draft v1)</span></h1>
+<p class="sub">Carved line-art, 24×24, <code>currentColor</code> — drop-in for the nav. Each reads as its function but built from straight runic strokes. Shown at 44 / 28 / 20&nbsp;px.</p>
+
+<div class="grid" id="grid"></div>
+
+<div class="row2">
+  <span class="label">In a nav bar →</span>
+  <div class="navbar" id="navbar"></div>
+</div>
+
+<script>
+// Each icon's inner markup (paths use the .ico class for shared stroke style).
+const ICONS = {
+  chat: {
+    rune: 'ᛗ messaging',
+    svg: `<path class="ico" d="M4 5 L20 5 L20 14 L9 14 L5 18 L5 14 L4 14 Z"/>
+          <path class="ico" d="M8 9 L8 11 M12 9 L12 11 M16 9 L16 11"/>`
+  },
+  canvas: {
+    rune: 'ᛜ Ingwaz — frame/grid',
+    svg: `<path class="ico" d="M12 3 L21 12 L12 21 L3 12 Z"/>
+          <path class="ico" d="M12 3 L12 21 M3 12 L21 12"/>`
+  },
+  briefing: {
+    rune: 'ᛒ Berkana — open pages',
+    svg: `<path class="ico" d="M12 6 L12 20"/>
+          <path class="ico" d="M12 7 L5 5 L5 18 L12 20"/>
+          <path class="ico" d="M12 7 L19 5 L19 18 L12 20"/>`
+  },
+  gpu: {
+    rune: 'carved die',
+    svg: `<path class="ico" d="M7 7 L17 7 L17 17 L7 17 Z"/>
+          <path class="ico" d="M10 10 L14 10 L14 14 L10 14 Z"/>
+          <path class="ico" d="M10 7 V4 M14 7 V4 M10 17 V20 M14 17 V20 M7 10 H4 M7 14 H4 M17 10 H20 M17 14 H20"/>`
+  },
+  network: {
+    rune: 'ᛉ Algiz — branching nodes',
+    svg: `<path class="ico" d="M12 21 L12 9 M12 9 L6 3 M12 9 L18 3 M12 14 L5 11 M12 14 L19 11"/>
+          <circle class="node" cx="6" cy="3" r="1.6"/><circle class="node" cx="18" cy="3" r="1.6"/>
+          <circle class="node" cx="5" cy="11" r="1.4"/><circle class="node" cx="19" cy="11" r="1.4"/>
+          <circle class="node" cx="12" cy="21" r="1.6"/>`
+  },
+  tools: {
+    rune: 'ᚷ Gebo — crossed staves',
+    svg: `<path class="ico" d="M5 5 L19 19 M19 5 L5 19"/>
+          <path class="ico" d="M5 5 L8 5 L5 8 M19 19 L16 19 L19 16 M19 5 L16 5 L19 8 M5 19 L8 19 L5 16"/>`
+  },
+  convos: {
+    rune: 'stacked speech',
+    svg: `<path class="ico" d="M3 5 L13 5 L13 12 L8 12 L5 15 L5 12 L3 12 Z"/>
+          <path class="ico" d="M10 9 L21 9 L21 16 L16 16 L16 19 L13 16 L10 16 Z"/>`
+  },
+  theme: {
+    rune: 'ᛋ Sowilo — sun / dark-light',
+    svg: `<path class="ico" d="M12 8 L16 12 L12 16 L8 12 Z"/>
+          <path class="half" d="M12 8 L16 12 L12 16 Z"/>
+          <path class="ico" d="M12 3 V6 M12 18 V21 M3 12 H6 M18 12 H21 M6 6 L8 8 M16 16 L18 18 M18 6 L16 8 M8 16 L6 18"/>`
+  },
+};
+
+const SIZES = [44, 28, 20];
+const grid = document.getElementById('grid');
+for (const [name, def] of Object.entries(ICONS)) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="sizes">${SIZES.map(s =>
+      `<svg class="glyph" width="${s}" height="${s}" viewBox="0 0 24 24">${def.svg}</svg>`).join('')}</div>
+    <div class="label">${name}</div>
+    <div class="runename">${def.rune}</div>`;
+  grid.appendChild(card);
+}
+
+// Nav-bar mock at real nav size
+const nav = document.getElementById('navbar');
+Object.entries(ICONS).forEach(([name, def], i) => {
+  const a = document.createElement('a');
+  if (i === 0) a.className = 'active';
+  a.title = name;
+  a.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24">${def.svg}</svg>`;
+  nav.appendChild(a);
+});
+</script>
+</body>
+</html>

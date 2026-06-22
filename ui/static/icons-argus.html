@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Argus — Panoptes Icon Set (draft)</title>
+<style>
+  :root{
+    --bg:#0a0a0f; --surface:#15151c; --surface2:#1e1e28; --border:#2a2a36;
+    --text:#e8e8ef; --dim:#7d7d8d; --accent:#f97316;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.5 ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif;padding:28px 18px 70px}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{color:var(--dim);margin:0 0 6px;font-size:13px;max-width:60ch}
+  .sub b{color:var(--accent)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;margin-top:22px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+    padding:18px 12px 13px;display:flex;flex-direction:column;align-items:center;gap:11px}
+  .sizes{display:flex;align-items:center;gap:14px}
+  .sizes svg{display:block}
+  .label{font-weight:600;font-size:13px}
+  .note{color:var(--dim);font-size:11px;text-align:center;min-height:13px}
+  /* icon system: linework follows currentColor; the focal "eye/core" is always lit accent */
+  .ico{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .eye{fill:var(--accent);stroke:none}
+  .row2{display:flex;gap:26px;flex-wrap:wrap;align-items:center;margin-top:30px;
+    padding:16px 18px;background:var(--surface2);border:1px solid var(--border);border-radius:14px}
+  .row2 .label{color:var(--dim);font-weight:500}
+  .navbar{display:flex;gap:5px;background:#000;border:1px solid var(--border);border-radius:14px;padding:8px}
+  .navbar a{color:var(--dim);padding:8px;border-radius:9px;line-height:0}
+  .navbar a.active{color:var(--accent);background:rgba(249,115,22,.13)}
+</style>
+</head>
+<body>
+<h1>Argus — <span style="color:var(--accent)">Panoptes</span> icon set <span style="color:var(--dim);font-weight:400">· draft v1</span></h1>
+<p class="sub">After Argus Panoptes, the all-seeing guardian. Clean rounded-geometric glyphs, each with one <b>living amber focal point</b> — a watching eye / lit core that stays on even when the tab is inactive. Linework follows <code>currentColor</code> (dims when idle, goes accent when active); the focal stays lit. Shown at 44 / 28 / 20&nbsp;px.</p>
+
+<div class="grid" id="grid"></div>
+
+<div class="row2">
+  <span class="label">Nav — idle (focal stays lit):</span>
+  <div class="navbar" id="nav-idle"></div>
+  <span class="label">active:</span>
+  <div class="navbar" id="nav-active"></div>
+</div>
+
+<script>
+const ICONS = {
+  chat: { note: 'eye watching the bubble',
+    svg:`<path class="ico" d="M6 4 H18 A3 3 0 0 1 21 7 V13 A3 3 0 0 1 18 16 H11 L7 19 V16 H6 A3 3 0 0 1 3 13 V7 A3 3 0 0 1 6 4 Z"/>
+         <circle class="eye" cx="12" cy="9.5" r="2.1"/>` },
+  canvas: { note: 'one live panel',
+    svg:`<rect class="ico" x="3" y="4" width="8.4" height="7" rx="1.7"/>
+         <rect class="eye" x="13" y="4" width="8" height="5" rx="1.6"/>
+         <rect class="ico" x="3" y="13" width="8.4" height="7" rx="1.7"/>
+         <rect class="ico" x="13" y="11" width="8" height="9" rx="1.7"/>` },
+  briefing: { note: 'agenda + headline',
+    svg:`<rect class="ico" x="4" y="3" width="16" height="18" rx="2.6"/>
+         <rect class="eye" x="7.5" y="7" width="9" height="2.2" rx="1.1"/>
+         <path class="ico" d="M7.5 12.5 H16.5 M7.5 15.5 H14"/>` },
+  gpu: { note: 'glowing die',
+    svg:`<rect class="ico" x="6" y="6" width="12" height="12" rx="2.6"/>
+         <rect class="eye" x="9.6" y="9.6" width="4.8" height="4.8" rx="1.1"/>
+         <path class="ico" d="M9 6 V3 M12 6 V3 M15 6 V3 M9 18 V21 M12 18 V21 M15 18 V21 M6 9 H3 M6 12 H3 M6 15 H3 M18 9 H21 M18 12 H21 M18 15 H21"/>` },
+  network: { note: 'watchful hub',
+    svg:`<path class="ico" d="M10.3 10.3 L6.4 6.4 M13.7 10.3 L17.6 6.4 M10.3 13.7 L6.4 17.6 M13.7 13.7 L17.6 17.6"/>
+         <circle class="ico" cx="5" cy="5" r="1.9"/><circle class="ico" cx="19" cy="5" r="1.9"/>
+         <circle class="ico" cx="5" cy="19" r="1.9"/><circle class="ico" cx="19" cy="19" r="1.9"/>
+         <circle class="eye" cx="12" cy="12" r="2.7"/>` },
+  tools: { note: 'gear w/ lit core',
+    svg:`<circle class="ico" cx="12" cy="12" r="5"/>
+         <circle class="eye" cx="12" cy="12" r="2"/>
+         <path class="ico" d="M12 7 V5 M12 17 V19 M7 12 H5 M17 12 H19 M8.5 8.5 L7.1 7.1 M15.5 8.5 L16.9 7.1 M8.5 15.5 L7.1 16.9 M15.5 15.5 L16.9 16.9"/>` },
+  convos: { note: 'thread list',
+    svg:`<rect class="ico" x="3" y="4" width="18" height="13" rx="3"/>
+         <path class="ico" d="M8 17 V20 L11 17"/>
+         <rect class="eye" x="7" y="7.4" width="7" height="2" rx="1"/>
+         <path class="ico" d="M7 11.4 H17 M7 14 H15"/>` },
+  theme: { note: 'light / dark',
+    svg:`<circle class="ico" cx="12" cy="12" r="7.5"/>
+         <path class="eye" d="M12 4.5 A7.5 7.5 0 0 1 12 19.5 Z"/>` },
+};
+
+const SIZES = [44, 28, 20];
+const grid = document.getElementById('grid');
+for (const [name, def] of Object.entries(ICONS)) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="sizes">${SIZES.map(s =>
+      `<svg width="${s}" height="${s}" viewBox="0 0 24 24">${def.svg}</svg>`).join('')}</div>
+    <div class="label">${name}</div>
+    <div class="note">${def.note}</div>`;
+  grid.appendChild(card);
+}
+const mkNav = (el, active) => Object.entries(ICONS).forEach(([name, def], i) => {
+  const a = document.createElement('a');
+  if (active && i === 0) a.className = 'active';
+  a.title = name;
+  a.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24">${def.svg}</svg>`;
+  el.appendChild(a);
+});
+mkNav(document.getElementById('nav-idle'), false);
+mkNav(document.getElementById('nav-active'), true);
+</script>
+</body>
+</html>
