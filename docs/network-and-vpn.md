@@ -57,6 +57,22 @@ clean rollback — no harm.
 - Rollbacks: parked gluetun containers; PIA's own uninstaller; the fail-closed carve-outs
   keep LAN + Tailscale up so the box is always reachable.
 
+## HA migration nyx → glassgarden (2026-06-21)
+Home Assistant moved off nyx to gg (Docker, host network, `:8123`) as part of consolidating
+services onto gg. Export/import: `tar` the `/config` dir nyx→gg, run the HA container on gg.
+Upgraded 2026.5.2 → **2026.6.4** by switching the image tag to `:stable` (Watchtower keeps it
+current nightly). Clean DB migration, no errors.
+- **Re-pointed `nyx:8123` → `glassgarden:8123`** everywhere: Argus `HA_URL` (canonical
+  credentials.env + anvil replica), the HA MCP server in `~/.claude.json` + `~/.claude/settings.json`
+  (`/mcp_server/sse`), `~/morning-briefing.md`, nyx hermes `cb-homelab/SKILL.md`, argus `CLAUDE.md`,
+  memory. Restarted argus-ui + hermes-gateway to reload. (MCP change takes effect next CC session.)
+- **Old nyx HA parked** for rollback: stopped, `--restart=no` (won't auto-start on a nyx reboot
+  and conflict). Decommission after a soak.
+- The 4 gg containers (HA, Prometheus, Grafana, ts-pia-exit) got proper Unraid **templates +
+  WebUI labels** (`net.unraid.docker.webui`) so they show icons + WebUI buttons and aren't orphans.
+  They still read "3rd party" in CA (cosmetic — only catalog-installed apps avoid it); Watchtower
+  updates them regardless of CA status.
+
 ## Security note
 The one shared password (anvil login/sudo + qBt/ABS/Navidrome/PIA) is a single point of total
 compromise and was exposed in chat → **top of the rotation list**. Mitigation: SSH key +
