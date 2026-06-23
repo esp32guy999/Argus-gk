@@ -33,6 +33,13 @@ HISTORY_TURNS = int(os.environ.get("ARGUS_HISTORY_TURNS", "20"))  # max prior ms
 store = Store(DB_PATH)
 
 
+# Local-model serving goes through llama-swap (MODEL_URL → :9090), which loads the
+# requested model on demand and keeps one resident at a time. No launcher lives here:
+# the 80B is just another llama-swap entry now. claude-code stays on its own cloud
+# path (see chat()), so selecting it never touches llama-swap or evicts the 80B.
+_LOCAL_BASE = MODEL_URL.rsplit("/v1", 1)[0]
+
+
 def _cid(value) -> str:
     """Map a missing/empty conversation_id to the single 'default' thread."""
     return value or "default"
@@ -154,8 +161,7 @@ async def chat(request: Request):
                     # Keep the always-on status pill driven on tool use (as before)...
                     if ev.get("kind") == "tool_use":
                         on_event("tool", ev.get("name", "tool"), 0)
-                    elif ev.get("kind") == "done":   # CC metrics: real spend + turn time
-                        metrics.CC_COST.inc(ev.get("cost") or 0)
+                    elif ev.get("kind") == "done":   # CC metric: turn wall-clock time
                         if ev.get("duration_ms"):
                             metrics.CC_DURATION.observe(ev["duration_ms"] / 1000)
                     # ...and forward the rich activity to the tap-to-expand panel
@@ -195,10 +201,23 @@ async def cancel(bubble_id: str):
 @app.get("/argus/models")
 async def get_models():
     # Forge expects [[id, cfg], ...] where cfg has display/backend.
-    return JSONResponse([
-        [DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus"}],
-        ["claude-code", {"display": "Claude Code", "backend": "claude"}],
-    ])
+    # Dynamic: list whatever llama-swap currently serves (so the selector swaps
+    # among real local models), then always append the cloud claude-code option.
+    # claude-code is a separate path — selecting it never hits llama-swap, so it
+    # never evicts a resident local model (e.g. the 80B stays loaded).
+    entries = []
+    try:
+        async with httpx.AsyncClient(timeout=2) as c:
+            data = (await c.get(f"{_LOCAL_BASE}/v1/models")).json()
+        for m in data.get("data", []):
+            mid = m["id"]
+            display = "Argus (local 80B)" if mid == DEFAULT_MODEL else mid
+            entries.append([mid, {"display": display, "backend": "argus"}])
+    except Exception:
+        # llama-swap unreachable — still offer the default so the UI isn't empty.
+        entries.append([DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus"}])
+    entries.append(["claude-code", {"display": "Claude Code", "backend": "claude"}])
+    return JSONResponse(entries)
 
 @app.get("/argus/history")
 async def get_history(conversation_id: str | None = None, limit: int = 100,

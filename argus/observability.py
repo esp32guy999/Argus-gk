@@ -14,7 +14,6 @@ An external Prometheus can still scrape /metrics for history/dashboards; this gu
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 
 from prometheus_client import REGISTRY
@@ -25,16 +24,12 @@ def _v(name: str, labels: dict | None = None) -> float:
 
 
 class SelfObserver:
-    def __init__(self, notifier, *, interval: float = 300.0, cooldown: float = 3600.0,
-                 cc_cost_alert: float | None = None):
+    def __init__(self, notifier, *, interval: float = 300.0, cooldown: float = 3600.0):
         self.notify = notifier                      # notifier(title, message)
         self.interval = interval                    # seconds between checks
         self.cooldown = cooldown                    # min seconds between repeats of a rule
-        self.cc_cost_alert = cc_cost_alert if cc_cost_alert is not None else \
-            float(os.environ.get("ARGUS_CC_COST_ALERT", "5.0"))   # $ step
         self._last: dict[str, float] = {}
         self._alerted: dict[str, float] = {}
-        self._cc_cost_floor = 0.0
 
     def _fire(self, rule: str, title: str, msg: str, now: float) -> bool:
         """Notify unless within this rule's cooldown. Returns True iff it actually sent."""
@@ -58,12 +53,10 @@ class SelfObserver:
             "noprog": _v("argus_agent_no_progress_total"),
             "cc_err": _v("argus_claude_code_turns_total", {"outcome": "error"}),
         }
-        cc_cost = _v("argus_claude_code_cost_usd_total")
         fired: list[str] = []
 
         if not self._last:                          # first pass = baseline, no deltas
             self._last = cur
-            self._cc_cost_floor = cc_cost
             return fired
 
         d = {k: cur[k] - self._last.get(k, cur[k]) for k in cur}
@@ -82,10 +75,6 @@ class SelfObserver:
         if d["cc_err"] >= 2:
             if self._fire("cc_errors", "Argus ⚠️", f"Claude Code: {int(d['cc_err'])} failed turn(s).", now):
                 fired.append("cc_errors")
-        if cc_cost >= self._cc_cost_floor + self.cc_cost_alert:
-            self._cc_cost_floor = cc_cost
-            if self._fire("cc_cost", "Argus 💸", f"Claude Code spend passed ${cc_cost:.2f}.", now):
-                fired.append("cc_cost")
 
         self._last = cur
         return fired

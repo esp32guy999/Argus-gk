@@ -80,15 +80,14 @@ def main() -> int:
     assert isinstance(items[1][1]["text"], str) and "obj" in items[1][1]["text"], "non-str content json-encoded"
     print("PASS: _parse_event truncates tool_result and json-encodes non-str content")
 
-    # result event carries cost + duration on a done marker
-    res = {"type": "result", "is_error": False,
-           "total_cost_usd": 0.0421, "duration_ms": 12345}
+    # result event carries duration on a done marker
+    res = {"type": "result", "is_error": False, "duration_ms": 12345}
     items = cc._parse_event(res)
-    assert items == [("done", {"is_error": False, "cost": 0.0421, "duration_ms": 12345})], items
-    # missing cost/duration degrade to None (the frontend tolerates it)
+    assert items == [("done", {"is_error": False, "duration_ms": 12345})], items
+    # missing duration degrades to None (the frontend tolerates it)
     assert cc._parse_event({"type": "result"}) == [
-        ("done", {"is_error": False, "cost": None, "duration_ms": None})], "graceful when fields absent"
-    print("PASS: _parse_event emits done with cost + duration_ms")
+        ("done", {"is_error": False, "duration_ms": None})], "graceful when fields absent"
+    print("PASS: _parse_event emits done with duration_ms")
 
     print("\nALL CLAUDE_CODE TESTS PASSED")
     return 0

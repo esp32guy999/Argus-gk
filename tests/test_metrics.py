@@ -13,7 +13,7 @@ def main() -> int:
 
     required = ["TOOL_CALLS", "TOOL_LATENCY", "TOOL_ERRORS", "TOOL_RETRY",
                 "AGENT_TURNS", "LOOP_DETECTED", "NO_PROGRESS", "TASK_DURATION",
-                "TOOLS_SELECTED", "CC_TURNS", "CC_COST", "CC_DURATION"]
+                "TOOLS_SELECTED", "CC_TURNS", "CC_DURATION"]
     missing = [m for m in required if not hasattr(metrics, m)]
     assert not missing, f"missing metrics: {missing}"
     print(f"PASS: all {len(required)} sensors defined")

@@ -80,7 +80,7 @@ def _parse_event(evt: dict) -> list[tuple]:
       ("event", {"kind":"thinking","text":...})           — reasoning block
       ("event", {"kind":"tool_use","name":...,"input":...})
       ("event", {"kind":"tool_result","text":...})        — truncated to 2000 chars
-      ("done",  {"is_error":bool,"cost":float|None,"duration_ms":int|None})
+      ("done",  {"is_error":bool,"duration_ms":int|None})
     The `system/init` session-id capture stays in _read_stdout (it mutates state).
     """
     out: list[tuple] = []
@@ -105,7 +105,6 @@ def _parse_event(evt: dict) -> list[tuple]:
                 out.append(("event", {"kind": "tool_result", "text": text[:2000]}))
     elif t == "result":
         out.append(("done", {"is_error": evt.get("is_error", False),
-                             "cost": evt.get("total_cost_usd"),
                              "duration_ms": evt.get("duration_ms")}))
     return out
 
@@ -178,7 +177,7 @@ class CCSession:
         Also yields ('__event__', {...}) activity markers so the server can drive the
         status pill AND the tap-to-expand activity stream (claude-code path only):
           {"kind":"thinking","text":...}, {"kind":"tool_use","name":...,"input":...},
-          {"kind":"tool_result","text":...}, {"kind":"done","cost":...,"duration_ms":...}."""
+          {"kind":"tool_result","text":...}, {"kind":"done","duration_ms":...}."""
         async with self._lock:
             await self._ensure()
             self.last_used = time.monotonic()
@@ -196,7 +195,7 @@ class CCSession:
                 elif kind == "event":
                     yield ("__event__", data)
                 elif kind == "done":
-                    yield ("__event__", {"kind": "done", "cost": data.get("cost"),
+                    yield ("__event__", {"kind": "done",
                                          "duration_ms": data.get("duration_ms")})
                     break
                 elif kind == "error":

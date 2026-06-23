@@ -20,7 +20,7 @@ const state = {
   statusPill:     null,     // live status pill (phase + elapsed timer), killed on done
   pendingDbId:    null,     // DB id of the assistant message after save
   pendingUserId:  null,     // DB id of the user message that prompted it
-  pendingCostMeta:null,     // " · $0.04 · 12s" from the CC done event, appended to bubble meta
+  pendingDurMeta: null,     // " · 12s" turn time from the CC done event, appended to bubble meta
   oldestMsgId:    null,     // id of earliest-loaded message, for lazy paging
   historyExhausted:false,   // true once we've fetched everything older
   historyLoading: false,    // in-flight older-page fetch
@@ -99,9 +99,9 @@ function createStatusPill() {
   const dot   = document.createElement('span'); dot.className = 'sp-dot';
   const label = document.createElement('span'); label.className = 'sp-label'; label.textContent = 'thinking';
   const time  = document.createElement('span'); time.className = 'sp-time'; time.textContent = '0s';
-  const cost  = document.createElement('span'); cost.className = 'sp-cost';   // filled from the done event
+  const dur   = document.createElement('span'); dur.className = 'sp-dur';   // turn time, filled from the done event
   const caret = document.createElement('span'); caret.className = 'sp-caret'; caret.textContent = '▸';
-  pill.append(dot, label, time, cost, caret);
+  pill.append(dot, label, time, dur, caret);
   const panel = document.createElement('div'); panel.className = 'sp-activity';
   wrap.append(pill, panel);
 
@@ -136,7 +136,7 @@ function createStatusPill() {
     appendActivityEntry(panel, ev);
     if (wrap.classList.contains('open')) panel.scrollTop = panel.scrollHeight;
   };
-  wrap._cost     = (txt) => { cost.textContent = txt; };                                        // "· $0.04 · 12s"
+  wrap._dur      = (txt) => { dur.textContent = txt; };                                         // "· 12s"
   wrap._collapse = () => { wrap.classList.remove('open'); };
   wrap._stop     = () => { clearInterval(timer); wrap.remove(); };
   return wrap;
@@ -169,12 +169,10 @@ function fmtToolInput(input) {
   } catch { return ''; }
 }
 
-// "· $0.04 · 12s" from the done event's cost + duration_ms (either may be missing).
-function fmtCostDuration(cost, durationMs) {
-  const parts = [];
-  if (typeof cost === 'number') parts.push('$' + (cost < 0.1 ? cost.toFixed(4) : cost.toFixed(2)));
-  if (typeof durationMs === 'number') parts.push(Math.round(durationMs / 1000) + 's');
-  return parts.length ? '· ' + parts.join(' · ') : '';
+// "· 12s" turn time from the done event's duration_ms (may be missing).
+function fmtDuration(durationMs) {
+  if (typeof durationMs !== 'number') return '';
+  return '· ' + Math.round(durationMs / 1000) + 's';
 }
 
 function createThinkingCanvas() {
@@ -534,7 +532,7 @@ function _wrapSwipeDelete(msgEl) {
   return row;
 }
 
-// The bubble's message text, minus the meta line (model · time · cost).
+// The bubble's message text, minus the meta line (model · time).
 function _bubbleText(msgEl) {
   const clone = msgEl.cloneNode(true);
   clone.querySelectorAll('.msg-meta').forEach(e => e.remove());
@@ -952,7 +950,7 @@ async function send() {
       }
 
       state.pendingMsgEl.textContent = stripCommandTags(raw);
-      addMeta(state.pendingMsgEl, `${state.currentModel} · ${fmtTime(new Date())}${state.pendingCostMeta || ''}`);
+      addMeta(state.pendingMsgEl, `${state.currentModel} · ${fmtTime(new Date())}${state.pendingDurMeta || ''}`);
       processCommandTags(raw, state.pendingMsgEl);
       // dataset.msgId is what swipe-to-delete reads (the only delete affordance now).
       if (state.pendingDbId) {
@@ -979,7 +977,7 @@ async function send() {
     state.pendingResolve = null;
     state.pendingDbId = null;
     state.pendingUserId = null;
-    state.pendingCostMeta = null;
+    state.pendingDurMeta = null;
     sendBtn.classList.remove('is-stop');
   }
 }
@@ -1137,15 +1135,15 @@ function connectEvents() {
       } catch {}
     });
     // Rich per-turn activity for the claude-code path: thinking / tool calls /
-    // tool results feed the tap-to-expand panel; the done event carries cost+duration.
+    // tool results feed the tap-to-expand panel; the done event carries turn duration.
     globalEvents.addEventListener('bubble_activity', e => {
       try {
         const d = JSON.parse(e.data);
         if (d.id !== state.pendingBubbleId || !state.statusPill) return;
         const ev = d.event || {};
         if (ev.kind === 'done') {
-          const meta = fmtCostDuration(ev.cost, ev.duration_ms);
-          if (meta) { state.statusPill._cost(' ' + meta); state.pendingCostMeta = ' ' + meta; }
+          const meta = fmtDuration(ev.duration_ms);
+          if (meta) { state.statusPill._dur(' ' + meta); state.pendingDurMeta = ' ' + meta; }
         } else {
           state.statusPill._event(ev);
         }

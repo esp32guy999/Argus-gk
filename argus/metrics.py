@@ -30,7 +30,6 @@ TOOLS_SELECTED = Histogram(
 
 # --- Claude Code lane (bypasses the loop/registry, so it needs its own sensors) ---
 CC_TURNS = Counter("argus_claude_code_turns_total", "Claude Code turns", ["outcome"])
-CC_COST = Counter("argus_claude_code_cost_usd_total", "Claude Code spend (USD)")
 CC_DURATION = Histogram("argus_claude_code_turn_seconds", "Claude Code turn wall-clock seconds")
 
 

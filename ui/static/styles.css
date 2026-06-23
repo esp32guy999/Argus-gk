@@ -1326,7 +1326,7 @@ body {
 
 /* ── Tap-to-expand activity stream (claude-code path only) ── */
 .status-pill-wrap { display: flex; flex-direction: column; align-self: flex-start; width: fit-content; max-width: 92%; }
-.status-pill .sp-cost  { opacity: .6; font-variant-numeric: tabular-nums; }
+.status-pill .sp-dur   { opacity: .6; font-variant-numeric: tabular-nums; }
 .status-pill .sp-caret { opacity: .45; font-size: 9px; transition: transform .15s ease; }
 .status-pill:not(.expandable) .sp-caret { display: none; }   /* only show the caret once it's tappable */
 .status-pill.expandable { cursor: pointer; }

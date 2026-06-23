@@ -15,7 +15,7 @@ def main() -> int:
 
     calls = []
     obs = observability.SelfObserver(lambda t, m: calls.append((t, m)),
-                                     cooldown=1000, cc_cost_alert=5.0)
+                                     cooldown=1000)
     t = 0.0
 
     # 1. baseline pass fires nothing
@@ -46,14 +46,7 @@ def main() -> int:
     assert "loops" in obs.check(now=t), "loop_detected should fire"
     print("PASS: loop-detected fires")
 
-    # 5. CC cost threshold fires when spend crosses the step
-    metrics.CC_COST.inc(6.0)
-    t += 1
-    assert "cc_cost" in obs.check(now=t), "cc cost over step should fire"
-    assert any("spend passed" in m for _, m in calls), calls
-    print("PASS: CC cost threshold fires")
-
-    # 6. quiet pass after everything settles fires nothing new
+    # 5. quiet pass after everything settles fires nothing new
     t += 1
     assert obs.check(now=t) == [], "no new breaches -> silent"
     print("PASS: quiet pass is silent")
