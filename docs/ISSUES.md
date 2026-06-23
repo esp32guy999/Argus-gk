@@ -8,6 +8,24 @@ Expected Value.
 
 ## Open
 
+### z-engineer (image-manipulation model) shows in the chat model selector
+```
+category:          Observation
+severity:          Low
+status:            open
+blast_radius:      Low
+component:         ui/static/app.js (renderModelSelect / renderModelList) or ui/server.py /argus/models
+discovered_during: Theme-per-model design (2026-06-23)
+notes:             z-engineer is an image-manipulation model, not a chat model, so it
+                   shouldn't appear in the model dropdown. app.js already special-cases
+                   other media models by id regex (/^z-(image-edit|klein|video)/i and
+                   /^z-(image|klein|video)/i) for timeouts/handling, but z-engineer isn't
+                   caught by those and isn't filtered out. Fix options: (a) filter media
+                   models out of the chat selector client-side, or (b) tag them in the
+                   backend model cfg (e.g. cfg.kind="media") and filter on that — cleaner
+                   and avoids brittle id-regex matching. Prefer (b).
+```
+
 ### Argus local-80B chat path is broken
 ```
 category:          Deferred
