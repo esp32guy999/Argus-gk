@@ -55,6 +55,6 @@ notes:             Multiple `claude -p` processes used separate CLAUDE_CONFIG_DI
                    independently refreshed OAuth tokens, revoking the others. Auth
                    dropped every ~30 min. Fix: all processes now use ~/.claude
                    directly. Full analysis: docs/postmortem-oauth-token-revocation.md
-                   NEEDS COMMIT: `git add argus/claude_code.py docs/postmortem-oauth-token-revocation.md`
-                   then commit with message from the postmortem.
+                   Committed 2026-06-23 (commit 4661cd0). Monitoring to confirm
+                   auth stays up; shim-side change lives in ai-stack repo (deploy separately).
 ```
