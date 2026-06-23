@@ -26,6 +26,16 @@ notes:             z-engineer is an image-manipulation model, not a chat model, 
                    and avoids brittle id-regex matching. Prefer (b).
 ```
 
+### Image attach: follow-ups after the claude-code wiring
+- [ ] Attachments aren't persisted to the conversation store — only the message text is
+      saved (server.py add_message). On reload the user bubble loses its image thumbnail and
+      the model can't re-see it. Observation — ui/server.py + store (from: image-attach, 2026-06-23)
+- [ ] Non-image files (PDF, etc.) are staged + POSTed but not forwarded — `_image_block`
+      only handles images. PDFs could go as Anthropic `document` blocks if CC stream-json
+      accepts them. Observation — argus/claude_code.py (from: image-attach, 2026-06-23)
+- [ ] Local-model path doesn't forward images (vision varies; 80B path separately broken).
+      Folds into the local-80B fix below. Observation — ui/server.py (from: image-attach, 2026-06-23)
+
 ### Argus local-80B chat path is broken
 ```
 category:          Deferred
