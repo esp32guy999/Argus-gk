@@ -21,6 +21,14 @@ PRESETS = pathlib.Path(__file__).parent / "presets"
 # Load environment variables
 MODEL_URL = os.environ.get("ARGUS_MODEL_URL", "http://localhost:8099/v1")
 DEFAULT_MODEL = os.environ.get("ARGUS_DEFAULT_MODEL", "qwen3-next-80b")
+
+# Vision capability is per-model — never forward images to a model that can't see
+# them (wastes tokens / errors). Gate on this set, not on backend or model name.
+# claude-code (Claude) is vision-capable; local llama-swap models here are not.
+VISION_MODELS = {"claude-code"}
+
+def _is_vision(model_name: str) -> bool:
+    return model_name in VISION_MODELS
 HA_URL = os.environ.get("HA_URL")
 HA_TOKEN = os.environ.get("HA_TOKEN")
 
@@ -131,6 +139,9 @@ async def chat(request: Request):
     model_name = body.get("model", DEFAULT_MODEL)
     message = body.get("message", "")
     attachments = body.get("attachments") or []
+    # Only forward images to vision-capable models — don't apply attachments generically.
+    if attachments and not _is_vision(model_name):
+        attachments = []
     conversation_id = _cid(body.get("conversation_id"))
     bubble_id = uuid.uuid4().hex
 
@@ -153,8 +164,9 @@ async def chat(request: Request):
                 from argus import claude_code
                 source = claude_code.send(conversation_id, message, attachments=attachments)
             else:
-                # Local models: image attachments not yet forwarded (vision support
-                # varies and the local path is separately broken — see docs/ISSUES.md).
+                # Local models: not in VISION_MODELS, so attachments were already
+                # dropped above. (Wiring a vision-capable local model would mean adding
+                # it to VISION_MODELS and threading images into loop.stream_run.)
                 source = loop.stream_run(
                     registry, message, model_name=model_name, base_url=MODEL_URL,
                     turn_budget=8, message_history=history, on_event=on_event)
@@ -215,11 +227,11 @@ async def get_models():
         for m in data.get("data", []):
             mid = m["id"]
             display = "Argus (local 80B)" if mid == DEFAULT_MODEL else mid
-            entries.append([mid, {"display": display, "backend": "argus"}])
+            entries.append([mid, {"display": display, "backend": "argus", "vision": _is_vision(mid)}])
     except Exception:
         # llama-swap unreachable — still offer the default so the UI isn't empty.
-        entries.append([DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus"}])
-    entries.append(["claude-code", {"display": "Claude Code", "backend": "claude"}])
+        entries.append([DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus", "vision": _is_vision(DEFAULT_MODEL)}])
+    entries.append(["claude-code", {"display": "Claude Code", "backend": "claude", "vision": _is_vision("claude-code")}])
     return JSONResponse(entries)
 
 @app.get("/argus/history")
