@@ -5,8 +5,8 @@ across restarts). Bypasses llama-swap entirely — no GPU model is touched.
 Technique mined from Shane's peace app (the hard-won bits, written fresh here):
 - drop the parent harness's CLAUDE_CODE_* / CLAUDECODE env so the nested cc doesn't
   think it's a child session;
-- sync OAuth creds into an isolated CLAUDE_CONFIG_DIR before each spawn (the isolated
-  copy goes stale ~8h and 401s otherwise);
+- use ~/.claude directly (no isolated config dir — isolated copies go stale and
+  cause token revocation races);
 - 64MB stdout readline limit (stream-json emits one big JSON line per event);
 - --session-id (new) / --resume (existing transcript) for durable per-thread sessions;
 - workdir ~/argus + --setting-sources user,project so it picks up the homelab context
@@ -22,14 +22,13 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
 import time
 import uuid
 from pathlib import Path
 
 CLAUDE = os.environ.get("ARGUS_CLAUDE_BIN",
                         os.path.expanduser("~/.npm-global/bin/claude"))
-CONFIG_DIR = os.environ.get("ARGUS_CC_CONFIG_DIR", os.path.expanduser("~/argus/.cchome"))
+CONFIG_DIR = os.environ.get("ARGUS_CC_CONFIG_DIR", os.path.expanduser("~/.claude"))
 WORKDIR = os.environ.get("ARGUS_CC_WORKDIR", os.path.expanduser("~/argus"))  # homelab context via ~/CLAUDE.md up-tree
 SESSIONS_FILE = Path(os.path.expanduser("~/argus/.cc_sessions.json"))
 IDLE_TIMEOUT = float(os.environ.get("ARGUS_CC_IDLE", "1800"))   # evict sessions idle > 30 min
@@ -37,20 +36,17 @@ _WORKDIR_SLUG = WORKDIR.replace("/", "-")
 
 
 def _sync_credentials() -> None:
-    src = Path(os.path.expanduser("~/.claude")) / ".credentials.json"
-    dst = Path(CONFIG_DIR) / ".credentials.json"
-    with contextlib.suppress(Exception):
-        if src.is_file():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            os.chmod(dst, 0o600)
+    """No-op: we now use ~/.claude directly, so no sync needed."""
+    pass
 
 
 def _clean_env() -> dict:
     drop = ("CLAUDECODE", "CLAUDE_EFFORT", "AI_AGENT", "MEMORY_PRESSURE_WATCH")
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("CLAUDE_CODE") and k not in drop}
-    env["CLAUDE_CONFIG_DIR"] = CONFIG_DIR
+    # Don't override CLAUDE_CONFIG_DIR — let claude use ~/.claude directly
+    # so all processes share one token and refreshes don't revoke each other.
+    env.pop("CLAUDE_CONFIG_DIR", None)
     return env
 
 
@@ -69,7 +65,7 @@ def _save_sid(cid: str, sid: str) -> None:
 
 
 def _transcript_exists(sid: str) -> bool:
-    return (Path(CONFIG_DIR) / "projects" / _WORKDIR_SLUG / f"{sid}.jsonl").is_file()
+    return (Path(os.path.expanduser("~/.claude")) / "projects" / _WORKDIR_SLUG / f"{sid}.jsonl").is_file()
 
 
 def _parse_event(evt: dict) -> list[tuple]:
