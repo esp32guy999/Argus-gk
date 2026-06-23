@@ -8,6 +8,31 @@ how to run the tests (no pytest — standalone scripts), and the conventions/rul
 **Then catch up:** read the latest `docs/session-*.md` and `git log --oneline -25` —
 the running log of what changed and the hard-won gotchas.
 
+## Scope control (stay on task)
+
+Full policy: `docs/POLICY-scope-control.md`. Backlog: `docs/ISSUES.md` (the one register).
+Operative rules:
+
+1. **State a Task Anchor** at the start of any non-trivial task — one-line `objective`, a
+   *testable* `success_condition`, and the obvious `out_of_scope`. Re-state it when the user
+   gives a new objective. Can't write a testable success condition? Clarify scope first.
+2. **Discovery ≠ authorization.** Finding a bug/refactor/improvement is not permission to do
+   it. Only work that advances the success condition — or clears an in-path obstacle — is in
+   scope.
+3. **Obstacle vs Issue.** An *obstacle* blocks the objective → resolve it (in scope). An
+   *issue* is found-but-not-required → record it in `docs/ISSUES.md`, don't pursue it.
+4. **Decide-and-notify vs Stop-and-ask.** Reversible + Low blast radius + obvious answer → do
+   it, then say so. Irreversible, Medium+ blast radius, ambiguous, or multiple paths → stop
+   and ask. Uncertain reversibility → treat as irreversible.
+5. **Circuit breaker.** After **3 consecutive actions — investigating an issue OR clearing an
+   obstacle — that neither reduce uncertainty nor advance the `success_condition`**, STOP,
+   record as Deferred, return to the anchor. Count by *progress*, not steps or clock (one
+   action can eat 20 minutes); the counter resets only when an action actually narrows the
+   problem. An obstacle that blows past its budget is bigger than the task → stop and ask.
+6. **Default Deferred** when torn Blocking vs Deferred. Record to `docs/ISSUES.md` (tiered:
+   one line for Low blast radius, full record for Medium/High).
+7. **Close the loop.** At task completion, surface what you deferred so it can be triaged.
+
 ## Homelab context
 
 (Inlined here because Claude Code won't expand `@import`s outside this dir. The full,
