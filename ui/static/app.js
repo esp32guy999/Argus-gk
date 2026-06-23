@@ -325,10 +325,10 @@ const ACCENTS = {
 const MODEL_ACCENT = {
   'claude-code':    'orange',   // Claude — the "home" accent
   'qwen3-next-80b': 'violet',   // Argus local 80B — matches the indigo/violet eye
-  'gemma4-26b':     'blue',
+  'gemma4-26b':     'pink',     // "comfy" accent
   'gemma4-12b':     'green',
   'gpt-oss-20b':    'yellow',
-  'bonsai-8b':      'pink',
+  'bonsai-8b':      'blue',
   'lfm2.5-8b':      'red',
   // z-engineer intentionally unmapped (media model, tracked in docs/ISSUES.md) → falls back
 };
