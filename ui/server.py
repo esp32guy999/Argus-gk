@@ -130,6 +130,7 @@ async def chat(request: Request):
     body = await request.json()
     model_name = body.get("model", DEFAULT_MODEL)
     message = body.get("message", "")
+    attachments = body.get("attachments") or []
     conversation_id = _cid(body.get("conversation_id"))
     bubble_id = uuid.uuid4().hex
 
@@ -150,8 +151,10 @@ async def chat(request: Request):
                 # Persistent per-conversation CC session keeps its own context, so we
                 # send only the new message (not the full history).
                 from argus import claude_code
-                source = claude_code.send(conversation_id, message)
+                source = claude_code.send(conversation_id, message, attachments=attachments)
             else:
+                # Local models: image attachments not yet forwarded (vision support
+                # varies and the local path is separately broken — see docs/ISSUES.md).
                 source = loop.stream_run(
                     registry, message, model_name=model_name, base_url=MODEL_URL,
                     turn_budget=8, message_history=history, on_event=on_event)

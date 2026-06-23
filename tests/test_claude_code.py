@@ -14,16 +14,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def main() -> int:
     from argus import claude_code as cc
 
-    # 1. env isolation: parent CLAUDE_CODE_* / CLAUDECODE dropped, config dir set
+    # 1. env isolation: parent CLAUDE_CODE_* / CLAUDECODE dropped, and any inherited
+    #    CLAUDE_CONFIG_DIR is popped so the subprocess uses the default ~/.claude
+    #    (one shared credential store — see docs/postmortem-oauth-token-revocation.md).
     os.environ["CLAUDE_CODE_ENTRYPOINT"] = "cli"
     os.environ["CLAUDECODE"] = "1"
+    os.environ["CLAUDE_CONFIG_DIR"] = "/some/isolated/dir"
     os.environ["KEEP_ME"] = "yes"
     env = cc._clean_env()
     assert not any(k.startswith("CLAUDE_CODE") for k in env), "must drop CLAUDE_CODE_*"
     assert "CLAUDECODE" not in env, "must drop CLAUDECODE"
     assert env.get("KEEP_ME") == "yes", "unrelated vars preserved"
-    assert env.get("CLAUDE_CONFIG_DIR") == cc.CONFIG_DIR, "points at isolated config dir"
-    print("PASS: _clean_env drops nested-cc vars, sets isolated config dir")
+    assert "CLAUDE_CONFIG_DIR" not in env, "must NOT set CLAUDE_CONFIG_DIR (use default ~/.claude)"
+    print("PASS: _clean_env drops nested-cc vars and inherited CLAUDE_CONFIG_DIR")
 
     # 2. sid persistence roundtrip (per conversation)
     d = tempfile.mkdtemp()
@@ -35,11 +38,13 @@ def main() -> int:
     assert cc._load_sids()["conv-a"] == "sid-aaa2", "sid overwrites per conversation"
     print("PASS: per-conversation sid persistence")
 
-    # 3. transcript existence gate (resume only when the transcript file is real)
-    cc.CONFIG_DIR = d
+    # 3. transcript existence gate — resume only when the real transcript file
+    #    exists under ~/.claude (the canonical config dir; see the OAuth post-mortem).
+    home = tempfile.mkdtemp()
+    os.environ["HOME"] = home
     cc._WORKDIR_SLUG = "-tmp-work"
     assert cc._transcript_exists("nope") is False
-    tdir = Path(d) / "projects" / "-tmp-work"
+    tdir = Path(home) / ".claude" / "projects" / "-tmp-work"
     tdir.mkdir(parents=True, exist_ok=True)
     (tdir / "real-sid.jsonl").write_text("{}")
     assert cc._transcript_exists("real-sid") is True
@@ -88,6 +93,20 @@ def main() -> int:
     assert cc._parse_event({"type": "result"}) == [
         ("done", {"is_error": False, "duration_ms": None})], "graceful when fields absent"
     print("PASS: _parse_event emits done with duration_ms")
+
+    # 6. _image_block: UI attachment -> Anthropic image content block (vision)
+    png = {"isImage": True, "dataUrl": "data:image/png;base64,iVBORw0KGgo="}
+    assert cc._image_block(png) == {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="},
+    }, cc._image_block(png)
+    assert cc._image_block({"isImage": True, "dataUrl": "data:image/jpeg;base64,/9j/"})[
+        "source"]["media_type"] == "image/jpeg"
+    assert cc._image_block({"isImage": False, "dataUrl": "data:application/pdf;base64,JV"}) is None, "non-image skipped"
+    assert cc._image_block({"isImage": True, "dataUrl": "data:image/svg+xml;base64,PHN2"}) is None, "unsupported type skipped"
+    assert cc._image_block({"isImage": True, "dataUrl": "https://x/y.png"}) is None, "non-data url skipped"
+    assert cc._image_block(None) is None and cc._image_block({}) is None
+    print("PASS: _image_block parses base64 images and rejects non-images/bad urls")
 
     print("\nALL CLAUDE_CODE TESTS PASSED")
     return 0

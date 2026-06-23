@@ -40,6 +40,25 @@ def _sync_credentials() -> None:
     pass
 
 
+_IMG_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp")
+
+
+def _image_block(att: dict):
+    """Turn a UI attachment {isImage, dataUrl} into an Anthropic image content
+    block, or None if it isn't a usable base64 image data URL."""
+    if not isinstance(att, dict) or not att.get("isImage"):
+        return None
+    url = att.get("dataUrl") or ""
+    if not url.startswith("data:") or ";base64," not in url:
+        return None
+    header, b64 = url.split(",", 1)
+    media_type = header[5:].split(";", 1)[0]   # strip "data:" prefix
+    if media_type not in _IMG_TYPES:
+        return None
+    return {"type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": b64}}
+
+
 def _clean_env() -> dict:
     drop = ("CLAUDECODE", "CLAUDE_EFFORT", "AI_AGENT", "MEMORY_PRESSURE_WATCH")
     env = {k: v for k, v in os.environ.items()
@@ -168,18 +187,25 @@ class CCSession:
                 if self._q:
                     await self._q.put(item)
 
-    async def send(self, text: str):
+    async def send(self, text: str, attachments=None):
         """Yield cumulative assistant text for this turn (loop.stream_run contract).
         Also yields ('__event__', {...}) activity markers so the server can drive the
         status pill AND the tap-to-expand activity stream (claude-code path only):
           {"kind":"thinking","text":...}, {"kind":"tool_use","name":...,"input":...},
-          {"kind":"tool_result","text":...}, {"kind":"done","duration_ms":...}."""
+          {"kind":"tool_result","text":...}, {"kind":"done","duration_ms":...}.
+
+        `attachments` (optional) is the UI's list of staged files
+        [{filename, isImage, dataUrl}]; image data URLs become Anthropic image
+        content blocks so the nested cc sees the photo (vision)."""
         async with self._lock:
             await self._ensure()
             self.last_used = time.monotonic()
             self._q = asyncio.Queue()
+            content = [b for a in (attachments or []) for b in (_image_block(a),) if b]
+            if text or not content:
+                content.append({"type": "text", "text": text})
             payload = {"type": "user",
-                       "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+                       "message": {"role": "user", "content": content}}
             self.proc.stdin.write((json.dumps(payload) + "\n").encode())
             await self.proc.stdin.drain()
             acc = ""
@@ -217,11 +243,11 @@ async def _evict_idle() -> None:
         _SESSIONS.pop(cid, None)
 
 
-async def send(conversation_id: str, text: str):
+async def send(conversation_id: str, text: str, attachments=None):
     """Module entry point: stream a turn through the conversation's persistent session."""
     await _evict_idle()
     s = _SESSIONS.get(conversation_id)
     if s is None:
         s = _SESSIONS[conversation_id] = CCSession(conversation_id)
-    async for chunk in s.send(text):
+    async for chunk in s.send(text, attachments=attachments):
         yield chunk
