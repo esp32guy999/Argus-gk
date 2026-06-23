@@ -36,20 +36,24 @@ notes:             z-engineer is an image-manipulation model, not a chat model, 
 - [ ] Local-model path doesn't forward images (vision varies; 80B path separately broken).
       Folds into the local-80B fix below. Observation — ui/server.py (from: image-attach, 2026-06-23)
 
-### Argus local-80B chat path is broken
+### Argus local-80B serving path — RESOLVED (was: broken)
 ```
 category:          Deferred
 severity:          Medium
-status:            open
+status:            resolved (2026-06-23)
 blast_radius:      Medium
 component:         ui/server.py (model wiring) + llama-swap (anvil:9090)
 discovered_during: Fix test_server.py (2026-06-22)
-notes:             argus-ui sets ARGUS_MODEL_URL=http://localhost:8099/v1 but nothing
-                   listens on :8099; the configured Qwen3-Next-80B is no longer served by
-                   llama-swap (only gemma/gpt-oss/etc remain). Any non-claude-code model
-                   pick connection-errors. Not biting because Shane uses the claude-code
-                   model (separate path). Fix: find where :8099 went / re-add the 80B or
-                   repoint at :9090. Tracked in memory: argus-local-80b-chat-broken.
+notes:             Original report (2026-06-22): ARGUS_MODEL_URL=:8099 with nothing
+                   listening. Now stale — the argus-ui env sets
+                   ARGUS_MODEL_URL=http://localhost:9090/v1, llama-swap serves
+                   qwen3-next-80b at :9090, and a direct chat completion returns
+                   cleanly (verified 2026-06-23). Both model-listing and inference
+                   point at :9090. Residual nit: server.py line 22 still DEFAULTS to
+                   :8099 — harmless (env overrides) but worth aligning the default.
+                   STILL TO VALIDATE: the full in-harness path (loop.stream_run +
+                   Pydantic AI tool loop), not just raw llama-swap — part of the 80B
+                   onramp.
 ```
 
 ### lidarr_get_album can't reach metadata-profile-excluded albums
