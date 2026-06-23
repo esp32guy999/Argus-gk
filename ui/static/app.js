@@ -308,6 +308,38 @@ async function init() {
   loadBriefing();
 }
 
+// ── Per-model accent ──────────────────────────────────────────────────
+// Theme B: the active model owns ONLY the accent (nav eye focal + highlights);
+// the base theme (data-theme) still owns bg/surfaces and the manual toggle is
+// untouched. Inline custom props on <html> override the theme's --accent, so the
+// accent reads as "which model is active" regardless of the chosen base theme.
+const ACCENTS = {
+  orange: ['#f97316', 'rgba(249,115,22,.15)',  'rgba(249,115,22,.25)'],
+  blue:   ['#3b82f6', 'rgba(59,130,246,.15)',  'rgba(59,130,246,.25)'],
+  red:    ['#ef4444', 'rgba(239,68,68,.15)',   'rgba(239,68,68,.25)'],
+  green:  ['#22c55e', 'rgba(34,197,94,.15)',   'rgba(34,197,94,.25)'],
+  violet: ['#a855f7', 'rgba(168,85,247,.15)',  'rgba(168,85,247,.25)'],
+  yellow: ['#eab308', 'rgba(234,179,8,.15)',   'rgba(234,179,8,.25)'],
+  pink:   ['#e8a0bf', 'rgba(232,160,191,.14)', 'rgba(232,160,191,.22)'],
+};
+const MODEL_ACCENT = {
+  'claude-code':    'orange',   // Claude — the "home" accent
+  'qwen3-next-80b': 'violet',   // Argus local 80B — matches the indigo/violet eye
+  'gemma4-26b':     'blue',
+  'gemma4-12b':     'green',
+  'gpt-oss-20b':    'yellow',
+  'bonsai-8b':      'pink',
+  'lfm2.5-8b':      'red',
+  // z-engineer intentionally unmapped (media model, tracked in docs/ISSUES.md) → falls back
+};
+function applyModelAccent(id) {
+  const a = ACCENTS[MODEL_ACCENT[id]] || ACCENTS.orange;
+  const s = document.documentElement.style;
+  s.setProperty('--accent', a[0]);
+  s.setProperty('--accent-glow', a[1]);
+  s.setProperty('--accent-shadow', a[2]);
+}
+
 // ── Models ───────────────────────────────────────────────────────────
 async function loadModels() {
   try {
@@ -323,6 +355,7 @@ async function loadModels() {
       ? saved
       : (state.models[0]?.id || null);
 
+    applyModelAccent(state.currentModel);
     renderModelSelect();
     renderModelList();
   } catch (e) {
@@ -1924,6 +1957,7 @@ function wireUI() {
   refreshSend();
   modelSelect.addEventListener('change', () => {
     state.currentModel = modelSelect.value;
+    applyModelAccent(state.currentModel);
     saveLayout();
   });
   // Everything below is non-critical; wrap so any single failure can't kill the rest.
