@@ -39,6 +39,25 @@ _warming: set = set()   # models with an in-flight warm-up (dedupe rapid selects
 
 def _warm_on_select(model_name: str) -> bool:
     return model_name in WARM_ON_SELECT
+
+# Per-model context window (tokens). The local 80B is served at -c 8192 and is
+# VRAM-bound there — history MUST be budgeted to fit or llama.cpp truncates the
+# prompt from the front (dropping the system prompt) or errors. Unknown local
+# models default conservatively; claude-code manages its own context (and isn't
+# even fed this history), so it's exempt.
+CONTEXT_WINDOW = {"qwen3-next-80b": 8192}
+_DEFAULT_LOCAL_CTX = 8192
+# Tokens reserved within the window for the system prompt + selected tool schemas
+# + the live user prompt + room for the reply. The remainder is the history budget.
+HISTORY_RESERVE = 3500
+
+def _history_budget(model_name: str) -> int | None:
+    """Max tokens of prior history to feed this model, or None to skip budgeting
+    (claude-code: history isn't sent to it and it self-manages context)."""
+    if model_name == "claude-code":
+        return None
+    window = CONTEXT_WINDOW.get(model_name, _DEFAULT_LOCAL_CTX)
+    return max(512, window - HISTORY_RESERVE)
 HA_URL = os.environ.get("HA_URL")
 HA_TOKEN = os.environ.get("HA_TOKEN")
 
@@ -156,7 +175,8 @@ async def chat(request: Request):
     bubble_id = uuid.uuid4().hex
 
     # Load prior turns (memory) BEFORE persisting this one, then record the user msg.
-    history = await asyncio.to_thread(store.model_history, conversation_id, HISTORY_TURNS)
+    history = await asyncio.to_thread(store.model_history, conversation_id, HISTORY_TURNS,
+                                      _history_budget(model_name))
     user_row = await asyncio.to_thread(
         store.add_message, conversation_id, "user", message, None)
 

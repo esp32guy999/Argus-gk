@@ -17,6 +17,15 @@ from pydantic_ai.messages import (
     ModelMessage, ModelRequest, ModelResponse, UserPromptPart, TextPart,
 )
 
+def est_tokens(text: str) -> int:
+    """Cheap, model-agnostic token estimate: ~3.5 chars/token, rounded up.
+    Used to budget history against a model's context window without a real
+    tokenizer. Slightly conservative — better to trim a little extra than to
+    overflow a small window (e.g. the local 80B's 8192)."""
+    n = len(text or "")
+    return max(1, (n * 2 + 6) // 7)   # ceil(n / 3.5)
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,10 +121,27 @@ class Store:
                                "count": r["n"], "last_ts": r["last_ts"]})
         return result
 
-    def model_history(self, conversation_id: str, limit: int = 20) -> list[ModelMessage]:
-        """Reconstruct pydantic-ai message history (last `limit` rows) so the model
-        sees prior turns. user -> ModelRequest, assistant -> ModelResponse(text)."""
-        rows = self.get_messages(conversation_id, limit=limit)
+    def model_history(self, conversation_id: str, limit: int = 20,
+                      max_tokens: int | None = None) -> list[ModelMessage]:
+        """Reconstruct pydantic-ai message history so the model sees prior turns.
+        user -> ModelRequest, assistant -> ModelResponse(text).
+
+        `limit` caps by message COUNT (newest rows). `max_tokens`, if given, also
+        caps by estimated TOKENS: keep the newest messages that fit the budget and
+        drop the oldest — so a small-context model (e.g. the 80B at 8192) can't be
+        overflowed by long/tool-heavy history. May keep zero if even the newest
+        message exceeds the budget (safe: the live prompt is sent separately)."""
+        rows = self.get_messages(conversation_id, limit=limit)   # oldest-first
+        if max_tokens is not None:
+            kept: list[dict] = []
+            used = 0
+            for r in reversed(rows):                              # newest-first
+                cost = est_tokens(r["content"])
+                if used + cost > max_tokens:
+                    break
+                used += cost
+                kept.append(r)
+            rows = list(reversed(kept))                           # back to oldest-first
         history: list[ModelMessage] = []
         for r in rows:
             if r["role"] == "user":

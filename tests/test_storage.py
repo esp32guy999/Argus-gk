@@ -51,6 +51,27 @@ def main() -> int:
         assert len(hist2) == 2 and isinstance(hist2[0], ModelResponse), hist2
         print("PASS: model_history limit keeps most-recent n in order")
 
+        # 5b. model_history max_tokens budget: keep newest that fit, drop oldest,
+        #     never exceed the budget (protects small-context models like the 80B).
+        from argus.storage import est_tokens
+        s.add_message("cb", "user", "A" * 700, None)      # ~200 tok (oldest)
+        s.add_message("cb", "assistant", "B" * 350, "m")  # ~100 tok
+        s.add_message("cb", "user", "C" * 350, None)      # ~100 tok (newest)
+        budget = 150
+        histb = s.model_history("cb", limit=20, max_tokens=budget)
+        # newest (C, 100) fits; next (B, +100=200) would exceed 150 -> stop. Keep just C.
+        assert len(histb) == 1, histb
+        assert histb[0].parts[0].content.startswith("C"), "kept the NEWEST message"
+        total = sum(est_tokens(p.content) for m in histb for p in m.parts)
+        assert total <= budget, (total, budget)
+        # bigger budget keeps more, still chronological + within budget
+        histb2 = s.model_history("cb", limit=20, max_tokens=250)
+        assert len(histb2) == 2 and histb2[0].parts[0].content.startswith("B"), histb2
+        # no budget -> count-limited as before
+        assert len(s.model_history("cb", limit=20)) == 3
+        s.clear("cb")   # don't pollute the later list_conversations assertion
+        print("PASS: model_history token budget keeps newest-that-fit, never overflows")
+
         # 6. list_conversations: one per id, title from first user msg, newest first
         convs = {c["id"]: c for c in s.list_conversations()}
         assert set(convs) == {"c1", "c2"}, convs
