@@ -340,6 +340,32 @@ function applyModelAccent(id) {
   s.setProperty('--accent-shadow', a[2]);
 }
 
+// ── Model warm-up (slow-load models: warm on select, buzz + pill when ready) ──
+function _setModelWarm(kind, text) {
+  const el = $('model-warm');
+  if (!el) return;
+  if (!kind) { el.hidden = true; clearTimeout(el._t); return; }
+  const icon = kind === 'loading' ? '⏳ ' : kind === 'ready' ? '🟢 ' : '⚠️ ';
+  el.textContent = icon + text;
+  el.className = 'model-warm ' + kind;
+  el.hidden = false;
+  clearTimeout(el._t);
+  if (kind !== 'loading') el._t = setTimeout(() => { el.hidden = true; }, 6000);
+}
+
+function maybeWarmModel(id) {
+  const cfg = state.modelCfg && state.modelCfg[id];
+  if (!cfg || !cfg.warm_on_select) { _setModelWarm(null); return; }
+  _setModelWarm('loading', `loading ${cfg.display || id}…`);
+  fetch(`${BRAIN}/warm`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: id, display: cfg.display || id }),
+  }).then(r => r.json()).then(d => {
+    if (d.status === 'ready') _setModelWarm('ready', `${cfg.display || id} ready`);
+    // 'warming' → wait for the model_warm SSE event to flip the pill.
+  }).catch(() => {});
+}
+
 // ── Models ───────────────────────────────────────────────────────────
 async function loadModels() {
   try {
@@ -1182,6 +1208,17 @@ function connectEvents() {
         }
       } catch {}
     });
+    globalEvents.addEventListener('model_warm', e => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.model !== state.currentModel) return;   // only for the active model
+        const cfg = state.modelCfg && state.modelCfg[d.model];
+        const name = (cfg && cfg.display) || d.model;
+        if (d.error)      _setModelWarm('error', `${name} load failed`);
+        else if (d.ready) _setModelWarm('ready', `${name} ready${d.seconds ? ` (${d.seconds}s)` : ''}`);
+        else if (d.loading) _setModelWarm('loading', `loading ${name}…`);
+      } catch {}
+    });
     globalEvents.addEventListener('bubble_done', e => {
       let data;
       try { data = JSON.parse(e.data); } catch { return; }
@@ -1958,6 +1995,7 @@ function wireUI() {
   modelSelect.addEventListener('change', () => {
     state.currentModel = modelSelect.value;
     applyModelAccent(state.currentModel);
+    maybeWarmModel(state.currentModel);
     saveLayout();
   });
   // Everything below is non-critical; wrap so any single failure can't kill the rest.

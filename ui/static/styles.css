@@ -1393,3 +1393,10 @@ body {
 /* Panoptes nav icon set — linework follows currentColor (dim/active), focal "eye" stays lit */
 #side-nav svg .ico { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 #side-nav svg .eye { fill: var(--accent, #7c5cff); stroke: none; }
+
+/* Model warm-up indicator — slow-load models announce loading → ready next to the selector */
+.model-warm { font-size: 12px; padding: 2px 9px; border-radius: 9px; margin-left: 8px;
+  white-space: nowrap; border: 1px solid var(--border); background: var(--surface2); }
+.model-warm.loading { color: var(--accent); border-color: var(--accent); }
+.model-warm.ready   { color: var(--green);  border-color: var(--green); }
+.model-warm.error   { color: var(--red);    border-color: var(--red); }

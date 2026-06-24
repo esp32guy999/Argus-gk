@@ -4,6 +4,7 @@ import uuid
 import asyncio
 import pathlib
 import ipaddress
+import time
 from typing import Set, Dict, Any
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -29,6 +30,15 @@ VISION_MODELS = {"claude-code"}
 
 def _is_vision(model_name: str) -> bool:
     return model_name in VISION_MODELS
+
+# Models slow to cold-load (the local 80B offloads MoE layers to CPU → ~1-2 min cold).
+# These get warmed on selection and announce readiness (phone buzz + UI pill) so the
+# first turn doesn't look like a dead box. Fast/cloud models aren't warmed.
+WARM_ON_SELECT = {"qwen3-next-80b"}
+_warming: set = set()   # models with an in-flight warm-up (dedupe rapid selects)
+
+def _warm_on_select(model_name: str) -> bool:
+    return model_name in WARM_ON_SELECT
 HA_URL = os.environ.get("HA_URL")
 HA_TOKEN = os.environ.get("HA_TOKEN")
 
@@ -227,12 +237,70 @@ async def get_models():
         for m in data.get("data", []):
             mid = m["id"]
             display = "Argus (local 80B)" if mid == DEFAULT_MODEL else mid
-            entries.append([mid, {"display": display, "backend": "argus", "vision": _is_vision(mid)}])
+            entries.append([mid, {"display": display, "backend": "argus",
+                                  "vision": _is_vision(mid), "warm_on_select": _warm_on_select(mid)}])
     except Exception:
         # llama-swap unreachable — still offer the default so the UI isn't empty.
-        entries.append([DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus", "vision": _is_vision(DEFAULT_MODEL)}])
-    entries.append(["claude-code", {"display": "Claude Code", "backend": "claude", "vision": _is_vision("claude-code")}])
+        entries.append([DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus",
+                                        "vision": _is_vision(DEFAULT_MODEL), "warm_on_select": _warm_on_select(DEFAULT_MODEL)}])
+    entries.append(["claude-code", {"display": "Claude Code", "backend": "claude",
+                                    "vision": _is_vision("claude-code"), "warm_on_select": False}])
     return JSONResponse(entries)
+
+
+async def _model_ready(model_name: str) -> bool:
+    """True if llama-swap already has this model resident and ready."""
+    try:
+        async with httpx.AsyncClient(timeout=2) as c:
+            data = (await c.get(f"{_LOCAL_BASE}/running")).json()
+        return any(r.get("model") == model_name and r.get("state") == "ready"
+                   for r in data.get("running", []))
+    except Exception:
+        return False
+
+
+async def _warm_model(model_name: str, display: str):
+    """Fire a 1-token completion to force the cold load, then buzz + UI-pill on ready."""
+    t0 = time.monotonic()
+    ok = False
+    try:
+        async with httpx.AsyncClient(timeout=600) as c:
+            r = await c.post(f"{MODEL_URL}/chat/completions",
+                             json={"model": model_name, "max_tokens": 1, "temperature": 0,
+                                   "messages": [{"role": "user", "content": "ok"}]})
+            ok = r.status_code == 200
+    except Exception:
+        ok = False
+    finally:
+        _warming.discard(model_name)
+    secs = round(time.monotonic() - t0)
+    if ok:
+        await asyncio.to_thread(_notify, f"🟢 {display} ready",
+                                f"Finished loading in {secs}s — go ahead.")
+        publish("model_warm", {"model": model_name, "ready": True, "seconds": secs})
+    else:
+        await asyncio.to_thread(_notify, f"⚠️ {display} load failed",
+                                "The model didn't come up — check llama-swap.")
+        publish("model_warm", {"model": model_name, "error": True, "seconds": secs})
+
+
+@app.post("/argus/warm")
+async def warm(request: Request):
+    """Warm a slow-to-load model on selection; notify (phone + UI) when ready.
+    Idempotent: already-ready or already-warming returns immediately, no extra load."""
+    body = await request.json()
+    model_name = body.get("model") or ""
+    display = body.get("display") or model_name
+    if not _warm_on_select(model_name):
+        return JSONResponse({"status": "skip"})
+    if await _model_ready(model_name):
+        return JSONResponse({"status": "ready", "already": True})
+    if model_name in _warming:
+        return JSONResponse({"status": "warming", "already": True})
+    _warming.add(model_name)
+    publish("model_warm", {"model": model_name, "loading": True})
+    asyncio.create_task(_warm_model(model_name, display))
+    return JSONResponse({"status": "warming"})
 
 @app.get("/argus/history")
 async def get_history(conversation_id: str | None = None, limit: int = 100,
