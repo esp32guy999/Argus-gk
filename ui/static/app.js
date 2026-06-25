@@ -21,6 +21,7 @@ const state = {
   pendingDbId:    null,     // DB id of the assistant message after save
   pendingUserId:  null,     // DB id of the user message that prompted it
   pendingDurMeta: null,     // " · 12s" turn time from the CC done event, appended to bubble meta
+  pendingModel:   null,     // model that produced the in-flight turn (snapshot at send; colors the bubble + meta)
   oldestMsgId:    null,     // id of earliest-loaded message, for lazy paging
   historyExhausted:false,   // true once we've fetched everything older
   historyLoading: false,    // in-flight older-page fetch
@@ -60,6 +61,15 @@ function fmtTime(ts) {
 function fmtDay(ts) {
   return new Date(ts).toLocaleDateString('en-US',
     { weekday: 'long', month: 'short', day: 'numeric' });
+}
+// Friendly display name for a model id (falls back to the raw id).
+function modelLabel(id) {
+  return (id && state.modelCfg && state.modelCfg[id] && state.modelCfg[id].display) || id || '';
+}
+// The model's accent hex (for the bubble side-bars), grey fallback for unmapped/unknown.
+function modelColor(id) {
+  const a = ACCENTS[MODEL_ACCENT[id]];
+  return (a && a[0]) || '#888';
 }
 async function fetchJson(url, opts) {
   const r = await fetch(url, opts);
@@ -321,10 +331,12 @@ const ACCENTS = {
   violet: ['#a855f7', 'rgba(168,85,247,.15)',  'rgba(168,85,247,.25)'],
   yellow: ['#eab308', 'rgba(234,179,8,.15)',   'rgba(234,179,8,.25)'],
   pink:   ['#e8a0bf', 'rgba(232,160,191,.14)', 'rgba(232,160,191,.22)'],
+  teal:   ['#14b8a6', 'rgba(20,184,166,.15)',  'rgba(20,184,166,.25)'],
 };
 const MODEL_ACCENT = {
-  'claude-code':    'orange',   // Claude — the "home" accent
-  'qwen3-next-80b': 'violet',   // Argus local 80B — matches the indigo/violet eye
+  'claude-code':     'orange',   // Claude — the "home" accent
+  'qwen3-next-80b':  'violet',   // Argus local 80B — matches the indigo/violet eye
+  'qwen3.6-35b-a3b': 'teal',     // Qwen3.6 MoE — fast no-think chat model (replaced GLM)
   'gemma4-26b':     'pink',     // "comfy" accent
   'gemma4-12b':     'green',
   'gpt-oss-20b':    'yellow',
@@ -482,6 +494,8 @@ function _buildMessageNodes(msgs) {
     el.className = `message ${role}`;
     el.dataset.msgId = msg.id;
     el.textContent = text;
+    if (role === 'assistant' && msg.model)   // colour the side-bars by the model that produced this reply
+      el.style.setProperty('--msg-accent', modelColor(msg.model));
     if (meta) {
       const m = document.createElement('span');
       m.className = 'msg-meta';
@@ -959,6 +973,8 @@ async function send() {
     const { id: bubbleId } = await res.json();
     console.log('[DBG] chat sent, bubbleId:', bubbleId);
     state.pendingBubbleId = bubbleId;
+    state.pendingModel = state.currentModel;   // snapshot now — switching models mid-turn must not relabel/recolor this bubble
+    typingEl.style.setProperty('--msg-accent', modelColor(state.pendingModel));  // colour the bar while it streams
     // Live status pill (timer + stall/crash detection) until the turn completes.
     state.statusPill = statusPill;
     state.pendingMsgEl = typingEl;
@@ -1009,7 +1025,7 @@ async function send() {
       }
 
       state.pendingMsgEl.textContent = stripCommandTags(raw);
-      addMeta(state.pendingMsgEl, `${state.currentModel} · ${fmtTime(new Date())}${state.pendingDurMeta || ''}`);
+      addMeta(state.pendingMsgEl, `${modelLabel(state.pendingModel)} · ${fmtTime(new Date())}${state.pendingDurMeta || ''}`);
       processCommandTags(raw, state.pendingMsgEl);
       // dataset.msgId is what swipe-to-delete reads (the only delete affordance now).
       if (state.pendingDbId) {
@@ -1037,6 +1053,7 @@ async function send() {
     state.pendingDbId = null;
     state.pendingUserId = null;
     state.pendingDurMeta = null;
+    state.pendingModel = null;
     sendBtn.classList.remove('is-stop');
   }
 }

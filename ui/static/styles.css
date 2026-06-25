@@ -433,12 +433,13 @@ body {
   border-radius: 4px;
 }
 .message.user {
-  border-left: 3px solid var(--accent);
-  border-right: 3px solid var(--accent);
-}
-.message.assistant {
   border-left: 3px solid #888;
   border-right: 3px solid #888;
+}
+.message.assistant {
+  /* --msg-accent set per-bubble (JS) to the producing model's color; grey fallback */
+  border-left: 3px solid var(--msg-accent, #888);
+  border-right: 3px solid var(--msg-accent, #888);
 }
 .message .msg-meta {
   display: block;
