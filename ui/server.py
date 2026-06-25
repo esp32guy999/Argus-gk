@@ -40,6 +40,14 @@ _warming: set = set()   # models with an in-flight warm-up (dedupe rapid selects
 def _warm_on_select(model_name: str) -> bool:
     return model_name in WARM_ON_SELECT
 
+# Thinking-capable local models that should run with reasoning OFF on the interactive
+# chat path. Qwen3.6 reasons on everything, which makes chat sluggish and (on structured
+# turns) can run the token budget dry before answering; the 2026-06-24 bake-off showed the
+# reasoning is correct but ~50x slower for the same result. With thinking off it answers
+# ~0.5s and STILL calls tools correctly (verified). Maps model -> enable_thinking value
+# passed to loop.stream_run; absent -> None (server default, unchanged).
+CHAT_THINKING = {"qwen3.6-35b-a3b": False}
+
 # Per-model context window (tokens). The local 80B is served at -c 8192 and is
 # VRAM-bound there — history MUST be budgeted to fit or llama.cpp truncates the
 # prompt from the front (dropping the system prompt) or errors. Unknown local
@@ -199,7 +207,8 @@ async def chat(request: Request):
                 # it to VISION_MODELS and threading images into loop.stream_run.)
                 source = loop.stream_run(
                     registry, message, model_name=model_name, base_url=MODEL_URL,
-                    turn_budget=8, message_history=history, on_event=on_event)
+                    turn_budget=8, message_history=history, on_event=on_event,
+                    enable_thinking=CHAT_THINKING.get(model_name))
             async for content in source:
                 if isinstance(content, tuple) and content[0] == "__event__":
                     ev = content[1]
