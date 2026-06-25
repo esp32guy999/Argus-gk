@@ -1,0 +1,16 @@
+# Media filesystem lane — structured copy/move/delete/list over the media library,
+# a safe alternative to the wide-open shell lane.
+#
+# DISABLED pending owner review. When enabled, ONLY paths under `roots` are
+# touchable (realpath-checked), delete is SOFT (moves to a recoverable trash dir),
+# and every mutating op is logged to `audit_log`.
+#
+# Roots: tv/movies are CIFS-mounted rw on anvil already. Add `~/music` here once
+# the //192.168.4.206/media/music share is mounted rw on anvil.
+enabled: false
+roots:
+  - ~/tv
+  - ~/movies
+trash_dirname: ".argus-trash"
+hard_delete: false        # false = soft-delete to trash (recoverable). true = permanent rm.
+audit_log: ~/.local/share/argus/media_fs_audit.log

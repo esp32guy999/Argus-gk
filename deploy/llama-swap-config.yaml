@@ -96,3 +96,26 @@ models:
       -ncmoe 20 -c 16384
       --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
     ttl: 600
+
+  # ── BAKE-OFF CANDIDATES (downloading 2026-06-25) — commented until complete. ──
+  # Both coder-tuned Qwen3 MoEs, non-reasoning instruct, IQ4_XS (matches the 80B tier).
+  # Uncomment + verify the -m path once the hf download finishes, then run battery2.py.
+  #
+  # Qwen3-Coder-Next: 80B-A3B (3B active, 512 experts/10+1), SWE-Verified 71.3, 262K ctx.
+  # Same footprint as qwen3-next-80b -> mirror its -ncmoe 33. IQ4_XS is SHARDED: point -m
+  # at the first shard (Qwen3-Coder-Next-IQ4_XS-00001-of-0000N.gguf).
+  # "qwen3-coder-next":
+  #   cmd: |
+  #     ${server}
+  #     -m /home/shane/models/qwen3-coder-next/<FIRST-SHARD>.gguf
+  #     -ncmoe 33 -c 8192 -np 1 -t 8 --no-warmup
+  #   ttl: 600
+  #
+  # Qwen3-Coder-30B-A3B: 30B-A3B, SWE ~64, 16.4GB -> lighter offload, fits mostly on GPU.
+  # Start -ncmoe ~12 (tune down for speed if VRAM allows); single-file IQ4_XS.
+  # "qwen3-coder-30b":
+  #   cmd: |
+  #     ${server}
+  #     -m /home/shane/models/qwen3-coder-30b/Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf
+  #     -ncmoe 12 -c 16384 -np 1 -t 8 --no-warmup
+  #   ttl: 600

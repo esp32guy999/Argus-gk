@@ -21,6 +21,8 @@ fresh chat thread otherwise.
 |---|---|---|
 | `qwen3-next-80b` | **Agentic coding workhorse** (instruct, fast, terse) | [memo](qwen3-next-80b.md) |
 | `qwen3.6-35b-a3b` | **Fast no-think chat** + flexible reasoner (replaced GLM) | [memo](qwen3.6-35b-a3b.md) |
+| `qwen3-coder-next` | *under eval* — coder-tuned 80B (SWE 71); may replace the 80B | [memo](qwen3-coder-next.md) |
+| `qwen3-coder-30b` | *under eval* — fast/light coder (SWE ~64), fits mostly on GPU | [memo](qwen3-coder-30b.md) |
 | `gemma4-26b` | Default general chat (reasoning off) | — |
 | `gemma4-12b` | Smaller general chat | — |
 | `gpt-oss-20b` | General/utility | — |
