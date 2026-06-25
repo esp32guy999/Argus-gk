@@ -1,0 +1,98 @@
+# llama-swap config — anvil (RTX 5080, 16GB). One model resident at a time;
+# llama-swap swaps the underlying llama-server on demand and unloads on idle TTL.
+# Listen addr is set on the CLI (-listen 0.0.0.0:9090), not here.
+
+healthCheckTimeout: 300   # seconds to wait for a model to become ready after launch
+logLevel: info
+
+macros:
+  # Shared llama-server invocation. ${PORT} is assigned by llama-swap per model.
+  # -fa on + q4 KV is the VRAM lever; --jinja uses each model's embedded chat template.
+  server: >
+    /home/shane/llama.cpp/build/bin/llama-server
+    --host 127.0.0.1 --port ${PORT}
+    -ngl 99 -fa on --jinja --metrics
+
+models:
+  # ---- Default chat model ----
+  "gemma4-26b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/gemma4/gemma-4-26B-A4B-it-UD-Q3_K_M.gguf
+      --cache-type-k q4_0 --cache-type-v q4_0
+      --reasoning off
+      -c 131072
+    ttl: 600
+
+  "gpt-oss-20b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/gpt-oss-gguf/gpt-oss-20b-mxfp4.gguf
+      --cache-type-k q4_0 --cache-type-v q4_0
+      -c 131072
+    ttl: 600
+
+  "gemma4-12b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/gemma-4-12b/gemma-4-12b-it-Q4_K_M.gguf
+      --cache-type-k q4_0 --cache-type-v q4_0
+      --reasoning off
+      -c 65536
+    ttl: 600
+
+  # LFM2.5-8B — your old `flux` provider model
+  "lfm2.5-8b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/LFM2.5-8B-A1B-Q8_0.gguf
+      --cache-type-k q4_0 --cache-type-v q4_0
+      -c 32768
+    ttl: 600
+
+  "z-engineer":
+    cmd: |
+      ${server}
+      -m /home/shane/models/z-engineer/Qwen3-4b-Z-Image-Engineer-V4-Q5_K_M.gguf
+      -c 32768
+    ttl: 600
+
+  "bonsai-8b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/Bonsai-8B.gguf
+      -c 8192
+    ttl: 600
+
+  # Qwen3-Next-80B-A3B (MoE) — expert-offload load on the 16GB card.
+  # ${server} already supplies -ngl 99 -fa on --jinja --metrics; -ncmoe 33 claws
+  # 33 MoE expert layers back to system RAM so ~14.7GB of experts stay resident on
+  # the GPU (the proven launch-80b.sh layout). ~88s cold load (healthCheckTimeout
+  # 300 covers it). Long ttl so switching to a cloud model (claude-code) doesn't
+  # idle-evict it — any *local*-model request still swaps it out automatically.
+  "qwen3-next-80b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/qwen3-next-80b-a3b/Qwen3-Next-80B-A3B-Instruct-IQ4_XS.gguf
+      -ncmoe 33 -c 8192 -np 1 -t 8 --no-warmup
+    ttl: 86400
+
+  # Qwen3.6-35B-A3B (Alibaba) — hybrid attention+SSM MoE, 35B total / 3B active (256 experts,
+  # 8 used), 262K ctx native, hybrid-thinking. REPLACED GLM-4.7-Flash 2026-06-24 (GLM dropped:
+  # Qwen3.6 strictly dominates it — same 0.5s no-think chat AND a working reasoning-coder mode).
+  # VERIFIED on build 9425: qwen35moe arch loads, chat, native tool calls (valid JSON), and the
+  # chat_template_kwargs.enable_thinking toggle all work. 22.4GB UD-Q4_K_XL -> -ncmoe 20 fits in
+  # ~13GB with -c 16384 + q4 KV (~3GB free). BAKE-OFF (2026-06-24) vs the 80B: think-ON produces
+  # a CORRECT, complete patch — but pays ~113s / 9.4k tok (32k chars reasoning) for it; the 80B
+  # does the same in ~2s. So the 80B stays the agentic coder; Qwen3.6 = fast NO-THINK chat
+  # (enable_thinking=false -> 0.5s, wired via CHAT_THINKING in ui/server.py) + heavy reasoner
+  # when latency is affordable. NEEDS a generous token budget or thinking runs the answer dry.
+  # Sampling below = Qwen3 thinking-mode defaults; per-request params override.
+  "qwen3.6-35b-a3b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+      --cache-type-k q4_0 --cache-type-v q4_0
+      -ncmoe 20 -c 16384
+      --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
+    ttl: 600
