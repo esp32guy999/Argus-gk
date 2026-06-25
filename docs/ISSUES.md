@@ -8,6 +8,26 @@ Expected Value.
 
 ## Open
 
+### Audiobook lane down — ABB `/?s=` search returns the homepage
+```
+category:          Deferred
+severity:          Medium
+status:            open
+blast_radius:      Medium (whole audiobook search/grab lane)
+component:         argus/tools/audiobook.py (_abb_get / search via /?s=)
+discovered_during: Grab "Empirical Endgame" (VGO) (2026-06-24)
+notes:             audiobookbay.lu is REACHABLE from anvil (fetch returns ~34KB), but
+                   GET /?s=<query> now returns the ABB HOMEPAGE (<title>"Unabridged
+                   Audiobooks Free Online", 9 random recent posts) instead of search
+                   results — for every query, incl. titles known to be on ABB, and after
+                   a 5-min cooldown (so NOT rate-limiting). The query-match filter then
+                   drops everything → search() returns []. Looks like an ABB-side change
+                   (anti-bot/Cloudflare or a moved search path). Fix: find ABB's current
+                   search mechanism (e.g. /page/N/?s=, a category path, or POST) and update
+                   the scraper. Alt acquisition path: Readarr+Prowlarr indexers.
+```
+
+
 ### z-engineer (image-manipulation model) shows in the chat model selector
 ```
 category:          Observation
