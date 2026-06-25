@@ -437,6 +437,22 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 async def events():
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
+@app.post("/argus/inject")
+async def inject_message(request: Request):
+    """Persist a message AND push it live over SSE so open clients append it
+    without a reload. Used to post widgets/cards (e.g. ```html embeds) into chat."""
+    body = await request.json()
+    cid = _cid(body.get("conversation_id"))
+    role = body.get("role", "assistant")
+    content = body.get("content", "")
+    model = body.get("model")
+    if not content:
+        return JSONResponse({"error": "empty content"}, status_code=400)
+    row = await asyncio.to_thread(store.add_message, cid, role, content, model)
+    publish("chat_message", {"role": role, "content": content, "model": model,
+                             "conversation_id": cid, "id": row.get("id")})
+    return JSONResponse({"ok": True, "id": row.get("id")})
+
 @app.get("/layout")
 async def get_layout():
     layout_path = PRESETS / "current.json"

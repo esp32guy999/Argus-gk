@@ -494,6 +494,7 @@ function _buildMessageNodes(msgs) {
     el.className = `message ${role}`;
     el.dataset.msgId = msg.id;
     el.textContent = text;
+    if (role === 'assistant') _renderInlineHtml(el, text);
     if (role === 'assistant' && msg.model)   // colour the side-bars by the model that produced this reply
       el.style.setProperty('--msg-accent', modelColor(msg.model));
     if (meta) {
@@ -877,7 +878,55 @@ if (attachBtn && attachInput) {
   }
   window.addEventListener('focus', _onReturnFromPicker);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') _onReturnFromPicker();
+    if (document.visibilityState === 'visible') { _onReturnFromPicker(); _resurfaceLastMessage(); }
+  });
+}
+
+// Returning to the app (e.g. after the phone screen slept): make sure the latest
+// message is on screen so a reply isn't missed — scroll it into view + brief flash.
+function _resurfaceLastMessage() {
+  const msgs = messagesEl.querySelectorAll('.message');
+  const last = msgs[msgs.length - 1];
+  if (!last) return;
+  last.scrollIntoView({ block: 'end' });
+  last.classList.remove('resurfaced');
+  void last.offsetWidth;            // restart the flash animation
+  last.classList.add('resurfaced');
+}
+
+// PROTOTYPE: render ```html blocks in an assistant reply as a SANDBOXED, auto-resizing
+// iframe inline in the bubble. ON by default during the prototype; disable per-device with:
+//   localStorage.setItem('argus_html_inline','0')   (and reload)
+// sandbox="allow-scripts" (no allow-same-origin) => embedded HTML can't reach our
+// origin, cookies, or HA token. The injected reporter postMessages its height out.
+function _renderInlineHtml(bubble, text) {
+  if (localStorage.getItem('argus_html_inline') === '0') return;
+  const blocks = [];
+  const stripped = text.replace(/```html\s*\n([\s\S]*?)```/g, (_, h) => { blocks.push(h); return ''; });
+  if (!blocks.length) return;
+  bubble.textContent = stripped.trim();
+  for (const html of blocks) {
+    const id = 'h' + Math.random().toString(36).slice(2);
+    const f = document.createElement('iframe');
+    f.className = 'html-embed';
+    f.dataset.hid = id;
+    f.setAttribute('sandbox', 'allow-scripts');
+    f.setAttribute('srcdoc',
+      '<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">'
+      + '<style>body{margin:0;color:#e8e8ea;font:14px system-ui,sans-serif;background:transparent}</style>'
+      + html
+      + "<script>function R(){parent.postMessage({hid:'" + id + "',h:document.documentElement.scrollHeight},'*')}"
+      + 'new ResizeObserver(R).observe(document.documentElement);addEventListener("load",R);R()</script>');
+    bubble.appendChild(f);
+  }
+}
+if (!window._htmlEmbedWired) {
+  window._htmlEmbedWired = true;
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || !d.hid || !d.h) return;
+    const f = document.querySelector('iframe.html-embed[data-hid="' + d.hid + '"]');
+    if (f) f.style.height = Math.min(d.h + 6, 2000) + 'px';
   });
 }
 
@@ -1025,6 +1074,7 @@ async function send() {
       }
 
       state.pendingMsgEl.textContent = stripCommandTags(raw);
+      _renderInlineHtml(state.pendingMsgEl, stripCommandTags(raw));   // inline sandboxed HTML (flagged)
       addMeta(state.pendingMsgEl, `${modelLabel(state.pendingModel)} · ${fmtTime(new Date())}${state.pendingDurMeta || ''}`);
       processCommandTags(raw, state.pendingMsgEl);
       // dataset.msgId is what swipe-to-delete reads (the only delete affordance now).
@@ -1235,6 +1285,12 @@ function connectEvents() {
         else if (d.ready) _setModelWarm('ready', `${name} ready${d.seconds ? ` (${d.seconds}s)` : ''}`);
         else if (d.loading) _setModelWarm('loading', `loading ${name}…`);
       } catch {}
+    });
+    // Live-injected message (e.g. a pushed widget) — append without a reload.
+    globalEvents.addEventListener('chat_message', e => {
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      const el = appendMessage(m.role || 'assistant', m.content || '');
+      if ((m.role || 'assistant') === 'assistant') _renderInlineHtml(el, m.content || '');
     });
     globalEvents.addEventListener('bubble_done', e => {
       let data;

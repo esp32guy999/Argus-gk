@@ -417,6 +417,15 @@ body {
   color: var(--accent, #4af);
 }
 
+/* Brief flash when a message is re-surfaced on return-to-app (screen woke). */
+@keyframes resurface-flash {
+  0%   { background: rgba(246, 166, 75, .22); }
+  100% { background: transparent; }
+}
+.message.resurfaced { animation: resurface-flash 1.6s ease-out; }
+/* Inline sandboxed HTML embed (flagged prototype). */
+.html-embed { display: block; width: 100%; border: none; background: transparent;
+  border-radius: 8px; margin-top: 8px; min-height: 24px; }
 .message {
   width: 100%;
   align-self: stretch;
