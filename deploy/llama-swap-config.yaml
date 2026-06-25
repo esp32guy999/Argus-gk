@@ -102,20 +102,20 @@ models:
   # Uncomment + verify the -m path once the hf download finishes, then run battery2.py.
   #
   # Qwen3-Coder-Next: 80B-A3B (3B active, 512 experts/10+1), SWE-Verified 71.3, 262K ctx.
-  # Same footprint as qwen3-next-80b -> mirror its -ncmoe 33. IQ4_XS is SHARDED: point -m
-  # at the first shard (Qwen3-Coder-Next-IQ4_XS-00001-of-0000N.gguf).
-  # "qwen3-coder-next":
-  #   cmd: |
-  #     ${server}
-  #     -m /home/shane/models/qwen3-coder-next/<FIRST-SHARD>.gguf
-  #     -ncmoe 33 -c 8192 -np 1 -t 8 --no-warmup
-  #   ttl: 600
+  # Same footprint as qwen3-next-80b -> mirror its -ncmoe 33. Plain IQ4_XS (single file).
+  # Wired 2026-06-25. (A redundant UD-IQ4_XS also downloaded — can delete.)
+  "qwen3-coder-next":
+    cmd: |
+      ${server}
+      -m /home/shane/models/qwen3-coder-next/Qwen3-Coder-Next-IQ4_XS.gguf
+      -ncmoe 33 -c 8192 -np 1 -t 8 --no-warmup
+    ttl: 600
   #
   # Qwen3-Coder-30B-A3B: 30B-A3B, SWE ~64, 16.4GB -> lighter offload, fits mostly on GPU.
-  # Start -ncmoe ~12 (tune down for speed if VRAM allows); single-file IQ4_XS.
-  # "qwen3-coder-30b":
-  #   cmd: |
-  #     ${server}
-  #     -m /home/shane/models/qwen3-coder-30b/Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf
-  #     -ncmoe 12 -c 16384 -np 1 -t 8 --no-warmup
-  #   ttl: 600
+  # -ncmoe 12 start (tune down for speed if VRAM allows); single-file IQ4_XS. Wired 2026-06-25.
+  "qwen3-coder-30b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/qwen3-coder-30b/Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf
+      -ncmoe 12 -c 16384 -np 1 -t 8 --no-warmup
+    ttl: 600
