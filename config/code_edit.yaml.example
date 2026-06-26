@@ -1,0 +1,12 @@
+# Example: enable the code-edit lane scoped to specific project roots.
+# Copy to config/code_edit.yaml and adjust. Keep `roots` TIGHT — the model can
+# create/overwrite/edit any file under them. Prefer a sandbox or a single project
+# dir over broad roots like ~ . Avoid pointing it at Argus's own running code
+# unless you accept self-modification risk.
+enabled: true
+roots:
+  - ~/lumen          # the Lumen PWA — e.g. let the coder wire a new model in
+  - ~/sandbox        # a scratch dir for experiments
+backup_dirname: .argus-codebak     # backups live under <root>/.argus-codebak/<ts>/
+max_bytes: 2000000                  # refuse writes larger than this
+audit_log: ~/.local/share/argus/code_edit_audit.log

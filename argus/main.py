@@ -45,6 +45,9 @@ def build_registry() -> Registry:
     if os.path.exists("config/media_fs.yaml"):
         from .tools import media_fs                          # safe copy/move/delete over media roots
         lanes.append(("media-fs", "config/media_fs.yaml", media_fs.tools))
+    if os.path.exists("config/code_edit.yaml"):
+        from .tools import code_edit                         # read/write/edit source (allowlist + backups)
+        lanes.append(("code-edit", "config/code_edit.yaml", code_edit.tools))
     if os.path.exists("config/openapi.yaml"):
         from .tools import arr_acquire
         if arr_acquire.has_any():                          # *arr acquisition (write side)

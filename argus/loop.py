@@ -37,6 +37,31 @@ SYSTEM_PROMPT = (
 )
 
 
+# Per-model lane gates — the "configure the harness for each model" edict applied to
+# TOOL LANES (cf. VISION_MODELS / CHAT_THINKING in ui/server.py). A powerful lane is
+# offered ONLY to models cleared for it; an uncleared model simply doesn't receive that
+# lane's tools this turn (the lane stays available to cleared models). A provider absent
+# from this map is open to ALL models. Match is by substring, so a served model id that
+# embeds the short name still matches. claude-code bypasses this loop (native tools), so
+# it's unaffected.
+LANE_MODEL_GATES: dict[str, set[str]] = {
+    "code_edit": {"qwen3-coder-30b", "qwen3-coder-next"},   # surgical source edits → coder-class only
+}
+
+
+def _gate_tools(selected, model_name: str):
+    """Drop tools whose lane the current model isn't cleared for (per LANE_MODEL_GATES)."""
+    if not LANE_MODEL_GATES:
+        return selected
+    kept = []
+    for t in selected:
+        allow = LANE_MODEL_GATES.get(getattr(t, "provider", None))
+        if allow and not any(m in (model_name or "") for m in allow):
+            continue
+        kept.append(t)
+    return kept
+
+
 def make_model(model_name: str = "local",
                base_url: str = "http://localhost:4000/v1") -> OpenAIChatModel:
     """Point the engine at the LiteLLM proxy. Model-agnostic via model_name."""
@@ -73,7 +98,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     the full text-so-far each step, matching Forge's {content} contract.
     `message_history` (prior turns) is what gives the model memory across turns.
     """
-    selected = registry.select(prompt)
+    selected = _gate_tools(registry.select(prompt), model_name)
     metrics.TOOLS_SELECTED.observe(len(selected))
     agent = Agent(
         make_model(model_name, base_url),
@@ -106,7 +131,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
 def run(registry: Registry, prompt: str, *, model_name: str = "local",
         base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
         message_history=None, enable_thinking: bool | None = None) -> str:
-    selected = registry.select(prompt)
+    selected = _gate_tools(registry.select(prompt), model_name)
     metrics.TOOLS_SELECTED.observe(len(selected))
     agent = Agent(
         make_model(model_name, base_url),
@@ -142,7 +167,7 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     """Non-streaming async run — for the background task runner. Same tool selection
     + watchdog + budget as run(), returns the final text. Higher default budget since
     background jobs are expected to be multi-step."""
-    selected = registry.select(prompt)
+    selected = _gate_tools(registry.select(prompt), model_name)
     metrics.TOOLS_SELECTED.observe(len(selected))
     agent = Agent(
         make_model(model_name, base_url),

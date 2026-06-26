@@ -1,0 +1,13 @@
+# Code-edit tool lane — read/write/edit/revert source files, with a path allowlist
+# and backup-before-write (reversible). SHIPPED DISABLED: this is a powerful lane
+# (the model can modify source), so it stays off until you set `roots` and flip
+# enabled: true. See config/code_edit.yaml.example and argus/tools/code_edit.py.
+#
+# WHICH MODELS may use this lane is gated per-model in argus/loop.py LANE_MODEL_GATES
+# (the "configure the harness for each model" edict; cf. VISION_MODELS/CHAT_THINKING).
+# Default: coder-class models only — an uncleared model just doesn't get these tools.
+enabled: false
+roots: []            # e.g. [~/lumen, ~/sandbox] — every edit must resolve under one of these
+backup_dirname: .argus-codebak
+max_bytes: 2000000
+audit_log: ~/.local/share/argus/code_edit_audit.log
