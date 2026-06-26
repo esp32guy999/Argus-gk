@@ -332,11 +332,13 @@ const ACCENTS = {
   yellow: ['#eab308', 'rgba(234,179,8,.15)',   'rgba(234,179,8,.25)'],
   pink:   ['#e8a0bf', 'rgba(232,160,191,.14)', 'rgba(232,160,191,.22)'],
   teal:   ['#14b8a6', 'rgba(20,184,166,.15)',  'rgba(20,184,166,.25)'],
+  gold:   ['#f5c542', 'rgba(245,197,66,.18)',  'rgba(245,197,66,.30)'],   // 🥇 bake-off champion
 };
 const MODEL_ACCENT = {
-  'claude-code':     'orange',   // Claude — the "home" accent
-  'qwen3-next-80b':  'violet',   // Argus local 80B — matches the indigo/violet eye
-  'qwen3.6-35b-a3b': 'teal',     // Qwen3.6 MoE — fast no-think chat model (replaced GLM)
+  'claude-code':      'orange',  // Claude — the "home" accent
+  'qwen3-next-80b':   'violet',  // Argus local 80B — matches the indigo/violet eye
+  'qwen3-coder-30b':  'gold',    // 🥇 bake-off winner — the daily coder
+  'qwen3.6-35b-a3b':  'teal',    // Qwen3.6 MoE — fast no-think chat model (replaced GLM)
   'gemma4-26b':     'pink',     // "comfy" accent
   'gemma4-12b':     'green',
   'gpt-oss-20b':    'yellow',
