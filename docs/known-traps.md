@@ -9,6 +9,14 @@ Scar tissue we already paid for (Hermes) + footguns the mid-2026 research surfac
 - **gemma-class returns empty `content` without reasoning disabled** — gemma is a reasoning model; without `--reasoning off` it emits empty content. Set per-model.
 - **`claude -p` from systemd foot-guns** (if ever shelling to a CLI): PATH missing `~/.local/bin`; a `credentials.env` `ANTHROPIC_API_KEY`/OAUTH token silently overrides Pro creds → 401; `--allowedTools` is variadic and eats the following prompt arg (use `--permission-mode bypassPermissions`).
 
+## SQLite / storage (the DA seam)
+- **`CREATE TABLE IF NOT EXISTS` never adds columns to an existing table.** Adding a column to `_SCHEMA` does nothing to a live `argus.db` — you must ALTER-migrate (`Store._migrate()` checks `PRAGMA table_info` and runs `ALTER TABLE … ADD COLUMN`). Cost us a ~100× crash-loop (`no such column: category`, 2026-06-26). See `postmortem-ledger-migration-crashloop.md`.
+- **Test the migration, not just a fresh DB.** A test that builds a new temp DB creates the table *with* the new column — it never exercises the migrate-an-existing-table path, so it stays green while the live server crashes. Test against a table created at the OLD schema.
+- **After any schema edit: restart + health-check before moving on.** The crash only manifests against the pre-existing DB, so an un-restarted schema change is a landmine for the next start.
+
+## systemd (durable services)
+- **`StartLimitBurst` is blind to slow crash loops.** The burst guard only counts restarts inside `StartLimitIntervalSec` (default 10s). A crash that takes ~55s to manifest never puts >1 restart in any 10s window, so the limit never trips and the service loops ~forever (we hit ~100 restarts). Widen `StartLimitIntervalSec` (e.g. 600s) so a bad deploy fails LOUD instead of silently. `Restart=always` + slow crash = unbounded loop.
+
 ## llama.cpp / local tool-calling
 - **`--jinja` is mandatory** for tool calling (activates the GGUF-embedded chat template). Without it: `tools param requires --jinja flag`.
 - **Grammar-looping on optional params** — March 2026 defect: capable ~35B models looped the same tool call forever when a tool had multiple *optional* params (grammar enforced arg order). Fixed in llama.cpp PR #20171. Mitigations: **prefer REQUIRED params**, keep llama.cpp current, rely on the watchdog loop-detection as backstop. Lesson: **reliability is plumbing-dependent, not just model-dependent.**

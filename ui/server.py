@@ -132,6 +132,9 @@ async def _bind_task_loop():
     # the Prometheus cornerstone actually function instead of being scraped by nobody).
     from argus import observability
     asyncio.create_task(observability.SelfObserver(_notify).run())
+    # The Work Ledger reconciler: advance/notify in-flight jobs without a human poke.
+    from argus import ledger
+    asyncio.create_task(ledger.reconcile_loop(store, publish))
 
 
 @app.on_event("shutdown")
@@ -452,6 +455,138 @@ async def inject_message(request: Request):
     publish("chat_message", {"role": role, "content": content, "model": model,
                              "conversation_id": cid, "id": row.get("id")})
     return JSONResponse({"ok": True, "id": row.get("id")})
+
+
+# ── The Work Ledger — durable in-flight job board (docs/DESIGN-work-ledger.md) ────
+@app.get("/argus/jobs")
+async def list_jobs(include_terminal: bool = True):
+    """The board. Live work first, then most-recently finished. The reconciler keeps
+    rows fresh on its own tick; this just returns the current state."""
+    jobs = await asyncio.to_thread(store.list_jobs, include_terminal=include_terminal)
+    return JSONResponse({"jobs": jobs})
+
+@app.get("/argus/jobs/{job_id}")
+async def get_job(job_id: str):
+    job = await asyncio.to_thread(store.get_job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no such job")
+    return JSONResponse(job)
+
+@app.post("/argus/jobs")
+async def create_job(request: Request):
+    """Register a job. A 'proposed' job sits on the board awaiting approve/reject
+    and is NOT run until approved (plan-preview-before-execute)."""
+    b = await request.json()
+    if not b.get("id") or not b.get("kind") or not b.get("title"):
+        return JSONResponse({"error": "id, kind, title required"}, status_code=400)
+    try:
+        job = await asyncio.to_thread(
+            store.add_job, b["id"], b["kind"], b["title"],
+            state=b.get("state", "queued"), category=b.get("category", "external"),
+            progress=b.get("progress"), detail=b.get("detail"),
+            probe=b.get("probe"), payload=b.get("payload"),
+            next_check_ts=b.get("next_check_ts"),
+            conversation_id=_cid(b.get("conversation_id")))
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return JSONResponse(job)
+
+@app.post("/argus/jobs/{job_id}/{action}")
+async def job_action(job_id: str, action: str):
+    """approve (proposed→queued), reject/cancel (→cancelled). Approve hands the job
+    to the reconciler; reject/cancel takes it off the live board."""
+    target = {"approve": "queued", "reject": "cancelled", "cancel": "cancelled"}.get(action)
+    if target is None:
+        raise HTTPException(status_code=400, detail="action must be approve|reject|cancel")
+    job = await asyncio.to_thread(store.update_job, job_id, state=target)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no such job")
+    return JSONResponse(job)
+
+
+_BOARD_HTML = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Argus · Work Ledger</title><style>
+:root{--bg:#0e0f13;--card:#1a1c22;--line:#2a2d36;--fg:#e8e8ea;--mut:#9aa0aa}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.4 -apple-system,system-ui,sans-serif;padding:14px}
+h1{font-size:15px;margin:0 0 12px;color:var(--mut);font-weight:600;letter-spacing:.3px}
+.job{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-bottom:9px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.title{font-weight:600}.detail{color:var(--mut);font-size:12px;margin-top:3px}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600;white-space:nowrap}
+.s-active{background:#13361f;color:#4ade80}.s-blocked{background:#3a2c12;color:#fbbf24}
+.s-queued{background:#1e2a3a;color:#60a5fa}.s-proposed{background:#2c1e3a;color:#c084fc}
+.s-done{background:#1c2530;color:#7d8590}.s-failed{background:#3a1818;color:#f87171}
+.s-cancelled{background:#222;color:#666}
+.bar{height:5px;background:#22252d;border-radius:3px;margin-top:8px;overflow:hidden}
+.fill{height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa)}
+.cat{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-left:6px}
+.acts{margin-top:9px;display:flex;gap:7px}button{font:inherit;font-size:12px;font-weight:600;
+border:0;border-radius:7px;padding:5px 12px;cursor:pointer}.ap{background:#16432a;color:#4ade80}
+.rj{background:#3a1c1c;color:#f87171}.empty{color:var(--mut);text-align:center;padding:30px}
+.foot{color:var(--mut);font-size:11px;margin-top:10px;text-align:center}
+</style></head><body><h1>◷ ARGUS · WORK LEDGER</h1><div id=board></div>
+<div class=foot id=foot></div><script>
+const stamp=t=>t?new Date(t*1000).toLocaleTimeString():'';
+async function act(id,a){await fetch(`/argus/jobs/${id}/${a}`,{method:'POST'});load();}
+async function load(){
+ let j;try{j=await(await fetch('/argus/jobs')).json();}catch(e){return;}
+ const b=document.getElementById('board');const jobs=j.jobs||[];
+ if(!jobs.length){b.innerHTML='<div class=empty>No jobs in flight.</div>';}
+ else b.innerHTML=jobs.map(x=>{
+  const p=x.progress!=null?`<div class=bar><div class=fill style="width:${Math.round(x.progress*100)}%"></div></div>`:'';
+  const a=x.state==='proposed'?`<div class=acts><button class=ap onclick="act('${x.id}','approve')">Approve</button>`+
+    `<button class=rj onclick="act('${x.id}','reject')">Reject</button></div>`:'';
+  return `<div class=job><div class=top><span class=title>${x.title}<span class=cat>${x.category}</span></span>`+
+   `<span class="badge s-${x.state}">${x.state}</span></div>`+
+   `${x.detail?`<div class=detail>${x.detail}</div>`:''}${p}${a}</div>`;
+ }).join('');
+ document.getElementById('foot').textContent='updated '+new Date().toLocaleTimeString();
+}
+load();setInterval(load,5000);
+</script></body></html>"""
+
+@app.get("/argus/board")
+async def board():
+    """Self-contained, same-origin Work Ledger board — live job states, progress bars,
+    and approve/reject for proposed jobs. Polls /argus/jobs every 5s. Open directly or
+    iframe it. Same-origin so no sandbox/CORS friction."""
+    return Response(content=_BOARD_HTML, media_type="text/html")
+
+# ── qBittorrent proxy — powers the Downloads canvas widget (/qbt/torrents/info).
+# Holds a logged-in session (cookie jar) and re-auths on expiry. Creds from env.
+_QBT_URL = os.environ.get("QBT_URL", "http://192.168.4.206:8090")
+_qbt = httpx.AsyncClient(base_url=_QBT_URL, timeout=10.0)
+_qbt_authed = False
+
+async def _qbt_login() -> bool:
+    u, p = os.environ.get("QBIT_USER"), os.environ.get("QBIT_PASS")
+    if not (u and p):
+        return False
+    try:
+        r = await _qbt.post("/api/v2/auth/login", data={"username": u, "password": p},
+                            headers={"Referer": _QBT_URL})   # qBt CSRF needs Referer
+        return r.status_code < 300 and "Ok" in r.text
+    except Exception:
+        return False
+
+@app.get("/qbt/{path:path}")
+async def qbt_proxy(path: str, request: Request):
+    global _qbt_authed
+    if not _qbt_authed:
+        _qbt_authed = await _qbt_login()
+    async def _get():
+        return await _qbt.get(f"/api/v2/{path}", params=dict(request.query_params))
+    try:
+        r = await _get()
+        if r.status_code == 403:                          # session expired -> re-login
+            _qbt_authed = await _qbt_login()
+            r = await _get()
+    except Exception as e:
+        return JSONResponse({"error": f"qbit unreachable: {e}"}, status_code=502)
+    return Response(content=r.content, status_code=r.status_code,
+                    media_type=r.headers.get("content-type", "application/json"))
 
 @app.get("/layout")
 async def get_layout():
