@@ -525,16 +525,21 @@ h1{font-size:15px;margin:0 0 12px;color:var(--mut);font-weight:600;letter-spacin
 .acts{margin-top:9px;display:flex;gap:7px}button{font:inherit;font-size:12px;font-weight:600;
 border:0;border-radius:7px;padding:5px 12px;cursor:pointer}.ap{background:#16432a;color:#4ade80}
 .rj{background:#3a1c1c;color:#f87171}.empty{color:var(--mut);text-align:center;padding:30px}
+.idle{display:none;background:linear-gradient(135deg,#1a1c22,#15171c);border:1px dashed var(--line);
+border-radius:10px;padding:20px;text-align:center;color:var(--mut);font-weight:600;letter-spacing:.4px;margin-bottom:10px}
+.idle.show{display:block}
 .foot{color:var(--mut);font-size:11px;margin-top:10px;text-align:center}
-</style></head><body><h1>◷ ARGUS · WORK LEDGER</h1><div id=board></div>
+</style></head><body><h1>◷ ARGUS · WORK LEDGER</h1><div id=idle class=idle>◷ Idle — awaiting assignment</div><div id=board></div>
 <div class=foot id=foot></div><script>
 const stamp=t=>t?new Date(t*1000).toLocaleTimeString():'';
+const LIVE=['active','blocked','queued','proposed'];
 async function act(id,a){await fetch(`/argus/jobs/${id}/${a}`,{method:'POST'});load();}
 async function load(){
  let j;try{j=await(await fetch('/argus/jobs')).json();}catch(e){return;}
  const b=document.getElementById('board');const jobs=j.jobs||[];
- if(!jobs.length){b.innerHTML='<div class=empty>No jobs in flight.</div>';}
- else b.innerHTML=jobs.map(x=>{
+ const live=jobs.filter(x=>LIVE.includes(x.state));
+ document.getElementById('idle').classList.toggle('show', live.length===0);
+ b.innerHTML=!jobs.length?'':jobs.map(x=>{
   const p=x.progress!=null?`<div class=bar><div class=fill style="width:${Math.round(x.progress*100)}%"></div></div>`:'';
   const a=x.state==='proposed'?`<div class=acts><button class=ap onclick="act('${x.id}','approve')">Approve</button>`+
     `<button class=rj onclick="act('${x.id}','reject')">Reject</button></div>`:'';
@@ -542,7 +547,7 @@ async function load(){
    `<span class="badge s-${x.state}">${x.state}</span></div>`+
    `${x.detail?`<div class=detail>${x.detail}</div>`:''}${p}${a}</div>`;
  }).join('');
- document.getElementById('foot').textContent='updated '+new Date().toLocaleTimeString();
+ document.getElementById('foot').textContent=(live.length?live.length+' live · ':'')+'updated '+new Date().toLocaleTimeString();
 }
 load();setInterval(load,5000);
 </script></body></html>"""
