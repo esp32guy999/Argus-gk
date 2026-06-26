@@ -494,7 +494,7 @@ function _buildMessageNodes(msgs) {
     el.className = `message ${role}`;
     el.dataset.msgId = msg.id;
     el.textContent = text;
-    if (role === 'assistant') _renderInlineHtml(el, text);
+    if (role === 'assistant') { _renderInlineHtml(el, text); _renderLinks(el, text); }
     if (role === 'assistant' && msg.model)   // colour the side-bars by the model that produced this reply
       el.style.setProperty('--msg-accent', modelColor(msg.model));
     if (meta) {
@@ -910,7 +910,7 @@ function _renderInlineHtml(bubble, text) {
     const f = document.createElement('iframe');
     f.className = 'html-embed';
     f.dataset.hid = id;
-    f.setAttribute('sandbox', 'allow-scripts');
+    f.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox');
     f.setAttribute('srcdoc',
       '<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">'
       + '<style>body{margin:0;color:#e8e8ea;font:14px system-ui,sans-serif;background:transparent}</style>'
@@ -919,6 +919,26 @@ function _renderInlineHtml(bubble, text) {
       + 'new ResizeObserver(R).observe(document.documentElement);addEventListener("load",R);R()</script>');
     bubble.appendChild(f);
   }
+}
+
+// Render [[LINKS: Label | url ;; Label | url]] as NATIVE tappable buttons in the chat
+// DOM (not inside the sandboxed iframe — iOS standalone PWAs block iframe-opened tabs).
+function _renderLinks(bubble, text) {
+  const m = text.match(/\[\[LINKS:([\s\S]*?)\]\]/);
+  if (!m) return;
+  bubble.textContent = text.replace(m[0], '').trim();
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-links';
+  for (const pair of m[1].split(';;')) {
+    const [label, url] = pair.split('|').map(s => s.trim());
+    if (!url || !/^https?:\/\//.test(url)) continue;
+    const a = document.createElement('a');
+    a.className = 'chat-link';
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = label || url;
+    wrap.appendChild(a);
+  }
+  bubble.appendChild(wrap);
 }
 if (!window._htmlEmbedWired) {
   window._htmlEmbedWired = true;
@@ -1075,6 +1095,7 @@ async function send() {
 
       state.pendingMsgEl.textContent = stripCommandTags(raw);
       _renderInlineHtml(state.pendingMsgEl, stripCommandTags(raw));   // inline sandboxed HTML (flagged)
+      _renderLinks(state.pendingMsgEl, stripCommandTags(raw));        // native tappable links
       addMeta(state.pendingMsgEl, `${modelLabel(state.pendingModel)} · ${fmtTime(new Date())}${state.pendingDurMeta || ''}`);
       processCommandTags(raw, state.pendingMsgEl);
       // dataset.msgId is what swipe-to-delete reads (the only delete affordance now).
@@ -1290,7 +1311,7 @@ function connectEvents() {
     globalEvents.addEventListener('chat_message', e => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
       const el = appendMessage(m.role || 'assistant', m.content || '');
-      if ((m.role || 'assistant') === 'assistant') _renderInlineHtml(el, m.content || '');
+      if ((m.role || 'assistant') === 'assistant') { _renderInlineHtml(el, m.content || ''); _renderLinks(el, m.content || ''); }
     });
     globalEvents.addEventListener('bubble_done', e => {
       let data;

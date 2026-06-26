@@ -426,6 +426,11 @@ body {
 /* Inline sandboxed HTML embed (flagged prototype). */
 .html-embed { display: block; width: 100%; border: none; background: transparent;
   border-radius: 8px; margin-top: 8px; min-height: 24px; }
+/* Native tappable chat links (reliable on iOS, unlike iframe-opened tabs). */
+.chat-links { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.chat-link { display: block; padding: 13px 16px; border-radius: 10px; text-decoration: none;
+  font-weight: 600; background: #2a2342; color: #e6dcff; border: 1px solid #3a3358; }
+.chat-link:active { opacity: .7; }
 .message {
   width: 100%;
   align-self: stretch;
