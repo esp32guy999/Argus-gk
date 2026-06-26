@@ -1,4 +1,10 @@
-# qwen3-coder-30b — UNDER EVAL (downloading 2026-06-25)
+# qwen3-coder-30b — ✅ BAKE-OFF WINNER (the value coder, 2026-06-25)
+
+**Verdict:** Won. Tied the 80B and Coder-Next on correctness across 3 batteries
+(incl. hard eval_expr/atoi/MinStack) AND the open-ended GUI build-off — but built it
+in ~1/3 the time (~100 tok/s, ~45s cold vs ~157s) and fits mostly on-GPU (~14GB).
+The SWE 71-vs-64 gap never materialized on any test. Make this the daily local coder.
+
 
 **Status:** bake-off candidate, not yet wired. Downloading IQ4_XS (16.4GB, single file).
 The question it answers: do you even *need* the 80B-class coder, or does this fast/light one

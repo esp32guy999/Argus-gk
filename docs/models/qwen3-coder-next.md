@@ -1,4 +1,11 @@
-# qwen3-coder-next — UNDER EVAL (downloading 2026-06-25)
+# qwen3-coder-next — evaluated 2026-06-25 (kept for hard multi-file work)
+
+**Verdict:** Lost the bake-off to the 30B on value. Marginally more thorough on the
+GUI build (+1 endpoint, a keyboard shortcut, +170 LOC) but **no class-gap** — tied on
+correctness everywhere, while costing ~3x the wall-time + a ~157s cold-load + full
+CPU-offload. Keep around only for genuinely hard, real-multi-file tasks; the 30B is
+the daily coder. (Redundant UD-IQ4_XS copy on disk can be deleted.)
+
 
 **Status:** bake-off candidate, not yet wired. Downloading IQ4_XS (~42.7GB, sharded).
 The headline question: does the coder-tuned 80B **replace `qwen3-next-80b`** as the local coder?
