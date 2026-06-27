@@ -31,13 +31,26 @@ def _ledger_jobs() -> list[dict]:
         return json.load(r).get("jobs", [])
 
 
-def main() -> None:
-    # Read (and ignore-on-error) the hook payload; we don't currently need its fields,
-    # but consuming stdin keeps the harness happy.
+def _session_tokens(payload: str) -> int | None:
+    """Coarse-but-real session-size signal for the token budget: the Stop-hook input
+    carries `transcript_path`; its byte size / ~4 approximates total tokens. Monotonic
+    and free. None if unavailable (then loop_guard falls back to its windowed counter)."""
     try:
-        sys.stdin.read()
+        data = json.loads(payload or "{}")
+        tp = data.get("transcript_path")
+        if tp and os.path.exists(tp):
+            return os.path.getsize(tp) // 4
     except Exception:
         pass
+    return None
+
+
+def main() -> None:
+    # Read the hook payload (carries transcript_path, used for the token-budget signal).
+    try:
+        payload = sys.stdin.read()
+    except Exception:
+        payload = ""
 
     try:
         from argus import loop_guard
@@ -53,7 +66,7 @@ def main() -> None:
     except Exception:
         return  # ledger unreachable -> fail safe, allow stop
 
-    decision = loop_guard.decide(jobs)
+    decision = loop_guard.decide(jobs, est_session_tokens=_session_tokens(payload))
     loop_guard.record(decision)
     if decision.cont and decision.prompt:
         print(json.dumps({"decision": "block", "reason": decision.prompt}))

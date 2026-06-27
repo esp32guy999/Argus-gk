@@ -64,6 +64,13 @@ def main():
     over = lg.decide([AGENT], now=1000.0)
     check(over.cont is False and "budget" in over.reason, "token budget -> stop")
 
+    # live session-token measurement (from the hook) overrides the windowed counter
+    lg._save_state({"consecutive": 0, "window_start": 1000.0, "est_tokens": 0})
+    check(lg.decide([AGENT], now=1000.0, est_session_tokens=200).cont is False,
+          "live token measurement over budget -> stop")
+    check(lg.decide([AGENT], now=1000.0, est_session_tokens=10).cont is True,
+          "live token measurement under budget -> continue")
+
     # window reset: an elapsed window zeroes the counters
     lg.EST_TOKEN_BUDGET = 4_000_000
     lg._save_state({"consecutive": 99, "window_start": 0.0, "est_tokens": 999})

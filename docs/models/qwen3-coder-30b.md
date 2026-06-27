@@ -5,6 +5,12 @@
 in ~1/3 the time (~100 tok/s, ~45s cold vs ~157s) and fits mostly on-GPU (~14GB).
 The SWE 71-vs-64 gap never materialized on any test. Make this the daily local coder.
 
+**Role: DOER, not JUDGE — benched from evaluation** (2026-06-27). It's the daily coder
+(writes/edits via the `code_edit` lane) and proven at agentic tool use. But it **under-fires
+as a critic**: returned 0 findings on both the exhaust Critic and the code-Critic where the
+80b found real, grounded items. Do NOT use it to audit/evaluate — that's `qwen3-next-80b`'s
+job. A good coder is not a good critic.
+
 
 **Status:** bake-off candidate, not yet wired. Downloading IQ4_XS (16.4GB, single file).
 The question it answers: do you even *need* the 80B-class coder, or does this fast/light one

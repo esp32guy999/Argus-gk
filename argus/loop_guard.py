@@ -97,10 +97,15 @@ def _make_prompt(job: dict) -> str:
             f"human decision, say so and stop — don't spin.")
 
 
-def decide(jobs: list[dict], *, user_waiting: bool = False, now: float | None = None) -> Decision:
+def decide(jobs: list[dict], *, user_waiting: bool = False, now: float | None = None,
+           est_session_tokens: int | None = None) -> Decision:
     """Pure decision: given the current ledger jobs, should the agent auto-continue?
     CONTINUE only if enabled, the user isn't owed a reply, there's actionable agent
-    work, and neither the iteration cap nor the token budget is exceeded."""
+    work, and neither the iteration cap nor the token budget is exceeded.
+
+    `est_session_tokens`, when supplied by the caller (the Stop hook measures it from
+    the live transcript), is the real budget signal — gate on it directly. Falls back to
+    the windowed `est_tokens` counter only when no live measurement is available."""
     now = time.time() if now is None else now
     if not ENABLED:
         return Decision(False, "loop disabled (ARGUS_LOOP_ENABLED!=1)", None)
@@ -112,7 +117,8 @@ def decide(jobs: list[dict], *, user_waiting: bool = False, now: float | None = 
     state = _load_state(now)
     if state["consecutive"] >= MAX_CONSECUTIVE:
         return Decision(False, f"iteration cap hit ({MAX_CONSECUTIVE}/window)", None, todo[0].get("id"))
-    if state["est_tokens"] >= EST_TOKEN_BUDGET:
+    tokens = est_session_tokens if est_session_tokens is not None else state["est_tokens"]
+    if tokens >= EST_TOKEN_BUDGET:
         return Decision(False, f"token budget hit (~{EST_TOKEN_BUDGET})", None, todo[0].get("id"))
     job = todo[0]
     return Decision(True, "actionable agent work; guardrails OK", _make_prompt(job), job.get("id"))

@@ -4,6 +4,11 @@
 reasoning mode, no thinking toggle). The current local agentic-coding workhorse. ~40GB on
 disk (IQ4-class).
 
+**Role: DESIGNATED AUDITOR / Critic** (2026-06-27). The judge for the Reflections loop and
+code-Critic (`scripts/critic_pass.py`, `scripts/code_critic.py`) — it fires on real patterns
+where the 30b stays silent (found 3 grounded code findings + 2 exhaust diagnoses where the
+30b found 0). Slow (~180s/run) but it's a batch job. A good *critic*, not the fastest *doer*.
+
 **Why it's here.** Won the head-to-head on real coding: on the patch task that separated
 the field it shipped a **correct diff in ~2s / 2.4K tokens** — no reasoning overhead. GLM
 hung, Qwen3.6 needed ~113s to match it. Terse instruct output is a feature for agentic loops.
