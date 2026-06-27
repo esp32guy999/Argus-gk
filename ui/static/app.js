@@ -880,7 +880,13 @@ if (attachBtn && attachInput) {
   }
   window.addEventListener('focus', _onReturnFromPicker);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { _onReturnFromPicker(); _resurfaceLastMessage(); }
+    if (document.visibilityState === 'visible') { _onReturnFromPicker(); _resurfaceLastMessage();
+      // Returning to foreground = the moment a manual close/reopen used to fix. iOS often
+      // kills the SSE while backgrounded; if it's dead, revive it; otherwise backfill any
+      // messages that arrived while we were away. Skip mid-stream to avoid clobbering.
+      if (globalEvents && globalEvents.readyState === 2) { globalEvents = null; connectEvents(); }
+      else if (!state.pendingBubbleId) loadHistory();
+    }
   });
 }
 
@@ -1052,7 +1058,7 @@ async function send() {
 
     // Safety timeout: if we somehow miss the done event, release the UI.
     // Media models (z-image-edit, z-klein, z-video) can take up to 10 minutes.
-    const _safetyMs = /^z-(image-edit|klein|video)/i.test(state.currentModel || '') ? 600_000 : 300_000;
+    const _safetyMs = /^z-(image-edit|klein|video)/i.test(state.currentModel || '') ? 600_000 : 90_000;
     await new Promise(resolve => {
       const doneTimer = setTimeout(resolve, _safetyMs);
       const onDone = () => { clearTimeout(doneTimer); resolve(); };
@@ -1064,34 +1070,30 @@ async function send() {
       state.pendingMsgEl.classList.remove('streaming');
       let raw = state.pendingMsgEl.textContent;
 
-      // For media models (z-image-*, z-klein, z-video), the SSE connection can
-      // drop during the long ComfyUI wait (background tab throttling, keepalive
-      // timeout).  When that happens we lose both bubble_update and bubble_done,
-      // so the textContent won't contain the [[IMAGE:…]] tag.  Fix: always fetch
-      // the authoritative response from the DB for media models.
+      // The SSE connection can drop mid-turn (mobile backgrounding, keepalive timeout),
+      // losing the streamed content — even when bubble_done still delivered the db_id.
+      // For ANY model: if the bubble came out empty, fetch the authoritative reply from
+      // the DB. (Media models additionally refetch when the [[IMAGE/VIDEO]] tag is missing.)
+      // This is what made text replies need a manual refresh; now they self-heal.
       const _isMedia = /^z-(image|klein|video)/i.test(state.currentModel || '');
-      if (_isMedia && !/\[\[(IMAGE|VIDEO):/.test(raw)) {
-        console.log('[z-edit-debug] raw missing media tag, fetching from DB…', {bubbleId, dbId: state.pendingDbId, rawLen: raw.length});
+      const _needsDb = !raw.trim() || (_isMedia && !/\[\[(IMAGE|VIDEO):/.test(raw));
+      if (_needsDb) {
         try {
-          // Try by db_id first (if bubble_done delivered it), then fall back to
-          // fetching the latest assistant message in this conversation.
           const qs = state.conversationId != null
-            ? `?conversation_id=${state.conversationId}&limit=5`
-            : '?limit=5';
+            ? `?conversation_id=${state.conversationId}&limit=8`
+            : '?limit=8';
           const msgs = await fetchJson(`${BRAIN}/history${qs}`);
-          // Find either by db_id or by matching bubble content prefix
+          // Prefer the exact message bubble_done identified; else the newest assistant reply.
           const saved = state.pendingDbId
             ? msgs?.find(m => m.id === state.pendingDbId)
-            : msgs?.find(m => m.role === 'assistant' && /\[\[(IMAGE|VIDEO):/.test(m.content || ''));
-          if (saved?.content && /\[\[(IMAGE|VIDEO):/.test(saved.content)) {
-            console.log('[z-edit-debug] DB fallback found media tag', saved.content.slice(-80));
+            : [...(msgs || [])].reverse().find(m => m.role === 'assistant'
+                && (!_isMedia || /\[\[(IMAGE|VIDEO):/.test(m.content || '')));
+          if (saved?.content) {
             raw = saved.content;
             if (!state.pendingDbId) state.pendingDbId = saved.id;
-          } else {
-            console.log('[z-edit-debug] DB fallback: no media tag found in history');
           }
         } catch (e) {
-          console.error('[z-edit-debug] DB fallback fetch failed', e);
+          console.error('[forge] SSE-drop DB fallback failed', e);
         }
       }
 
@@ -1255,7 +1257,13 @@ let globalEvents = null;
 function connectEvents() {
   try {
     globalEvents = new EventSource(`${BRAIN}/events`);
-    globalEvents.onopen = () => { if(window._dbgLog) window._dbgLog('SSE: connected'); brainDot.classList.remove('down'); };
+    globalEvents.onopen = () => { if(window._dbgLog) window._dbgLog('SSE: connected'); brainDot.classList.remove('down');
+      // SSE has no replay: on a RE-connection (e.g. after iOS killed the socket while
+      // backgrounded), backfill messages pushed while we were disconnected. Skip while a
+      // turn is streaming so we don't clobber the live bubble.
+      if (state._sseConnectedOnce && !state.pendingBubbleId) loadHistory();
+      state._sseConnectedOnce = true;
+    };
     globalEvents.onmessage = () => brainDot.classList.add('up');
     globalEvents.addEventListener('bubble_update', e => {
       try {
