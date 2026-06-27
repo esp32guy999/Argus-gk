@@ -168,7 +168,9 @@ Ran the Critic on both real exhaust (`scripts/critic_pass.py`) and the week's co
    intended counter-reset as data loss). The floor proves *where*, not *whether*. So the
    pipeline needs a third stage: **Critic → Verify → Actor.** Each grounded finding gets an
    adversarial check ("real defect, or intended?") before it can become a proposal. (Not yet
-   built — the human played Verifier this round.)
+   built — the human played Verifier this round.) **Verify is a NON-COLLAPSIBLE gate**
+   (SAW; `docs/POLICY-ownership-matrix.md`): it cannot be skipped even when the loop runs
+   autonomously — grounded ≠ correct, so nothing acts on a finding that hasn't been verified.
 
 2. **The designated auditor is `qwen3-next-80b`.** The `qwen3-coder-30b` is **benched from
    evaluation** — it under-fires (returned 0 on exhaust AND 0 on code where the 80b found

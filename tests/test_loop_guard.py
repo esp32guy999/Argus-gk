@@ -23,14 +23,17 @@ def main():
     lg._STATE_FILE = os.path.join(d, "state.json")
     lg._AUDIT_FILE = os.path.join(d, "audit.jsonl")
 
-    AGENT = {"id": "a1", "category": "agent", "state": "active", "title": "Build X"}
+    AGENT = {"id": "a1", "category": "agent", "state": "active", "title": "Build X",
+             "payload": {"success_condition": "tests pass"}}
     EXT = {"id": "e1", "category": "external", "state": "active", "title": "DL"}
     BLOCKED = {"id": "a2", "category": "agent", "state": "blocked", "title": "Y"}
     PROPOSED = {"id": "a3", "category": "agent", "state": "proposed", "title": "Z"}
+    NOCRIT = {"id": "a4", "category": "agent", "state": "active", "title": "no done defined"}
 
-    # actionable filter: only live agent jobs
-    act = {j["id"] for j in lg.actionable_jobs([AGENT, EXT, BLOCKED, PROPOSED])}
+    # actionable filter: only live agent jobs WITH a success_condition (Stop-the-Line)
+    act = {j["id"] for j in lg.actionable_jobs([AGENT, EXT, BLOCKED, PROPOSED, NOCRIT])}
     check(act == {"a1"}, "actionable = live agent jobs only (excludes external/blocked/proposed)")
+    check("a4" not in act, "STOP-THE-LINE: agent job with no success_condition is NOT actionable")
 
     # master switch OFF -> never continue, regardless of work
     lg.ENABLED = False

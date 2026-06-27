@@ -80,11 +80,18 @@ def _audit(entry: dict) -> None:
 
 def actionable_jobs(jobs: list[dict]) -> list[dict]:
     """Agent-category jobs that are mine to push right now: an approved (not
-    'proposed') agent job in a live, non-blocked state. Probe-owned/external jobs
-    and blocked/terminal ones are NOT actionable — the reconciler/world owns those."""
+    'proposed') agent job in a live, non-blocked state, WITH a defined success_condition.
+    Probe-owned/external jobs and blocked/terminal ones are NOT actionable — the
+    reconciler/world owns those.
+
+    STOP-THE-LINE GATE (stolen from SAW, docs/POLICY-ownership-matrix.md): a job whose
+    'done' is undefined is NOT actionable. The loop must not autonomously work a job with
+    no success_condition — that would mean inventing the requirement. No criteria -> halt,
+    surfaced for a human to define 'done' first."""
     return [j for j in jobs
             if j.get("category") == "agent"
-            and j.get("state") in _ACTIONABLE_STATES]
+            and j.get("state") in _ACTIONABLE_STATES
+            and ((j.get("payload") or {}).get("success_condition") or "").strip()]
 
 
 def _make_prompt(job: dict) -> str:
