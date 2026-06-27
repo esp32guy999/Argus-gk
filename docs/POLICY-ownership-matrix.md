@@ -14,7 +14,11 @@ keep referring to verbally.
 | **`loop_guard`** (the FLOOR) | Deterministic safety: iteration cap, token budget, evidence-gate, Stop-the-Line, audit | Be collapsed/disabled while `ARGUS_LOOP_ENABLED=1` | allow/deny + an audit line |
 | **Verify stage** (to build) | Adversarial check that a grounded finding is *real*, not just located | Be skipped/collapsed — see non-collapsible gates | real / refuted verdict |
 | **the agent loop** (doing a turn) | Reasoning + tool calls within the turn | **Invent requirements** (Stop-the-Line); fabricate success; auto-act on irreversible/high-blast-radius work | A result + *deferred items surfaced* |
-| **the human (Shane)** | Approving proposals; final merge; irreversible/outward-facing calls; **defining `success_condition`s** | — (must not be bypassed for the above) | approve / reject |
+| **the human (Shane)** | Approving proposals; final merge of *substantial/feature* work; irreversible/outward-facing calls; **defining `success_condition`s** | — (must not be bypassed for the above) | approve / reject |
+
+> **Merge threshold:** small, tested, low-blast-radius changes may go **direct to master**
+> (decide-and-notify). *Substantial / feature / multi-file* work goes through a branch the
+> human merges. The "human owns final merge" gate is about the latter, not every typo fix.
 | **tool lanes** (`code_edit`, `media_fs`) | Scoped mutations under a path allowlist, reversibly (backup/trash) | Touch outside roots; hard-delete by default | applied + audited + **reversible** |
 
 The spine: **the role that DOES is never the role that JUDGES, and neither is the role that
