@@ -62,7 +62,7 @@ Audiobookshelf `:13378`. (API keys live in `/home/shane/tools.md` /
 `~/.claude/projects/-home-shane/memory/` — Read when needed; don't guess.)
 
 ### Other
-- Home Assistant: `http://nyx:8123` (Docker on nyx; token in credentials.env — note: stale, needs reissue). Atlanta, GA / Eastern time.
+- Home Assistant: `http://nyx:8123` (Docker on nyx; token in credentials.env `HA_TOKEN` — verified working 2026-06-26). Atlanta, GA / Eastern time. Phone pushes: `notify.mobile_app_shanes_iphone` (helper: `~/.local/bin/ha-remind "msg"`).
 - 3D printer: Bambu P1S `192.168.4.31`.
 - Local chat models via llama-swap on `anvil:9090` (gemma4-26b, Qwen3-80B, …).
 
