@@ -36,6 +36,34 @@ SYSTEM_PROMPT = (
     "correct your next call."
 )
 
+# Argus's voice lives in soul.md (repo root) — editable persona, separate from the
+# operating rules above. Hot-reloaded: edits take effect next turn, no restart needed.
+import os
+_SOUL_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "soul.md")
+_soul_cache: tuple[float, str] = (0.0, "")
+
+
+def _load_soul() -> str:
+    """Return soul.md's text, re-reading only when the file changes. Empty if absent."""
+    global _soul_cache
+    try:
+        mtime = os.path.getmtime(_SOUL_PATH)
+    except OSError:
+        return ""
+    if mtime != _soul_cache[0]:
+        try:
+            _soul_cache = (mtime, open(_SOUL_PATH, encoding="utf-8").read().strip())
+        except OSError:
+            return _soul_cache[1]
+    return _soul_cache[1]
+
+
+def _system_prompt() -> str:
+    """Operating rules + the soul (voice). The soul shapes tone only; the rules win on
+    behavior."""
+    soul = _load_soul()
+    return SYSTEM_PROMPT + ("\n\n# Your voice\n" + soul if soul else "")
+
 
 # Per-model lane gates — the "configure the harness for each model" edict applied to
 # TOOL LANES (cf. VISION_MODELS / CHAT_THINKING in ui/server.py). A powerful lane is
@@ -103,7 +131,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=_system_prompt(),
         capabilities=[watchdog.make_capability(on_event=on_event)],
     )
     start = time.perf_counter()
@@ -136,7 +164,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=_system_prompt(),
         capabilities=[watchdog.make_capability()],   # anti-stall: repeated-call detection
     )
     start = time.perf_counter()
@@ -172,7 +200,7 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=_system_prompt(),
         capabilities=[watchdog.make_capability(on_event=on_event)],
     )
     start = time.perf_counter()
