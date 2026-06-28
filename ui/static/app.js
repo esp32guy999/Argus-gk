@@ -2088,6 +2088,7 @@ function handleToolsAction(action) {
     case 'save-layout':     openPresetsPicker('save'); break;
     case 'load-layout':     openPresetsPicker('load'); break;
     case 'add-widget':      openWidgetPicker(); break;
+    case 'open-audiobooks': switchView('canvas'); createPanel('audiobook', {}); break;
     case 'memory-browser':  openMemoryBrowser(); break;
     case 'nec-prefix':
       switchView('chat');
