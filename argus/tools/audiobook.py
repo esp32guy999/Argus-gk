@@ -95,8 +95,15 @@ def _posts(doc) -> list[dict]:
 
 
 def search(query: str) -> list[dict]:
-    """ABB search, filtered to query-term matches (ABB serves its homepage when rate-
-    limited; the throttle spaces requests and the filter rejects homepage noise)."""
+    """ABB search with a distinctive-term fallback.
+
+    ABB indexes TITLE words, not author/series connectors — so a full query like
+    "Father of Constructs Eldritch Artisan Aaron Renfroe" frequently zero-matches, and
+    ABB serves its homepage on no-match (which we reject as noise -> []). That was the
+    recurring "0 results" bug. Fix: if the full query finds nothing, retry with just the
+    longest (most distinctive) title words. Results are always scored against the FULL
+    query terms, so the right book still ranks first even when found via the fallback.
+    """
     terms = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) >= 3]
 
     def _match(item):
@@ -104,12 +111,28 @@ def search(query: str) -> list[dict]:
         hits = sum(1 for w in terms if w in t)
         return hits if (hits and (hits >= len(terms) - 1 or hits >= 2 or not terms)) else 0
 
-    for _ in range(3):
-        posts = _posts(_lxml.fromstring(_abb_get(f"{_abb_base()}/?s={quote_plus(query)}")))
-        ranked = sorted(((_match(p), p) for p in posts), key=lambda x: x[0], reverse=True)
-        relevant = [p for s, p in ranked if s > 0]
-        if relevant or not terms:
-            return relevant or posts
+    def _query(q):
+        for _ in range(2):
+            posts = _posts(_lxml.fromstring(_abb_get(f"{_abb_base()}/?s={quote_plus(q)}")))
+            ranked = sorted(((_match(p), p) for p in posts), key=lambda x: x[0], reverse=True)
+            relevant = [p for s, p in ranked if s > 0]
+            if relevant:
+                return relevant
+            if not terms:           # empty query -> the homepage listing IS the intended result
+                return posts
+        return []
+
+    # 1) the query as given
+    res = _query(query)
+    if res:
+        return res
+    # 2) fallback — the 3 longest distinctive words (drops author/series noise ABB doesn't
+    #    index in titles). This is what turns a poisoned "0 results" into the real hit.
+    distinctive = sorted(dict.fromkeys(terms), key=len, reverse=True)[:3]
+    if distinctive and set(distinctive) != set(terms):
+        res = _query(" ".join(distinctive))
+        if res:
+            return res
     return []
 
 
