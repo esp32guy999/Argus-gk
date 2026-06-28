@@ -454,6 +454,39 @@ async function loadHistory() {
   if (!msgs || msgs.length < HISTORY_PAGE) state.historyExhausted = true;
 }
 
+// Foreground reconciler — the guarantee that replies appear even when the SSE silently
+// dies. iOS backgrounding suspends BOTH the socket and JS timers, so a turn could get
+// stuck "pending" forever (the 90s safety timer never fires) and every backfill path was
+// gated off behind !pendingBubbleId — disabling self-heal exactly when it was needed.
+// This runs on a 4s visible interval + on every foreground/reconnect, ungated, and reuses
+// send()'s already-tested DB self-heal instead of waiting on the frozen timer.
+async function _pollSync() {
+  if (document.visibilityState !== 'visible') return;
+  if (state.pendingBubbleId) {
+    // A turn is open. Deltas within 6s = genuinely streaming -> leave it alone.
+    // Otherwise the socket died: fire the DB self-heal NOW (no manual refresh needed).
+    if (Date.now() - (state.lastDeltaTs || 0) > 6000 && state.pendingResolve) {
+      state._healedByPoll = true;
+      const r = state.pendingResolve; state.pendingResolve = null; r();
+    }
+    return;
+  }
+  // No active turn: repaint authoritative history only if the newest message isn't already
+  // on screen (cheap id check avoids needless full re-renders while idle).
+  try {
+    const latest = await fetchJson(`${BRAIN}/history${_historyQuery({ limit: 1 })}`);
+    const newest = latest && latest[latest.length - 1];
+    if (newest) {
+      const el = document.querySelector(`[data-msg-id="${CSS.escape(String(newest.id))}"]`);
+      const dbHasText = (newest.content || '').trim().length > 0;
+      // Repaint if the newest message is missing OR present-but-blank (the claude-code
+      // path can finalise a bubble whose text never streamed in — the DB has it, the DOM
+      // node is empty). Guard on dbHasText so a genuinely-empty row can't thrash the poll.
+      if (!el || (dbHasText && !el.textContent.trim())) loadHistory();
+    }
+  } catch {}
+}
+
 async function loadMoreHistory() {
   if (state.historyLoading || state.historyExhausted || state.oldestMsgId == null) return;
   state.historyLoading = true;
@@ -885,9 +918,12 @@ if (attachBtn && attachInput) {
       // kills the SSE while backgrounded; if it's dead, revive it; otherwise backfill any
       // messages that arrived while we were away. Skip mid-stream to avoid clobbering.
       if (globalEvents && globalEvents.readyState === 2) { globalEvents = null; connectEvents(); }
-      else if (!state.pendingBubbleId) loadHistory();
+      _pollSync();   // foreground: heal a stuck turn or backfill missed messages (ungated by pending state)
     }
   });
+  // Hard guarantee: a low-cost reconcile every 4s while the app is on screen. Even if the
+  // SSE dies silently and timers freeze, replies surface within seconds with no refresh.
+  if (!window._forgeResyncTimer) window._forgeResyncTimer = setInterval(_pollSync, 4000);
 }
 
 // Returning to the app (e.g. after the phone screen slept): make sure the latest
@@ -1076,7 +1112,9 @@ async function send() {
       // the DB. (Media models additionally refetch when the [[IMAGE/VIDEO]] tag is missing.)
       // This is what made text replies need a manual refresh; now they self-heal.
       const _isMedia = /^z-(image|klein|video)/i.test(state.currentModel || '');
-      const _needsDb = !raw.trim() || (_isMedia && !/\[\[(IMAGE|VIDEO):/.test(raw));
+      // Empty bubble, OR the reconciler healed a dead-socket turn (no bubble_done arrived,
+      // so the streamed text may be partial) -> pull the authoritative reply from the DB.
+      const _needsDb = !raw.trim() || state._healedByPoll || (_isMedia && !/\[\[(IMAGE|VIDEO):/.test(raw));
       if (_needsDb) {
         try {
           const qs = state.conversationId != null
@@ -1129,6 +1167,7 @@ async function send() {
     state.pendingUserId = null;
     state.pendingDurMeta = null;
     state.pendingModel = null;
+    state._healedByPoll = false;
     sendBtn.classList.remove('is-stop');
   }
 }
@@ -1261,7 +1300,7 @@ function connectEvents() {
       // SSE has no replay: on a RE-connection (e.g. after iOS killed the socket while
       // backgrounded), backfill messages pushed while we were disconnected. Skip while a
       // turn is streaming so we don't clobber the live bubble.
-      if (state._sseConnectedOnce && !state.pendingBubbleId) loadHistory();
+      if (state._sseConnectedOnce) _pollSync();   // reconnect backfill, ungated by pending (a stuck turn self-heals here)
       state._sseConnectedOnce = true;
     };
     globalEvents.onmessage = () => brainDot.classList.add('up');
@@ -1269,6 +1308,7 @@ function connectEvents() {
       try {
         const data = JSON.parse(e.data);
         if (data.id !== state.pendingBubbleId || !state.pendingMsgEl) return;
+        state.lastDeltaTs = Date.now();   // mark the stream alive — lets the reconciler tell a live turn from a dead socket
         const content = data.content || '';
         // Heartbeat: tokens are flowing -> keep the pill alive + reveal the bubble.
         if (state.statusPill) state.statusPill._activity();
