@@ -424,17 +424,26 @@ async def delete_conversation(conversation_id: str):
 
 @app.get("/")
 async def root():
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 @app.get("/manifest.json")
 async def manifest():
-    return FileResponse(STATIC / "manifest.json", headers={"Cache-Control": "no-cache"})
+    return FileResponse(STATIC / "manifest.json", headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 @app.get("/sw.js")
 async def sw_js():
-    return FileResponse(STATIC / "sw.js", headers={"Cache-Control": "no-cache"})
+    return FileResponse(STATIC / "sw.js", headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
-app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+# Static assets (app.js, styles.css, widgets) were served with NO cache header, so iOS
+# Safari heuristically cached them forever — the reason we kept bumping ?v=NN all week.
+# Force every static response to revalidate.
+class NoStoreStatic(StaticFiles):
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return resp
+
+app.mount("/static", NoStoreStatic(directory=str(STATIC)), name="static")
 
 @app.get("/argus/events")
 async def events():
