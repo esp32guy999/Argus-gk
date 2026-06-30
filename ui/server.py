@@ -115,6 +115,32 @@ task_mgr = tasks.configure(registry=registry, model_name=DEFAULT_MODEL,
 subscribers: Set[asyncio.Queue] = set()
 TASKS: Dict[str, asyncio.Task] = {}
 
+# Pollable per-conversation turn status. A long, tool-heavy claude-code turn pushes its
+# progress over publish()->SSE, which iOS silently drops on backgrounding — so the UI goes
+# quiet and "thinking" becomes indistinguishable from "stalled". This dict is the robust
+# fallback: the client POLLS it, so a ticking timer + current activity are always visible.
+TURN_STATUS: Dict[str, dict] = {}
+
+def _turn_begin(cid, bubble_id):
+    TURN_STATUS[cid] = {"active": True, "bubble_id": bubble_id,
+                        "started": time.time(), "last_activity": time.time(),
+                        "phase": "starting", "detail": ""}
+
+def _turn_touch(cid, phase=None, detail=None):
+    s = TURN_STATUS.get(cid)
+    if not s:
+        return
+    s["last_activity"] = time.time()
+    if phase is not None:
+        s["phase"] = phase
+    if detail is not None:
+        s["detail"] = detail
+
+def _turn_end(cid):
+    s = TURN_STATUS.get(cid)
+    if s:
+        s["active"] = False
+
 app = FastAPI()
 # Expose harness metrics on the LIVE server (the CLI path called metrics.serve(); the
 # server never did, so until now everything was scraped by nobody). Scrape :8210/metrics.
@@ -184,6 +210,7 @@ async def chat(request: Request):
         attachments = []
     conversation_id = _cid(body.get("conversation_id"))
     bubble_id = uuid.uuid4().hex
+    _turn_begin(conversation_id, bubble_id)
 
     # Load prior turns (memory) BEFORE persisting this one, then record the user msg.
     history = await asyncio.to_thread(store.model_history, conversation_id, HISTORY_TURNS,
@@ -193,6 +220,7 @@ async def chat(request: Request):
 
     def on_event(phase, detail, step):
         # Live progress for the UI status pill (tool calls, loop caught).
+        _turn_touch(conversation_id, phase, detail)
         publish("bubble_status", {"id": bubble_id, "phase": phase,
                                   "detail": detail, "step": step})
 
@@ -226,6 +254,7 @@ async def chat(request: Request):
                     publish("bubble_activity", {"id": bubble_id, "event": ev})
                     continue
                 final = content
+                _turn_touch(conversation_id, "writing", "")
                 publish("bubble_update", {"id": bubble_id, "content": content})
             if model_name == "claude-code":
                 metrics.CC_TURNS.labels("ok").inc()
@@ -242,11 +271,30 @@ async def chat(request: Request):
             if model_name == "claude-code":
                 metrics.CC_TURNS.labels("error").inc()
             publish("bubble_done", {"id": bubble_id, "error": str(e)})
+        finally:
+            _turn_end(conversation_id)
 
     task = asyncio.create_task(run_chat())
     TASKS[bubble_id] = task
 
     return JSONResponse({"id": bubble_id})
+
+
+@app.get("/argus/turn_status")
+async def turn_status(conversation_id: str | None = None):
+    """Pollable 'is a turn running + what's it doing' — the robust (non-SSE) heartbeat the
+    UI polls to show a ticking 'working…' pill, so thinking is visibly != stalled."""
+    s = TURN_STATUS.get(_cid(conversation_id))
+    if not s or not s.get("active"):
+        return JSONResponse({"active": False})
+    now = time.time()
+    return JSONResponse({
+        "active": True,
+        "elapsed": round(now - s["started"]),
+        "since_activity": round(now - s["last_activity"]),
+        "phase": s.get("phase", ""),
+        "detail": s.get("detail", ""),
+    })
 
 @app.post("/api/cancel/{bubble_id}")
 async def cancel(bubble_id: str):
