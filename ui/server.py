@@ -23,6 +23,14 @@ PRESETS = pathlib.Path(__file__).parent / "presets"
 MODEL_URL = os.environ.get("ARGUS_MODEL_URL", "http://localhost:8099/v1")
 DEFAULT_MODEL = os.environ.get("ARGUS_DEFAULT_MODEL", "qwen3-next-80b")
 
+# Models NOT served by llama-swap — routed to their own OpenAI-compatible endpoint.
+# gemma4-cpu = Gemma 4 E2B on a CPU-only ollama (CUDA hidden) → runs on the 7800X3D and
+# never touches the 5080's VRAM (which the reasoner owns). Only ollama can load gemma4.
+EXTERNAL_MODELS = {
+    "gemma4-cpu": {"base_url": "http://localhost:11435/v1", "model_id": "gemma4e2b",
+                   "display": "Gemma 4 E2B (CPU)"},
+}
+
 # Vision capability is per-model — never forward images to a model that can't see
 # them (wastes tokens / errors). Gate on this set, not on backend or model name.
 # claude-code (Claude) is vision-capable; local llama-swap models here are not.
@@ -236,8 +244,13 @@ async def chat(request: Request):
                 # Local models: not in VISION_MODELS, so attachments were already
                 # dropped above. (Wiring a vision-capable local model would mean adding
                 # it to VISION_MODELS and threading images into loop.stream_run.)
+                # External models (gemma4-cpu) -> their own endpoint + real model id;
+                # everything else -> llama-swap.
+                ext = EXTERNAL_MODELS.get(model_name)
                 source = loop.stream_run(
-                    registry, message, model_name=model_name, base_url=MODEL_URL,
+                    registry, message,
+                    model_name=(ext["model_id"] if ext else model_name),
+                    base_url=(ext["base_url"] if ext else MODEL_URL),
                     turn_budget=8, message_history=history, on_event=on_event,
                     enable_thinking=CHAT_THINKING.get(model_name))
             async for content in source:
@@ -323,6 +336,10 @@ async def get_models():
         # llama-swap unreachable — still offer the default so the UI isn't empty.
         entries.append([DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus",
                                         "vision": _is_vision(DEFAULT_MODEL), "warm_on_select": _warm_on_select(DEFAULT_MODEL)}])
+    # external (non-llama-swap) models — e.g. the CPU Gemma running on its own ollama
+    for name, cfg in EXTERNAL_MODELS.items():
+        entries.append([name, {"display": cfg["display"], "backend": "argus",
+                               "vision": False, "warm_on_select": False}])
     entries.append(["claude-code", {"display": "Claude Code", "backend": "claude",
                                     "vision": _is_vision("claude-code"), "warm_on_select": False}])
     return JSONResponse(entries)
