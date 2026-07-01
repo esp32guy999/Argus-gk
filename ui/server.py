@@ -406,6 +406,15 @@ async def get_history(conversation_id: str | None = None, limit: int = 100,
         store.get_messages, _cid(conversation_id), limit, before_id)
     return JSONResponse(msgs)
 
+@app.post("/argus/conversations")
+async def create_conversation(request: Request):
+    # The "New chat" button POSTed here and got 405 (no handler), so it silently fell back
+    # to the default thread — you could never actually start fresh. Conversations are
+    # implicit (born on first message), so "new" = a fresh id. Crucially, a new
+    # conversation_id also means a FRESH claude-code session (no carried-over context = fast).
+    return JSONResponse({"id": uuid.uuid4().hex})
+
+
 @app.get("/argus/conversations")
 async def get_conversations():
     convs = await asyncio.to_thread(store.list_conversations)
