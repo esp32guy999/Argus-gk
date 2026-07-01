@@ -46,6 +46,11 @@ class Finding(BaseModel):
     severity: str = Field(description="low | medium | high")
     confidence_score: float = Field(ge=0.0, le=1.0)
     reasoning: str = Field(description="The concrete defect: what's wrong and what it breaks.")
+    trigger: str = Field(
+        default="",
+        description="TIGHT mode: the concrete input/condition/sequence that makes this code "
+                    "actually misbehave (a repro). If you cannot construct one, leave empty — "
+                    "and then it is NOT a real defect, so do not report it.")
 
 
 class Findings(BaseModel):
@@ -66,7 +71,7 @@ def build_digest(targets: List[str]) -> tuple[str, set[str]]:
     return "\n".join(out), keys
 
 
-CRITIC_SYS = (
+LOOSE_SYS = (
     "You are an evidence-gated CODE CRITIC reviewing freshly-written, unaudited code. "
     "Report GENUINE defects only: bugs, logic errors, race conditions, resource leaks, "
     "missing error handling, security holes, broken edge cases. This is a LOOSENED pass — "
@@ -81,6 +86,28 @@ CRITIC_SYS = (
     "4. severity = low|medium|high by real-world impact; confidence = how sure the cited code "
     "actually has the defect."
 )
+
+TIGHT_SYS = (
+    "You are an evidence-gated CODE CRITIC doing a TIGHTENED, steady-state review. The first "
+    "loose audit is done; the bar is now HIGH. Report a defect ONLY if you can DEMONSTRATE it.\n"
+    "HARD RULES:\n"
+    "1. ASSUME THE CODE IS INTENTIONAL. Before flagging anything, look for the intent — "
+    "comments, naming, surrounding structure. If a line plausibly does what it was meant to "
+    "(e.g. a reset that zeroes counters on purpose, a None that means 'no value'), it is NOT a "
+    "defect. Misreading intended behavior as a bug is the failure mode you must avoid.\n"
+    "2. Every finding MUST carry a concrete `trigger`: the exact input, state, or call sequence "
+    "that makes the code actually misbehave at runtime. A real bug has a repro. If you cannot "
+    "write a concrete trigger, you do NOT have a defect — stay silent.\n"
+    "3. Every finding MUST cite >=1 verbatim file:line. No invented locations.\n"
+    "4. NO nits, NO style, NO 'could be cleaner', NO 'might be stale', NO defensive-coding "
+    "suggestions. Only defects that demonstrably break.\n"
+    "5. Most files are clean. An EMPTY list is the expected, correct answer. Do not pad. Do not "
+    "flag something just to have output. Silence beats a confident false positive.\n"
+    "6. confidence_score: only report findings you'd stake >=0.8 on. Below that, stay silent."
+)
+
+TIGHT = os.environ.get("CRITIC_TIGHT") == "1"
+CRITIC_SYS = TIGHT_SYS if TIGHT else LOOSE_SYS
 
 
 def main():
@@ -100,19 +127,26 @@ def main():
     dt = time.time() - t0
 
     # THE FLOOR: a finding must cite a real, existing line — else it's a hallucination, dropped.
+    # TIGHT mode adds a second floor: no concrete `trigger` (repro) -> not a real defect, dropped.
     kept, dropped = [], []
     for d in items:
         valid = [c for c in d.file_citations if c in keys]
-        (kept if valid else dropped).append((d, valid))
+        has_repro = (not TIGHT) or bool((d.trigger or "").strip())
+        (kept if (valid and has_repro) else dropped).append((d, valid))
 
-    print(f"Critic [{MODEL}] returned {len(items)} findings in {dt:.1f}s — "
-          f"{len(kept)} grounded, {len(dropped)} DROPPED (phantom file:line).\n")
+    mode = "TIGHT" if TIGHT else "LOOSE"
+    print(f"Critic [{MODEL}, {mode}] returned {len(items)} findings in {dt:.1f}s — "
+          f"{len(kept)} survived, {len(dropped)} DROPPED "
+          f"({'phantom line or no repro' if TIGHT else 'phantom file:line'}).\n")
 
-    md = [f"# Code Critic — {time.strftime('%Y-%m-%d %H:%M')} (model {MODEL}, LOOSENED)\n"]
+    md = [f"# Code Critic — {time.strftime('%Y-%m-%d %H:%M')} (model {MODEL}, {mode})\n"]
     for d, valid in sorted(kept, key=lambda x: -x[0].confidence_score):
         md.append(f"## [{d.severity}] {d.title}  · conf {d.confidence_score:.2f}")
         md.append(f"- **at:** {', '.join(valid)}")
-        md.append(f"- **defect:** {d.reasoning}\n")
+        md.append(f"- **defect:** {d.reasoning}")
+        if d.trigger.strip():
+            md.append(f"- **trigger:** {d.trigger}")
+        md.append("")
     if not kept:
         md.append("_(no grounded findings — the new code is clean, or the model under-fired)_\n")
     if dropped:
