@@ -1,12 +1,14 @@
-// iHeart live radio — search, browse 45 genres, play any station, with a canvas
-// visualizer. iHeart's API sends ACAO:* so the browser calls it directly (no proxy).
-// Streams send no CORS, so the spectrum is a play-gated driven animation (not real FFT).
+// iHeart live radio widget. Two views:
+//  • player "front page" — banner + canvas visualizer + play/volume (looks like the original)
+//  • tap the banner -> browse view: search + 45 genres + results; pick a station -> back to player
+// iHeart's API sends ACAO:* so the browser calls it directly (no proxy). Streams send no CORS,
+// so the spectrum is a play-gated driven animation (not real FFT).
 class AT40Widget extends WidgetBase {
     static type     = 'atradio';
     static label    = 'iHeart Radio';
     static icon     = '📻';
-    static defaultW = 360;
-    static defaultH = 460;
+    static defaultW = 340;
+    static defaultH = 300;
 
     static API = 'https://api.iheart.com/api';
     static DEFAULT = { id: 6545, name: 'Classic American Top 40', desc: 'Casey Kasem' };
@@ -14,10 +16,12 @@ class AT40Widget extends WidgetBase {
     init() {
         this.playing = false;
         this.energy  = 0;
+        this.view    = 'player';
         this.station = (this.panel.config && this.panel.config.station) || AT40Widget.DEFAULT;
         this.el.innerHTML = `
           <div class="at40" style="display:flex;flex-direction:column;padding:10px 12px 12px;gap:8px">
-            <div style="display:flex;align-items:center;gap:8px">
+            <div class="at40-banner" title="Browse stations" style="display:flex;align-items:center;gap:8px;cursor:pointer;
+                 padding:6px;margin:-4px -6px 0;border-radius:10px;user-select:none">
               <span style="font-weight:800;font-size:11px;letter-spacing:1px;color:#1a1206;
                      background:#e8b64c;padding:3px 7px;border-radius:6px">iHR</span>
               <div style="min-width:0;flex:1">
@@ -27,34 +31,45 @@ class AT40Widget extends WidgetBase {
               <span class="at40-live" style="display:flex;align-items:center;gap:5px;font-size:10px;
                      letter-spacing:1px;font-weight:700;color:#ff5d5d">
                 <span class="dot" style="width:7px;height:7px;border-radius:50%;background:#ff5d5d"></span>LIVE</span>
+              <span class="at40-toggle" style="font-size:14px;color:var(--text-dim);width:16px;text-align:center">🔍</span>
             </div>
-            <canvas class="at40-viz" style="width:100%;height:52px;flex:0 0 auto;border-radius:10px;background:rgba(0,0,0,.25)"></canvas>
-            <div style="display:flex;align-items:center;gap:12px">
-              <button class="at40-play" aria-label="Play" style="width:48px;height:48px;flex:0 0 auto;border:none;
-                     border-radius:50%;cursor:pointer;color:#1a1206;display:flex;align-items:center;justify-content:center;
-                     background:radial-gradient(120% 120% at 30% 25%,#ffd679,#e8b64c 55%,#b98a2e);
-                     box-shadow:0 6px 16px rgba(232,182,76,.35),inset 0 2px 3px rgba(255,255,255,.5)">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
-              </button>
-              <div style="flex:1;min-width:0">
-                <div class="at40-status" style="font-weight:600;font-size:12px">Tap to tune in</div>
-                <input class="at40-vol" type="range" min="0" max="1" step="0.01" value="0.9"
-                       style="width:100%;margin-top:5px;accent-color:#e8b64c" aria-label="Volume">
+
+            <div class="at40-player" style="display:flex;flex-direction:column;gap:8px">
+              <canvas class="at40-viz" style="width:100%;height:64px;flex:0 0 auto;border-radius:10px;background:rgba(0,0,0,.25)"></canvas>
+              <div style="display:flex;align-items:center;gap:12px">
+                <button class="at40-play" aria-label="Play" style="width:52px;height:52px;flex:0 0 auto;border:none;
+                       border-radius:50%;cursor:pointer;color:#1a1206;display:flex;align-items:center;justify-content:center;
+                       background:radial-gradient(120% 120% at 30% 25%,#ffd679,#e8b64c 55%,#b98a2e);
+                       box-shadow:0 6px 16px rgba(232,182,76,.35),inset 0 2px 3px rgba(255,255,255,.5)">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <div style="flex:1;min-width:0">
+                  <div class="at40-status" style="font-weight:600;font-size:12px">Tap to tune in</div>
+                  <input class="at40-vol" type="range" min="0" max="1" step="0.01" value="0.9"
+                         style="width:100%;margin-top:5px;accent-color:#e8b64c" aria-label="Volume">
+                </div>
               </div>
             </div>
-            <div style="display:flex;gap:6px;padding-top:2px">
-              <input class="at40-q" placeholder="Search stations…"
-                style="flex:1;min-width:0;background:var(--surface2);border:1px solid var(--border);
-                       color:var(--text);border-radius:8px;padding:6px 9px;outline:none;font-size:12px">
-              <select class="at40-genre" style="background:var(--surface2);border:1px solid var(--border);
-                       color:var(--text);border-radius:8px;padding:6px 6px;outline:none;font-size:12px;max-width:120px">
-                <option value="">Genre…</option>
-              </select>
+
+            <div class="at40-browse" style="display:none;flex-direction:column;gap:8px">
+              <div style="display:flex;gap:6px">
+                <input class="at40-q" placeholder="Search stations…"
+                  style="flex:1;min-width:0;background:var(--surface2);border:1px solid var(--border);
+                         color:var(--text);border-radius:8px;padding:7px 9px;outline:none;font-size:12px">
+                <select class="at40-genre" style="background:var(--surface2);border:1px solid var(--border);
+                         color:var(--text);border-radius:8px;padding:7px 6px;outline:none;font-size:12px;max-width:124px">
+                  <option value="">Genre…</option>
+                </select>
+              </div>
+              <div class="at40-list" style="overflow:auto;min-height:130px;max-height:320px"></div>
             </div>
-            <div class="at40-list" style="overflow:auto;min-height:120px;max-height:300px;margin-top:2px"></div>
           </div>`;
 
         this.au = new Audio(); this.au.preload = 'none';
+        this.bannerEl = this.el.querySelector('.at40-banner');
+        this.playerEl = this.el.querySelector('.at40-player');
+        this.browseEl = this.el.querySelector('.at40-browse');
+        this.toggleEl = this.el.querySelector('.at40-toggle');
         this.nameEl = this.el.querySelector('.at40-name');
         this.descEl = this.el.querySelector('.at40-desc');
         this.btn    = this.el.querySelector('.at40-play');
@@ -68,9 +83,13 @@ class AT40Widget extends WidgetBase {
         this.genreEl= this.el.querySelector('.at40-genre');
         const vol   = this.el.querySelector('.at40-vol');
 
-        this._setStation(this.station, false);   // show current, don't autoplay
+        this._setStation(this.station, false);
         this.au.volume = parseFloat(vol.value);
         vol.oninput = () => { this.au.volume = parseFloat(vol.value); };
+
+        this.bannerEl.onclick = () => this._setView(this.view === 'browse' ? 'player' : 'browse');
+        this.bannerEl.onmouseenter = () => { this.bannerEl.style.background = 'rgba(255,255,255,.05)'; };
+        this.bannerEl.onmouseleave = () => { this.bannerEl.style.background = ''; };
 
         this.btn.onclick = () => this._toggle();
         this.au.onplaying = () => this._setPlaying(true);
@@ -87,6 +106,16 @@ class AT40Widget extends WidgetBase {
         this._loadGenres();
         this._loop = (ts) => this._draw(ts);
         this._raf  = requestAnimationFrame(this._loop);
+    }
+
+    _setView(mode) {
+        this.view = mode;
+        const browse = mode === 'browse';
+        this.playerEl.style.display = browse ? 'none' : 'flex';
+        this.browseEl.style.display = browse ? 'flex' : 'none';
+        this.toggleEl.textContent = browse ? '▾' : '🔍';
+        this.bannerEl.title = browse ? 'Back to player' : 'Browse stations';
+        if (browse) setTimeout(() => { try { this.qEl.focus(); } catch {} }, 0);
     }
 
     async _api(path) {
@@ -135,7 +164,7 @@ class AT40Widget extends WidgetBase {
         for (const s of items) {
             const row = document.createElement('div');
             const on = String(s.id) === String(this.station.id);
-            row.style.cssText = `display:flex;align-items:center;gap:8px;padding:8px 8px;border-radius:8px;cursor:pointer;`
+            row.style.cssText = `display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;cursor:pointer;`
                 + (on ? 'background:rgba(232,182,76,.14);' : '');
             row.innerHTML = `<span style="font-size:14px">📻</span>
               <span style="min-width:0;flex:1">
@@ -158,6 +187,7 @@ class AT40Widget extends WidgetBase {
 
     async _playStation(s) {
         this._setStation({ id: s.id, name: s.name, desc: s.desc || '' }, false);
+        this._setView('player');                 // selection returns to the front page
         this.status.textContent = 'Tuning in…';
         let url = this._pickStream(s.streams);
         if (!url) {
@@ -172,8 +202,6 @@ class AT40Widget extends WidgetBase {
         this.au.src = url;
         try { this.au.load(); await this.au.play(); }
         catch { this.status.textContent = 'Tap ▶ to play'; }
-        // repaint list highlight
-        if (this.genreEl.value) this._byGenre(this.genreEl.value); else if (this.qEl.value) this._search(this.qEl.value);
     }
 
     _setStation(st, autoplay) {
@@ -206,19 +234,21 @@ class AT40Widget extends WidgetBase {
     _draw(t) {
         const cv = this.cv, ctx = this.ctx, d = Math.min(2, window.devicePixelRatio || 1);
         const w = Math.round(cv.clientWidth * d), h = Math.round(cv.clientHeight * d);
-        if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-        ctx.clearRect(0, 0, w, h);
-        this.energy += ((this.playing ? 1 : 0) - this.energy) * 0.06;
-        const N = 40, bw = w / N;
-        for (let i = 0; i < N; i++) {
-            const p = i / N;
-            let a = Math.sin(t * 0.0022 + i * 0.55) * Math.sin(t * 0.0009 + i * 0.21);
-            a = Math.abs(a) * (0.35 + 0.65 * Math.sin(p * Math.PI));
-            a = a * this.energy + (this.playing ? Math.random() * 0.06 : 0.015);
-            const bh = Math.max(2 * d, a * h * 0.92), x = i * bw + 1.5 * d, y = h - bh;
-            const g = ctx.createLinearGradient(0, y, 0, h);
-            g.addColorStop(0, '#ffd679'); g.addColorStop(1, '#b9791e');
-            ctx.fillStyle = g; ctx.fillRect(x, y, bw - 3 * d, bh);
+        if (w && h && (cv.width !== w || cv.height !== h)) { cv.width = w; cv.height = h; }
+        if (w && h) {
+            ctx.clearRect(0, 0, w, h);
+            this.energy += ((this.playing ? 1 : 0) - this.energy) * 0.06;
+            const N = 40, bw = w / N;
+            for (let i = 0; i < N; i++) {
+                const p = i / N;
+                let a = Math.sin(t * 0.0022 + i * 0.55) * Math.sin(t * 0.0009 + i * 0.21);
+                a = Math.abs(a) * (0.35 + 0.65 * Math.sin(p * Math.PI));
+                a = a * this.energy + (this.playing ? Math.random() * 0.06 : 0.015);
+                const bh = Math.max(2 * d, a * h * 0.92), x = i * bw + 1.5 * d, y = h - bh;
+                const g = ctx.createLinearGradient(0, y, 0, h);
+                g.addColorStop(0, '#ffd679'); g.addColorStop(1, '#b9791e');
+                ctx.fillStyle = g; ctx.fillRect(x, y, bw - 3 * d, bh);
+            }
         }
         this._raf = requestAnimationFrame(this._loop);
     }
