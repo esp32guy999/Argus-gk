@@ -16,7 +16,7 @@ class AT40Widget extends WidgetBase {
         this.energy  = 0;
         this.station = (this.panel.config && this.panel.config.station) || AT40Widget.DEFAULT;
         this.el.innerHTML = `
-          <div class="at40" style="display:flex;flex-direction:column;height:100%;padding:10px 12px 10px;gap:8px;min-height:0">
+          <div class="at40" style="display:flex;flex-direction:column;padding:10px 12px 12px;gap:8px">
             <div style="display:flex;align-items:center;gap:8px">
               <span style="font-weight:800;font-size:11px;letter-spacing:1px;color:#1a1206;
                      background:#e8b64c;padding:3px 7px;border-radius:6px">iHR</span>
@@ -28,7 +28,7 @@ class AT40Widget extends WidgetBase {
                      letter-spacing:1px;font-weight:700;color:#ff5d5d">
                 <span class="dot" style="width:7px;height:7px;border-radius:50%;background:#ff5d5d"></span>LIVE</span>
             </div>
-            <canvas class="at40-viz" style="width:100%;height:64px;flex:0 0 auto;border-radius:10px;background:rgba(0,0,0,.25)"></canvas>
+            <canvas class="at40-viz" style="width:100%;height:52px;flex:0 0 auto;border-radius:10px;background:rgba(0,0,0,.25)"></canvas>
             <div style="display:flex;align-items:center;gap:12px">
               <button class="at40-play" aria-label="Play" style="width:48px;height:48px;flex:0 0 auto;border:none;
                      border-radius:50%;cursor:pointer;color:#1a1206;display:flex;align-items:center;justify-content:center;
@@ -51,7 +51,7 @@ class AT40Widget extends WidgetBase {
                 <option value="">Genre…</option>
               </select>
             </div>
-            <div class="at40-list" style="flex:1;min-height:0;overflow:auto;margin-top:2px"></div>
+            <div class="at40-list" style="overflow:auto;min-height:120px;max-height:300px;margin-top:2px"></div>
           </div>`;
 
         this.au = new Audio(); this.au.preload = 'none';
