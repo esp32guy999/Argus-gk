@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#0a0a0f">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=40">
+  <link rel="stylesheet" href="/static/styles.css?v=41">
   <title>Claude Desktop Next</title>
 </head>
 <body>
@@ -144,9 +144,6 @@
   <div id="tools-overlay" class="calc-overlay hidden">
     <div class="calc-header">
       <h2>Tools</h2>
-      <button class="btn-icon" data-close="tools-overlay">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
     </div>
     <div class="tools-grid">
       <div class="tools-section-label">Conversation</div>
@@ -210,9 +207,6 @@
     <div id="conv-drawer-panel">
       <div id="conv-drawer-header">
         <h3>Conversations</h3>
-        <button id="conv-close" class="btn-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M18 6L6 18M6 6l12 12"/></svg>
-        </button>
       </div>
       <button id="conv-new" class="btn-primary" style="width:100%;margin-bottom:12px;">+ New Chat</button>
       <div id="conv-list"></div>
@@ -267,6 +261,6 @@
   <script src="/static/widgets/generated.js?v=1"></script>
   <script src="/static/widgets/relogin.js?v=1"></script>
   <!-- DISABLED 2026-05-25 — kills iOS Safari (black screen). See https://github.com/esp32guy999/claude-desktop-next   <script src="/static/widgets/ccpair.js?v=1"></script> -->
-  <script src="/static/app.js?v=49"></script>
+  <script src="/static/app.js?v=50"></script>
 </body>
 </html>

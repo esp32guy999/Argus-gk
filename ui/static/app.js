@@ -1980,8 +1980,21 @@ async function listPresetsToChat() {
 }
 
 // ── Overlays ────────────────────────────────────────────────────────
-function openOverlay(id)  { $(id)?.classList.remove('hidden'); }
-function closeOverlay(id) { $(id)?.classList.add('hidden'); }
+// Sidebar-opened panels: clicking the nav item toggles them (menu-select), and the nav
+// button reflects an .active state while open — same mechanism as the view tabs.
+const SIDEBAR_PANELS = { 'tools-overlay': 'nav-tools', 'conv-drawer': 'nav-convs' };
+function syncSidebarNav() {
+  for (const [ov, btn] of Object.entries(SIDEBAR_PANELS)) {
+    const open = $(ov) && !$(ov).classList.contains('hidden');
+    $(btn)?.classList.toggle('active', !!open);
+  }
+}
+function openOverlay(id)  { $(id)?.classList.remove('hidden'); syncSidebarNav(); }
+function closeOverlay(id) { $(id)?.classList.add('hidden');    syncSidebarNav(); }
+function toggleOverlay(id) {
+  const el = $(id); if (!el) return;
+  el.classList.contains('hidden') ? openOverlay(id) : closeOverlay(id);
+}
 
 async function openWidgetPicker() {
   const list = $('widget-type-list');
@@ -2169,6 +2182,9 @@ function _wireUI_rest() {
   document.querySelectorAll('.nav-tab[data-view]').forEach(t => {
     t.addEventListener('click', () => {
       switchView(t.dataset.view);
+      // Selecting a view closes any open sidebar panel (menu-select consistency)
+      closeOverlay('tools-overlay');
+      closeOverlay('conv-drawer');
       // Close mobile drawer
       sideNav.classList.remove('open');
       const bd = document.getElementById('nav-backdrop');
@@ -2198,17 +2214,19 @@ function _wireUI_rest() {
   // (model-select listener moved to wireUI critical path)
 
   // Sidebar tools & conversations buttons
-  $('nav-tools').addEventListener('click', () => {
+  const closeMobileDrawer = () => {
     sideNav.classList.remove('open');
-    const bd = document.getElementById('nav-backdrop');
-    if (bd) bd.classList.remove('visible');
-    openOverlay('tools-overlay');
+    document.getElementById('nav-backdrop')?.classList.remove('visible');
+  };
+  $('nav-tools').addEventListener('click', () => {
+    closeMobileDrawer();
+    closeOverlay('conv-drawer');          // only one sidebar panel open at a time
+    toggleOverlay('tools-overlay');       // menu-select: re-tap closes
   });
   $('nav-convs').addEventListener('click', () => {
-    sideNav.classList.remove('open');
-    const bd = document.getElementById('nav-backdrop');
-    if (bd) bd.classList.remove('visible');
-    openOverlay('conv-drawer');
+    closeMobileDrawer();
+    closeOverlay('tools-overlay');
+    toggleOverlay('conv-drawer');
   });
 
   // Tools overlay buttons
@@ -2221,7 +2239,6 @@ function _wireUI_rest() {
     b.addEventListener('click', () => closeOverlay(b.dataset.close));
   });
   $('conv-drawer-backdrop').addEventListener('click', () => closeOverlay('conv-drawer'));
-  $('conv-close').addEventListener('click', () => closeOverlay('conv-drawer'));
   $('conv-new').addEventListener('click', () => newConversation());
 
   // (chat input + send listeners moved to wireUI critical path)

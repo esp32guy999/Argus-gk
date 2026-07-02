@@ -150,7 +150,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  z-index: 100;
+  z-index: 500;   /* persistent chrome: stays above all panels/overlays */
 }
 
 #top-bar .flex-spacer { flex: 1; }
@@ -308,7 +308,7 @@ body {
   flex-direction: column;
   padding: 10px 6px;
   gap: 4px;
-  z-index: 50;
+  z-index: 480;   /* above panels so nav items stay clickable to toggle them closed */
 }
 
 #side-nav.collapsed { transform: translateX(-100%); }
@@ -955,7 +955,10 @@ body {
 /* ── Tools / Widget picker / Presets / Memory overlays ───────────── */
 .calc-overlay {
   position: fixed;
-  inset: 0;
+  top: calc(var(--top-h) + env(safe-area-inset-top, 0px));   /* sit below the persistent top bar */
+  left: var(--side-w);   /* and beside the persistent sidebar (desktop) */
+  right: 0;
+  bottom: 0;
   z-index: 300;
   background: var(--bg);
   display: flex;
@@ -1038,7 +1041,10 @@ body {
 /* ── Conversation drawer ─────────────────────────────────────────── */
 #conv-drawer {
   position: fixed;
-  inset: 0;
+  top: calc(var(--top-h) + env(safe-area-inset-top, 0px));   /* below the persistent top bar */
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 250;
 }
 #conv-drawer-backdrop {
@@ -1221,7 +1227,7 @@ body {
     box-shadow: 4px 0 24px rgba(0, 0, 0, 0.6);
     transform: translateX(-100%);
     transition: transform 0.25s ease;
-    z-index: 200;
+    z-index: 480;   /* drawer opens above panels so nav items stay tappable */
   }
 
   #side-nav.open {
@@ -1249,11 +1255,14 @@ body {
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.5);
-    z-index: 199;
+    z-index: 470;   /* above panels, below the open drawer (480) */
   }
   #nav-backdrop.visible {
     display: block;
   }
+
+  /* On mobile the sidebar is an off-screen drawer, so panels span full width */
+  .calc-overlay { left: 0; }
 
   /* Main content uses full width */
   #main {
