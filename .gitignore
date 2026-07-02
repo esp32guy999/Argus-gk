@@ -25,3 +25,6 @@ ui/*.service
 
 # Argus runtime auto-notes (not source)
 notes/
+
+# NEC data (large PDF + generated index — not for git)
+data/nec/

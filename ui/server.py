@@ -15,6 +15,7 @@ from argus.storage import Store
 from prometheus_client import make_asgi_app
 import httpx
 import relogin
+import nec
 
 STATIC = pathlib.Path(__file__).parent / "static"
 PRESETS = pathlib.Path(__file__).parent / "presets"
@@ -398,6 +399,47 @@ async def warm(request: Request):
     publish("model_warm", {"model": model_name, "loading": True})
     asyncio.create_task(_warm_model(model_name, display))
     return JSONResponse({"status": "warming"})
+
+
+# ── NEC (NFPA 70 2023) lookup tab ───────────────────────────────────────────
+@app.get("/nec/info")
+async def nec_info():
+    try:
+        return JSONResponse({"pages": nec.page_count()})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/nec/render")
+async def nec_render(page: int = 0, hl: str = "", dpi: int = 160):
+    highlights = [h for h in hl.split("|") if h.strip()] if hl else []
+    dpi = max(80, min(int(dpi), 300))
+    try:
+        data = await asyncio.to_thread(nec.render_page, page, highlights, dpi)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return Response(content=data, media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+@app.post("/nec/ask")
+async def nec_ask(request: Request):
+    body = await request.json()
+    q = (body.get("q") or "").strip()
+    if not q:
+        return JSONResponse({"error": "empty question"}, status_code=400)
+    try:
+        return JSONResponse(await nec.ask(q))
+    except Exception as e:
+        return JSONResponse({"error": str(e), "hits": []}, status_code=500)
+
+@app.post("/nec/translate")
+async def nec_translate(request: Request):
+    body = await request.json()
+    try:
+        t = await nec.translate_page(body.get("q", ""), int(body.get("page", 0)),
+                                     body.get("section", ""))
+        return JSONResponse({"translation": t})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/argus/history")
 async def get_history(conversation_id: str | None = None, limit: int = 100,

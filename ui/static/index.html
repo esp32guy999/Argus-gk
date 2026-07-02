@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#0a0a0f">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=41">
+  <link rel="stylesheet" href="/static/styles.css?v=43">
   <title>Claude Desktop Next</title>
 </head>
 <body>
@@ -34,6 +34,10 @@
     <button class="nav-tab" data-view="network" title="Network">
       <svg viewBox="0 0 24 24"><path class="ico" d="M10.3 10.3 L6.4 6.4 M13.7 10.3 L17.6 6.4 M10.3 13.7 L6.4 17.6 M13.7 13.7 L17.6 17.6"/><circle class="ico" cx="5" cy="5" r="1.9"/><circle class="ico" cx="19" cy="5" r="1.9"/><circle class="ico" cx="5" cy="19" r="1.9"/><circle class="ico" cx="19" cy="19" r="1.9"/><circle class="eye" cx="12" cy="12" r="2.7"/></svg>
       <span>Net</span>
+    </button>
+    <button class="nav-tab" data-view="nec" title="NEC code lookup">
+      <svg viewBox="0 0 24 24"><rect class="ico" x="4" y="3.5" width="15" height="17" rx="2"/><path class="ico" d="M8 3.5 V20.5"/><path class="eye" d="M13.5 7 L11 12.5 H13 L11.5 17 L15 10.5 H13 L14.5 7 Z"/></svg>
+      <span>NEC</span>
     </button>
     <div class="nav-spacer"></div>
     <button class="nav-tab" id="nav-tools" title="Tools">
@@ -137,6 +141,37 @@
         </button>
       </div>
       <div id="machine-grid">Loading…</div>
+    </section>
+
+    <!-- NEC view — NFPA 70 code lookup -->
+    <section class="view" id="view-nec">
+      <div class="nec-ask">
+        <input id="nec-q" type="text" autocomplete="off"
+               placeholder="Ask the NEC…  e.g. receptacles on a 20A kitchen circuit">
+        <button id="nec-go" class="btn-primary">Ask</button>
+      </div>
+      <div class="nec-stage">
+        <button class="nec-arrow" id="nec-prev" title="Previous result" hidden>‹</button>
+        <div class="nec-pagebox" id="nec-pagebox">
+          <div class="nec-empty" id="nec-empty">Ask a question to find the relevant NEC section — the page appears here with the answer highlighted.</div>
+          <img id="nec-page" alt="NEC page" hidden>
+        </div>
+        <button class="nec-arrow" id="nec-next" title="Next result" hidden>›</button>
+      </div>
+      <div class="nec-meta"><span id="nec-counter"></span></div>
+      <div class="nec-translate" id="nec-translate" hidden></div>
+
+      <!-- Fullscreen page lightbox -->
+      <div id="nec-zoom" class="nec-zoom hidden">
+        <div class="nec-zoom-bar">
+          <div class="nec-zoom-answer" id="nec-zoom-answer"></div>
+          <button class="nec-zoom-close" id="nec-zoom-close" title="Close">✕</button>
+        </div>
+        <div class="nec-zoom-scroll" id="nec-zoom-scroll">
+          <img id="nec-zoom-img" alt="NEC page (fullscreen)">
+        </div>
+        <div class="nec-zoom-hint" id="nec-zoom-hint">tap image to zoom · tap ✕ to close</div>
+      </div>
     </section>
   </main>
 
@@ -261,6 +296,7 @@
   <script src="/static/widgets/generated.js?v=1"></script>
   <script src="/static/widgets/relogin.js?v=1"></script>
   <!-- DISABLED 2026-05-25 — kills iOS Safari (black screen). See https://github.com/esp32guy999/claude-desktop-next   <script src="/static/widgets/ccpair.js?v=1"></script> -->
+  <script src="/static/nec.js?v=2"></script>
   <script src="/static/app.js?v=50"></script>
 </body>
 </html>
