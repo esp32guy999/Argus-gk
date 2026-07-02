@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import os
 import re
+import fcntl
+import hashlib
+import pathlib
 import time as _time
 from urllib.parse import quote_plus
 
@@ -30,9 +33,15 @@ _DEFAULT_GENRES = ["Fantasy", "Sci-Fi", "Thriller", "LitRPG", "Horror",
                    "Romance", "Mystery", "Non-Fiction"]
 
 # Politeness throttle: ABB rate-limits (and serves its homepage) under rapid hits, so
-# enforce a minimum gap between requests regardless of how often we call or retry it.
-_MIN_INTERVAL = 3.0
-_last_request = [0.0]
+# enforce a minimum gap between requests — GLOBALLY, across every process that calls this
+# (chat loop, Forge UI, ad-hoc scripts), via a lockfile + on-disk timestamp. A per-process
+# in-memory throttle didn't help: each script invocation started fresh and hammered ABB.
+_MIN_INTERVAL = 5.0          # seconds between ABB requests, enforced across all processes
+_CACHE_TTL = 900.0           # 15 min: identical searches serve from cache, not ABB
+_STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))) / "argus" / "abb"
+_TS_FILE = _STATE / "last_request"
+_LOCK_FILE = _STATE / "throttle.lock"
+_CACHE_DIR = _STATE / "cache"
 _cfg_cache: dict | None = None
 
 
@@ -48,19 +57,46 @@ def _cfg() -> dict:
 
 
 def _throttle() -> None:
-    wait = _MIN_INTERVAL - (_time.monotonic() - _last_request[0])
-    if wait > 0:
-        _time.sleep(wait)
-    _last_request[0] = _time.monotonic()
+    """Enforce >= _MIN_INTERVAL seconds between ABB requests across ALL processes.
+    Holds an exclusive file lock while spacing, so concurrent callers queue politely
+    rather than bursting. Uses wall-clock time so the gap persists across processes."""
+    _STATE.mkdir(parents=True, exist_ok=True)
+    with open(_LOCK_FILE, "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            last = 0.0
+            try:
+                last = float(_TS_FILE.read_text())
+            except Exception:
+                pass
+            wait = _MIN_INTERVAL - (_time.time() - last)
+            if wait > 0:
+                _time.sleep(wait)
+            _TS_FILE.write_text(str(_time.time()))
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
 
 
 def _abb_get(url: str) -> str:
+    # Serve identical requests from a short-TTL disk cache so repeat/duplicate searches
+    # (retries, the UI + loop asking the same thing) never re-hit ABB.
+    key = _CACHE_DIR / (hashlib.sha1(url.encode()).hexdigest() + ".html")
+    try:
+        if key.exists() and (_time.time() - key.stat().st_mtime) < _CACHE_TTL:
+            return key.read_text()
+    except Exception:
+        pass
     _throttle()
     try:
         r = httpx.get(url, headers={"User-Agent": _UA}, timeout=25, follow_redirects=True)
         r.raise_for_status()
     except httpx.HTTPError as e:
         raise ModelRetry(f"audiobook: could not reach AudiobookBay ({e}). Is the VPN up?")
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        key.write_text(r.text)
+    except Exception:
+        pass
     return r.text
 
 
@@ -112,14 +148,16 @@ def search(query: str) -> list[dict]:
         return hits if (hits and (hits >= len(terms) - 1 or hits >= 2 or not terms)) else 0
 
     def _query(q):
-        for _ in range(2):
-            posts = _posts(_lxml.fromstring(_abb_get(f"{_abb_base()}/?s={quote_plus(q)}")))
-            ranked = sorted(((_match(p), p) for p in posts), key=lambda x: x[0], reverse=True)
-            relevant = [p for s, p in ranked if s > 0]
-            if relevant:
-                return relevant
-            if not terms:           # empty query -> the homepage listing IS the intended result
-                return posts
+        # single fetch (cached + globally throttled); no immediate retry — retrying the
+        # same URL when ABB is already rate-limiting just piles on. The distinctive-term
+        # fallback below is a *different* query, which is the legitimate second try.
+        posts = _posts(_lxml.fromstring(_abb_get(f"{_abb_base()}/?s={quote_plus(q)}")))
+        ranked = sorted(((_match(p), p) for p in posts), key=lambda x: x[0], reverse=True)
+        relevant = [p for s, p in ranked if s > 0]
+        if relevant:
+            return relevant
+        if not terms:               # empty query -> the homepage listing IS the intended result
+            return posts
         return []
 
     # 1) the query as given
