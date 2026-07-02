@@ -28,3 +28,6 @@ notes/
 
 # NEC data (large PDF + generated index — not for git)
 data/nec/
+
+# watcher state
+scripts/.music_staging_done
