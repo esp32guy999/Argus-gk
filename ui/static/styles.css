@@ -1462,13 +1462,16 @@ body {
 
 /* ── NEC fullscreen lightbox ─────────────────────────────────────── */
 .nec-zoom {
-  position: fixed; inset: 0; z-index: 600; background: #0b0b12;
+  position: fixed;
+  top: calc(var(--top-h) + env(safe-area-inset-top, 0px));   /* clear the status bar / app top bar */
+  left: 0; right: 0; bottom: 0;
+  z-index: 600; background: #0b0b12;
   display: flex; flex-direction: column;
 }
 .nec-zoom.hidden { display: none !important; }
 .nec-zoom-bar {
   flex: 0 0 auto; display: flex; align-items: flex-start; gap: 10px;
-  padding: calc(env(safe-area-inset-top, 0px) + 10px) 12px 10px;
+  padding: 12px 12px 10px;
   background: var(--surface); border-bottom: 1px solid var(--accent);
 }
 .nec-zoom-answer { flex: 1; font-size: 14px; line-height: 1.4; color: var(--text); font-weight: 600; }
