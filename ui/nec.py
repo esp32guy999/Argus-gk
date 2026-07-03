@@ -17,7 +17,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 PDF_PATH   = os.path.join(_HERE, "..", "data", "nec", "nec2023.pdf")
 INDEX_PATH = os.path.join(_HERE, "..", "data", "nec", "section_index.json")
 MODEL_URL  = os.environ.get("ARGUS_MODEL_URL", "http://localhost:9090/v1")
-NEC_MODEL  = os.environ.get("ARGUS_NEC_MODEL", "gemma4-26b")  # non-reasoning: reliable JSON + NEC knowledge
+# Ornith (2026-07-03): thinking pinned off per-request below, so JSON stays reliable;
+# 131k ctx lets us feed whole OCR pages; and NEC lookups no longer swap the daily
+# driver off the GPU (gemma did: ornith -> gemma -> ornith, ~1 min of churn per ask).
+NEC_MODEL  = os.environ.get("ARGUS_NEC_MODEL", "ornith-35b-uncensored")
 
 _doc = None
 _doc_lock = threading.Lock()
@@ -153,12 +156,43 @@ def pages_for_phrase(phrase, cap=3):
                 break
     return out
 
+# ── Deterministic table lookups (~/nec-assistant) ───────────────────────────
+# Conduit fill / ampacity / EGC / GEC / box-fill numbers come from structured
+# Annex C + Chapter 9 JSON, not from a model. The 2026-07-03 bake-off showed why:
+# tesseract flattens the fill tables' columns, so LLMs (any of them) either guess
+# from parametric memory (ornith: wrong trade size) or refuse (gemma). Computed
+# lookups are exact. LLM still handles prose questions + plain-English translation.
+NEC_ASSISTANT = os.environ.get("ARGUS_NEC_ASSISTANT",
+                               os.path.expanduser("~/nec-assistant"))
+_table_lookup_fn = None
+
+def _try_table_lookup(question):
+    global _table_lookup_fn
+    if _table_lookup_fn is None:
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "nec_table_lookup", os.path.join(NEC_ASSISTANT, "table_lookup.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _table_lookup_fn = mod.try_table_lookup
+        except Exception:
+            _table_lookup_fn = lambda q: None   # nec-assistant absent -> LLM-only mode
+    try:
+        return _table_lookup_fn(question)
+    except Exception:
+        return None
+
 # ── LLM ─────────────────────────────────────────────────────────────────────
 async def _complete(messages, max_tokens=500, temperature=0.2):
     async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(f"{MODEL_URL}/chat/completions",
                          json={"model": NEC_MODEL, "messages": messages,
-                               "max_tokens": max_tokens, "temperature": temperature})
+                               "max_tokens": max_tokens, "temperature": temperature,
+                               # Reasoning models (ornith) must not think here: the router
+                               # needs bare JSON and unbounded CoT can run the budget dry
+                               # with empty content. Non-thinking templates ignore this.
+                               "chat_template_kwargs": {"enable_thinking": False}})
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
@@ -183,13 +217,17 @@ ROUTER_SYS = (
     "Use canonical NEC numbering (e.g. 210.52, 250.66, Table 310.16, Article 250). Prefer 1-3 sections.\n"
     "IMPORTANT for conduit/raceway FILL questions (how many conductors fit): the direct lookup tables "
     "are in ANNEX C — cite them as 'Table C.1' (EMT), 'Table C.4' (RMC), 'Table C.10' (PVC Sch 40), etc., "
-    "AND Chapter 9 'Table 1' (% fill), 'Table 4' (conduit area), 'Table 5' (conductor area).\n"
+    "AND Chapter 9 'Table 1' (% fill), 'Table 4' (conduit area), 'Table 5' (conductor area). "
+    "For these, ALWAYS include the phrase 'Maximum Number of Conductors' — it is printed on the actual "
+    "data pages and steers away from the Annex C table of contents.\n"
     "Phrases must be DISTINCTIVE verbatim text likely printed in the code (table titles, defined terms) — "
     "not generic words like 'conduit' or 'wire'. Good phrases help locate & highlight the exact spot."
 )
 
 async def _translate(question, hint, clean_text, section):
-    snippet = (clean_text or "")[:3500]
+    # ~3 full OCR'd code pages — ornith serves 131k ctx, so the old 3.5k truncation
+    # (gemma-era caution) just cost answer quality.
+    snippet = (clean_text or "")[:30000]
     sys = ("You explain U.S. electrical code (NEC / NFPA 70) in plain, practical English for a "
            "knowledgeable DIYer or electrician. Be concise and accurate. Never invent requirements; "
            "if the provided text doesn't fully answer, say what it does cover.")
@@ -243,6 +281,18 @@ async def ask(question):
     question = (question or "").strip()
     if not question:
         return {"error": "empty question"}
+
+    # 0) deterministic table lookup first — exact numbers beat any model
+    calc = await asyncio.to_thread(_try_table_lookup, question)
+    if calc and calc.get("answer"):
+        sec = f"Table {calc['table']}" if calc.get("table") else ""
+        phrases = ["Maximum Number of Conductors"] if "C." in (calc.get("table") or "") else []
+        hits = await asyncio.to_thread(gather_and_rank, [sec] if sec else [], phrases)
+        return {"answer": calc["answer"], "sections": [sec] if sec else [],
+                "phrases": phrases, "hits": hits,
+                "translation": calc["answer"] +
+                    "\n\n(Computed from structured NEC table data — deterministic, not model recall.)"}
+
     # 1) router
     try:
         raw = await _complete([{"role": "system", "content": ROUTER_SYS},
@@ -258,11 +308,16 @@ async def ask(question):
     # 2) ground + rank pages by distinctive-phrase density (blocking; offload)
     hits = await asyncio.to_thread(gather_and_rank, sections, phrases)
 
-    # 4) translate the top hit from clean OCR text
+    # 4) translate from the top hits' clean OCR text. Multi-page: the ranker can put a
+    # TOC/cross-reference page first (the 2026-07-03 conduit-fill miss — model then
+    # guessed from parametric memory, wrongly). With ornith's 131k ctx we feed the top
+    # 3 pages so the real data page rides along even when out-ranked.
     translation = ""
     if hits:
-        clean = await asyncio.to_thread(ocr_page, hits[0]["page"])
-        translation = await _translate(question, answer, clean, hits[0].get("section"))
+        texts = await asyncio.gather(
+            *[asyncio.to_thread(ocr_page, h["page"]) for h in hits[:3]])
+        combined = "\n\n----- page break -----\n\n".join(t for t in texts if t)
+        translation = await _translate(question, answer, combined, hits[0].get("section"))
     elif answer:
         translation = answer
 
