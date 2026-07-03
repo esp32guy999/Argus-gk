@@ -16,7 +16,7 @@
 # Installed on nyx: ~/.local/bin/repo-hygiene, run by repo-hygiene.timer (daily 09:00).
 set -u
 
-REPOS="local:$HOME/forge anvil:/home/shane/argus"
+REPOS="local:$HOME/forge anvil:/home/shane/argus anvil:/home/shane/ai-stack"
 LOG="$HOME/.local/state/repo-hygiene.log"
 mkdir -p "$(dirname "$LOG")"
 
