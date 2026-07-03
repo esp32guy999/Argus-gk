@@ -27,6 +27,14 @@ DEFAULT_MODEL = os.environ.get("ARGUS_DEFAULT_MODEL", "qwen3-next-80b")
 # Models NOT served by llama-swap — routed to their own OpenAI-compatible endpoint.
 # gemma4-cpu = Gemma 4 E2B on a CPU-only ollama (CUDA hidden) → runs on the 7800X3D and
 # never touches the 5080's VRAM (which the reasoner owns). Only ollama can load gemma4.
+# Friendly names for the picker (ids stay canonical everywhere else — lane gates,
+# CHAT_THINKING, soul.d matching all key on the real id).
+MODEL_DISPLAY = {
+    "ornith-35b-uncensored": "Loki",          # Shane's name for the uncensored 35B
+    "ornith-35b-ngram":      "Loki (ngram)",
+    "ornith-35b-mtp":        "Loki (MTP)",
+}
+
 EXTERNAL_MODELS = {
     "gemma4-cpu": {"base_url": "http://localhost:11435/v1", "model_id": "gemma4e2b",
                    "display": "Gemma 4 E2B (CPU)"},
@@ -341,7 +349,7 @@ async def get_models():
             data = (await c.get(f"{_LOCAL_BASE}/v1/models")).json()
         for m in data.get("data", []):
             mid = m["id"]
-            display = "Argus (local 80B)" if mid == DEFAULT_MODEL else mid
+            display = MODEL_DISPLAY.get(mid, "Argus (local 80B)" if mid == DEFAULT_MODEL else mid)
             entries.append([mid, {"display": display, "backend": "argus",
                                   "vision": _is_vision(mid), "warm_on_select": _warm_on_select(mid)}])
     except Exception:

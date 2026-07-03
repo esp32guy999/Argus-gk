@@ -1,4 +1,7 @@
-# Model profile — Ornith 35B AEON Uncensored (2026-07-03)
+# Model profile — Loki (Ornith 35B AEON Uncensored) — 2026-07-03
+
+> **Signature**: display name "Loki", emerald green `#10b981` (ids stay `ornith-35b-*`
+> everywhere mechanical: lane gates, CHAT_THINKING, soul.d matching, llama-swap).
 
 `vcruz305/Ornith-1.0-35B-AEON-Ultimate-Uncensored-GGUF`, Q4_K_M (20GB) at
 `anvil:~/models/ornith-35b-uncensored/`. Three llama-swap arms: `ornith-35b-uncensored`
@@ -38,7 +41,7 @@
 - **Persona overlay**: `soul.d/ornith-35b.md` via the new soul.d mechanism — unfiltered
   register, decisive answers; owns long-context work, punts deep-reasoning jobs to
   80B/claude-code.
-- **UI accent**: crimson (all arms).
+- **UI accent**: Loki emerald `#10b981` (all arms); picker shows "Loki" / "Loki (ngram)" / "Loki (MTP)".
 
 ## Division of labor (the point of the profile)
 
