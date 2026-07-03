@@ -63,6 +63,17 @@ def _warm_on_select(model_name: str) -> bool:
 # reasoning is correct but ~50x slower for the same result. With thinking off it answers
 # ~0.5s and STILL calls tools correctly (verified). Maps model -> enable_thinking value
 # passed to loop.stream_run; absent -> None (server default, unchanged).
+def _thinking_for_turn(model_name: str, message: str):
+    """Per-TURN thinking policy. Chat default per CHAT_THINKING (off = snappy), but a
+    long prompt is a spec/brief, not chitchat — there thinking is what stops a small
+    model from pattern-completing history or emitting an RP gesture instead of work
+    (2026-07-03: Loki answered a 4.5k-char build spec with 'pong', then with
+    '*starts background task*'). ~1200 chars is well past any casual message."""
+    base = CHAT_THINKING.get(model_name)
+    if base is False and len(message or "") > 1200:
+        return True
+    return base
+
 CHAT_THINKING = {"qwen3.6-35b-a3b": False,
                  # ornith: same failure mode as qwen3.6 — unbounded think ran a 900-token
                  # budget dry with EMPTY content (probe 2026-07-03). Off = 85 tok/s and
@@ -272,7 +283,7 @@ async def chat(request: Request):
                     model_name=(ext["model_id"] if ext else model_name),
                     base_url=(ext["base_url"] if ext else MODEL_URL),
                     turn_budget=8, message_history=history, on_event=on_event,
-                    enable_thinking=CHAT_THINKING.get(model_name))
+                    enable_thinking=_thinking_for_turn(model_name, message))
             async for content in source:
                 if isinstance(content, tuple) and content[0] == "__event__":
                     ev = content[1]
