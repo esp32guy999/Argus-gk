@@ -12,6 +12,24 @@ if [ -x .venv/bin/python ]; then
   fi
 fi
 
+# HARD: staged argus/ modules must keep their contract tests green (affected only —
+# argus/foo.py or argus/tools/foo.py runs tests/test_foo.py if it exists). Catches
+# refactor-without-retest rot (e.g. the 5a55f5a throttle refactor broke
+# test_audiobook.py and nobody noticed until the 2026-07-03 audit).
+if [ -x .venv/bin/python ]; then
+  for f in $(git diff --cached --name-only | grep -E '^argus/.*\.py$'); do
+    t="tests/test_$(basename "$f" .py).py"
+    [ -f "$t" ] || continue
+    if ! PYTHONPATH=. timeout 120 .venv/bin/python "$t" >/tmp/argus-testrun 2>&1; then
+      echo "✗ pre-commit blocked — $t failed against staged $f:"
+      tail -6 /tmp/argus-testrun | sed 's/^/    /'
+      echo "  Fix it or bypass once with: git commit --no-verify"
+      exit 1
+    fi
+    echo "✓ $t green"
+  done
+fi
+
 # SOFT: changed argus/ code but touched no docs/ or tests/ — nudge (non-blocking).
 staged=$(git diff --cached --name-only)
 if echo "$staged" | grep -q '^argus/.*\.py$' && ! echo "$staged" | grep -qE '^(docs/|tests/|CLAUDE\.md)'; then

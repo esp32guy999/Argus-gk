@@ -33,6 +33,20 @@ Operative rules:
    one line for Low blast radius, full record for Medium/High).
 7. **Close the loop.** At task completion, surface what you deferred so it can be triaged.
 
+## Session-end checkpoint (non-negotiable)
+
+Work is not done until it's in git — the 2026-07-03 audit found 2 weeks of Forge
+features living only in a working tree, with pushes silently broken the whole time.
+
+1. **End every working session with `git status` clean.** Commit real work as logical
+   units; gitignore ephemera. New scripts/files count as work — untracked ≠ saved.
+2. **Push.** An unpushed branch is one disk failure from gone. If push *fails*, that is
+   itself a blocking problem — fix or escalate now, don't leave it for next session.
+3. **Never create `.bak` files.** Git stash/branches/commits are the backup.
+
+Backstop: the daily `repo-hygiene` watcher (nyx, 09:00) phone-pushes on dirty trees,
+untracked files, unpushed commits, broken push paths, or .bak litter.
+
 ## Homelab context
 
 (Inlined here because Claude Code won't expand `@import`s outside this dir. The full,

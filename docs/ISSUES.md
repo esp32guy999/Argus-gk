@@ -110,3 +110,16 @@ notes:             Multiple `claude -p` processes used separate CLAUDE_CONFIG_DI
                    Committed 2026-06-23 (commit 4661cd0). Monitoring to confirm
                    auth stays up; shim-side change lives in ai-stack repo (deploy separately).
 ```
+
+### SQLite WAL unbounded — argus.db-wal grew to 4MB (2.6x main DB)
+```
+category:          Maintenance
+severity:          Low
+status:            open (found 2026-07-03 audit)
+blast_radius:      Low — extra read I/O, slower restart replay
+component:         argus/storage.py
+notes:             No periodic checkpoint; WAL only truncates on last-connection
+                   close, which a long-running service never does. Fix candidate:
+                   PRAGMA wal_checkpoint(TRUNCATE) on a timer or every N writes
+                   in Store. Not urgent at current sizes.
+```
