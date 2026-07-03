@@ -97,6 +97,44 @@ models:
       --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
     ttl: 600
 
+  # Ornith-1.0-35B-AEON-Ultimate-Uncensored — the ABLITERATED (decensored) twin of
+  # qwen3.6-35b-a3b above (AEON-7's Expert-Granular Abliteration; refusal-free, keeps coding).
+  # Same qwen35moe arch -> identical footprint/flags (-ncmoe 20 fits ~13GB). Q4_K_M ≈ 21GB.
+  # Note: no refusal guardrails — expect more confident fabrication at the edges (see the
+  # abliteration hallucination tax). GGUF: vcruz305 repo.
+  "ornith-35b-uncensored":
+    cmd: |
+      ${server}
+      -m /home/shane/models/ornith-35b-uncensored/ornith-aeon-35b-Q4_K_M.gguf
+      --cache-type-k q4_0 --cache-type-v q4_0
+      -ncmoe 20 -c 16384
+      --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
+    ttl: 600
+
+  # A/B arm: same plain weights + n-gram model-free self-speculation (drafts from repeated
+  # context; no extra model). Best on structured/code output. Compare tok/s vs the baseline above.
+  "ornith-35b-ngram":
+    cmd: |
+      ${server}
+      -m /home/shane/models/ornith-35b-uncensored/ornith-aeon-35b-Q4_K_M.gguf
+      --cache-type-k q4_0 --cache-type-v q4_0
+      -ncmoe 20 -c 16384
+      --spec-type ngram-simple
+      --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
+    ttl: 600
+
+  # A/B arm: the MTP-head self-draft (the "MoE drafts itself" — trained draft, high acceptance).
+  # Uses the MTP GGUF variant + --spec-type draft-mtp. This is the one that can beat baseline.
+  "ornith-35b-mtp":
+    cmd: |
+      ${server}
+      -m /home/shane/models/ornith-35b-uncensored/ornith-aeon-35b-MTP-Q4_K_M.gguf
+      --cache-type-k q4_0 --cache-type-v q4_0
+      -ncmoe 20 -c 16384
+      --spec-type draft-mtp
+      --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
+    ttl: 600
+
   # ── BAKE-OFF CANDIDATES (downloading 2026-06-25) — commented until complete. ──
   # Both coder-tuned Qwen3 MoEs, non-reasoning instruct, IQ4_XS (matches the 80B tier).
   # Uncomment + verify the -m path once the hf download finishes, then run battery2.py.
@@ -113,6 +151,13 @@ models:
   #
   # Qwen3-Coder-30B-A3B: 30B-A3B, SWE ~64, 16.4GB -> lighter offload, fits mostly on GPU.
   # -ncmoe 12 start (tune down for speed if VRAM allows); single-file IQ4_XS. Wired 2026-06-25.
+  # ---- Ornith-1.0 9B dense (eval: self-scaffolding coder, fits fully in 16GB) ----
+  "ornith-9b":
+    cmd: |
+      ${server}
+      -m /home/shane/models/ornith-9b/deepreinforce-ai_Ornith-1.0-9B-Q6_K.gguf
+      -c 16384 -np 1 -t 8 --no-warmup
+    ttl: 600
   "qwen3-coder-30b":
     cmd: |
       ${server}

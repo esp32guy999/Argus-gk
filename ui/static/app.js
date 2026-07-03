@@ -333,6 +333,7 @@ const ACCENTS = {
   pink:   ['#e8a0bf', 'rgba(232,160,191,.14)', 'rgba(232,160,191,.22)'],
   teal:   ['#14b8a6', 'rgba(20,184,166,.15)',  'rgba(20,184,166,.25)'],
   gold:   ['#f5c542', 'rgba(245,197,66,.18)',  'rgba(245,197,66,.30)'],   // 🥇 bake-off champion
+  crimson:['#dc2626', 'rgba(220,38,38,.18)',   'rgba(220,38,38,.30)'],    // ornith — uncensored
 };
 const MODEL_ACCENT = {
   'claude-code':      'orange',  // Claude — the "home" accent
@@ -344,6 +345,9 @@ const MODEL_ACCENT = {
   'gpt-oss-20b':    'yellow',
   'bonsai-8b':      'blue',
   'lfm2.5-8b':      'red',
+  'ornith-35b-uncensored': 'crimson',  // uncensored daily driver — profile: docs/model-ornith.md
+  'ornith-35b-ngram':      'crimson',
+  'ornith-35b-mtp':        'crimson',
   // z-engineer intentionally unmapped (media model, tracked in docs/ISSUES.md) → falls back
 };
 function applyModelAccent(id) {

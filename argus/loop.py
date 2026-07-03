@@ -58,11 +58,47 @@ def _load_soul() -> str:
     return _soul_cache[1]
 
 
-def _system_prompt() -> str:
-    """Operating rules + the soul (voice). The soul shapes tone only; the rules win on
-    behavior."""
+# Per-model soul overlays live in soul.d/ (repo root). A file soul.d/<key>.md is
+# appended to the prompt when <key> is a substring of the serving model id — same
+# matching rule as LANE_MODEL_GATES, so soul.d/ornith-35b.md covers the -uncensored,
+# -ngram and -mtp arms. Hot-reloaded per file like soul.md.
+_SOUL_D = os.path.join(os.path.dirname(__file__), os.pardir, "soul.d")
+_overlay_cache: dict[str, tuple[float, str]] = {}
+
+
+def _load_soul_overlay(model_name: str) -> str:
+    """Return the concatenated overlay text for this model (usually one file), or ''."""
+    try:
+        entries = sorted(os.listdir(_SOUL_D))
+    except OSError:
+        return ""
+    parts = []
+    for fn in entries:
+        if not fn.endswith(".md"):
+            continue
+        if fn[:-3] not in (model_name or ""):
+            continue
+        path = os.path.join(_SOUL_D, fn)
+        try:
+            mtime = os.path.getmtime(path)
+            cached = _overlay_cache.get(path)
+            if cached is None or cached[0] != mtime:
+                _overlay_cache[path] = (mtime, open(path, encoding="utf-8").read().strip())
+            parts.append(_overlay_cache[path][1])
+        except OSError:
+            continue
+    return "\n\n".join(p for p in parts if p)
+
+
+def _system_prompt(model_name: str = "") -> str:
+    """Operating rules + the soul (voice) + any per-model overlay. The soul shapes
+    tone only; the rules win on behavior."""
     soul = _load_soul()
-    return SYSTEM_PROMPT + ("\n\n# Your voice\n" + soul if soul else "")
+    out = SYSTEM_PROMPT + ("\n\n# Your voice\n" + soul if soul else "")
+    overlay = _load_soul_overlay(model_name)
+    if overlay:
+        out += "\n\n# This model\n" + overlay
+    return out
 
 
 # Per-model lane gates — the "configure the harness for each model" edict applied to
@@ -73,7 +109,9 @@ def _system_prompt() -> str:
 # embeds the short name still matches. claude-code bypasses this loop (native tools), so
 # it's unaffected.
 LANE_MODEL_GATES: dict[str, set[str]] = {
-    "code_edit": {"qwen3-coder-30b", "qwen3-coder-next"},   # surgical source edits → coder-class only
+    "code_edit": {"qwen3-coder-30b", "qwen3-coder-next", "ornith-35b"},  # surgical source edits → coder-class only
+    # ornith-35b: cleared 2026-07-03 — probe produced a byte-perfect SEARCH/REPLACE
+    # block (imatrix is coding/debugging-calibrated); substring covers all three arms.
 }
 
 
@@ -131,7 +169,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(),
+        system_prompt=_system_prompt(model_name),
         capabilities=[watchdog.make_capability(on_event=on_event)],
     )
     start = time.perf_counter()
@@ -164,7 +202,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(),
+        system_prompt=_system_prompt(model_name),
         capabilities=[watchdog.make_capability()],   # anti-stall: repeated-call detection
     )
     start = time.perf_counter()
@@ -200,7 +238,7 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(),
+        system_prompt=_system_prompt(model_name),
         capabilities=[watchdog.make_capability(on_event=on_event)],
     )
     start = time.perf_counter()

@@ -43,7 +43,7 @@ def _is_vision(model_name: str) -> bool:
 # Models slow to cold-load (the local 80B offloads MoE layers to CPU → ~1-2 min cold).
 # These get warmed on selection and announce readiness (phone buzz + UI pill) so the
 # first turn doesn't look like a dead box. Fast/cloud models aren't warmed.
-WARM_ON_SELECT = {"qwen3-next-80b"}
+WARM_ON_SELECT = {"qwen3-next-80b", "ornith-35b-uncensored", "ornith-35b-ngram", "ornith-35b-mtp"}
 _warming: set = set()   # models with an in-flight warm-up (dedupe rapid selects)
 
 def _warm_on_select(model_name: str) -> bool:
@@ -55,14 +55,23 @@ def _warm_on_select(model_name: str) -> bool:
 # reasoning is correct but ~50x slower for the same result. With thinking off it answers
 # ~0.5s and STILL calls tools correctly (verified). Maps model -> enable_thinking value
 # passed to loop.stream_run; absent -> None (server default, unchanged).
-CHAT_THINKING = {"qwen3.6-35b-a3b": False}
+CHAT_THINKING = {"qwen3.6-35b-a3b": False,
+                 # ornith: same failure mode as qwen3.6 — unbounded think ran a 900-token
+                 # budget dry with EMPTY content (probe 2026-07-03). Off = 85 tok/s and
+                 # tool calls still work (verified round-trip).
+                 "ornith-35b-uncensored": False,
+                 "ornith-35b-ngram": False,
+                 "ornith-35b-mtp": False}
 
 # Per-model context window (tokens). The local 80B is served at -c 8192 and is
 # VRAM-bound there — history MUST be budgeted to fit or llama.cpp truncates the
 # prompt from the front (dropping the system prompt) or errors. Unknown local
 # models default conservatively; claude-code manages its own context (and isn't
 # even fed this history), so it's exempt.
-CONTEXT_WINDOW = {"qwen3-next-80b": 8192}
+CONTEXT_WINDOW = {"qwen3-next-80b": 8192,
+                  "ornith-35b-uncensored": 16384,
+                  "ornith-35b-ngram": 16384,
+                  "ornith-35b-mtp": 16384}
 _DEFAULT_LOCAL_CTX = 8192
 # Tokens reserved within the window for the system prompt + selected tool schemas
 # + the live user prompt + room for the reply. The remainder is the history budget.
