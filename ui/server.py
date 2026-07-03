@@ -69,9 +69,11 @@ CHAT_THINKING = {"qwen3.6-35b-a3b": False,
 # models default conservatively; claude-code manages its own context (and isn't
 # even fed this history), so it's exempt.
 CONTEXT_WINDOW = {"qwen3-next-80b": 8192,
-                  "ornith-35b-uncensored": 16384,
-                  "ornith-35b-ngram": 16384,
-                  "ornith-35b-mtp": 16384}
+                  # ornith arms serve -c 131072 (A3B KV is tiny: 131k costs +680MB VRAM, 13.7GB
+                  # total; 40k-token needle test passed @1667 tok/s prefill, 2026-07-03)
+                  "ornith-35b-uncensored": 131072,
+                  "ornith-35b-ngram": 131072,
+                  "ornith-35b-mtp": 131072}
 _DEFAULT_LOCAL_CTX = 8192
 # Tokens reserved within the window for the system prompt + selected tool schemas
 # + the live user prompt + room for the reply. The remainder is the history budget.

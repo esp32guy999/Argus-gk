@@ -11,7 +11,9 @@
   model in the stable.
 - **Reasoning model** (ChatML + DeepSeek-style think tags); imatrix calibrated on
   coding/debugging/system-design/reasoning prompts. Uncensored finetune (AEON-7).
-- Served at 16k ctx, q4_0 KV, Qwen house samplers (temp .6 / top-p .95 / top-k 20).
+- Served at **131k ctx** (2026-07-03 bump), q4_0 KV, Qwen house samplers (temp .6 / top-p .95 / top-k 20).
+  A3B KV is tiny: 131k costs only ~680MB over 16k (13.7GB total, 2.5GB free).
+  Verified: 40,520-token needle test — exact recall, prefill 1,667 tok/s (~24s).
 
 ## Probe results (all 2026-07-03, via llama-swap `--jinja`)
 
@@ -29,10 +31,13 @@
   substring `ornith-35b` covers all three arms).
 - **Thinking OFF on chat path** (`ui/server.py CHAT_THINKING`) — same failure mode and
   same fix as qwen3.6. Flip per-model there if a use case wants budgeted reasoning.
-- **CONTEXT_WINDOW 16384** (all arms) so history budgeting matches the served `-c`.
+- **CONTEXT_WINDOW 131072** (all arms) so history budgeting matches the served `-c`.
+  Worst-case cold re-prefill of a maxed conversation ≈ 80s; incremental turns ride
+  the llama.cpp prefix cache.
 - **WARM_ON_SELECT** (all arms) — 20GB cold-load; warming + ready-buzz like the 80B.
 - **Persona overlay**: `soul.d/ornith-35b.md` via the new soul.d mechanism — unfiltered
-  register, decisive answers, knows to punt huge-context jobs to 80B/claude-code.
+  register, decisive answers; owns long-context work, punts deep-reasoning jobs to
+  80B/claude-code.
 - **UI accent**: crimson (all arms).
 
 ## Division of labor (the point of the profile)
@@ -41,7 +46,8 @@
 |---|---|
 | Daily driver: chat, tools, homelab actions, blunt opinions, unfiltered anything | **ornith-35b** (fast + full lanes) |
 | Pattern-following code drafts, surgical edits | ornith or qwen3-coder-30b (both code_edit-cleared; ornith is faster, coder-30b won the bake-off — compare) |
-| Big-context or deep multi-step reasoning | qwen3-next-80b |
+| Deep multi-step reasoning | qwen3-next-80b (ctx-capped at 8k) |
+| Long documents / long conversations | **ornith-35b** — biggest local window (131k) |
 | Vision, native-tool heavy work, anything touching the wider world | claude-code |
 
 ## Not done / watchlist
@@ -49,8 +55,6 @@
 - Model card recommends `--repeat-penalty 1.1`; left OFF to match Qwen house samplers
   and avoid corrupting tool-call JSON. If long creative sessions get loopy, add it to
   the llama-swap entries.
-- Card claims 131k ctx capable; served at 16k for VRAM. If a use case needs more, try
-  32k and watch VRAM before committing.
 - MTP arm (`-mtp`, claimed 1.8x speedup) unbenchmarked vs baseline in agent use — the
   A/B arms exist for exactly that; `enable_thinking`/tool behavior assumed identical
   but only baseline was probed.

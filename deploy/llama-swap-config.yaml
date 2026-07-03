@@ -107,7 +107,7 @@ models:
       ${server}
       -m /home/shane/models/ornith-35b-uncensored/ornith-aeon-35b-Q4_K_M.gguf
       --cache-type-k q4_0 --cache-type-v q4_0
-      -ncmoe 20 -c 16384
+      -ncmoe 20 -c 131072
       --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
     ttl: 600
 
@@ -118,7 +118,7 @@ models:
       ${server}
       -m /home/shane/models/ornith-35b-uncensored/ornith-aeon-35b-Q4_K_M.gguf
       --cache-type-k q4_0 --cache-type-v q4_0
-      -ncmoe 20 -c 16384
+      -ncmoe 20 -c 131072
       --spec-type ngram-simple
       --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
     ttl: 600
@@ -130,7 +130,7 @@ models:
       ${server}
       -m /home/shane/models/ornith-35b-uncensored/ornith-aeon-35b-MTP-Q4_K_M.gguf
       --cache-type-k q4_0 --cache-type-v q4_0
-      -ncmoe 20 -c 16384
+      -ncmoe 20 -c 131072
       --spec-type draft-mtp
       --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
     ttl: 600
