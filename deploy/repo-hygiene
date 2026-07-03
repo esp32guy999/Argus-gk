@@ -1,0 +1,67 @@
+#!/bin/bash
+# repo-hygiene — daily guard against work drifting outside version control.
+#
+# Born from the 2026-07-03 audit: 2 weeks of Forge feature work sat uncommitted,
+# 5 generations of .bak files accumulated, and pushing had been silently broken
+# for weeks (dead GitHub token). Every one of those is caught below.
+#
+# For each repo, flags:
+#   - dirty working tree (modified tracked files)
+#   - untracked files (new work never staged)
+#   - unpushed commits (ahead of upstream)
+#   - broken push path (git ls-remote fails = dead auth)
+#   - *.bak* litter (git is the backup; use stash/branches)
+#
+# Any finding -> one iPhone push (batched) + a line in the state log.
+# Installed on nyx: ~/.local/bin/repo-hygiene, run by repo-hygiene.timer (daily 09:00).
+set -u
+
+REPOS="local:$HOME/forge anvil:/home/shane/argus"
+LOG="$HOME/.local/state/repo-hygiene.log"
+mkdir -p "$(dirname "$LOG")"
+
+report=""
+for spec in $REPOS; do
+    host=${spec%%:*}; path=${spec#*:}
+    name="$host:$(basename "$path")"
+
+    if [ "$host" = local ]; then
+        run() { (cd "$path" 2>/dev/null && eval "$1"); }
+    else
+        run() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "cd $path && $1" 2>/dev/null; }
+    fi
+
+    if ! run "git rev-parse --git-dir >/dev/null 2>&1"; then
+        report="$report\n$name: UNREACHABLE (host down or not a repo)"
+        continue
+    fi
+
+    probs=""
+    status=$(run "git status --porcelain 2>/dev/null")
+    dirty=$(printf '%s' "$status" | grep -c '^[^?]')
+    untracked=$(printf '%s' "$status" | grep -c '^??')
+    [ "$dirty" -gt 0 ] && probs="$probs ${dirty} modified-uncommitted;"
+    [ "$untracked" -gt 0 ] && probs="$probs ${untracked} untracked;"
+
+    ahead=$(run "git rev-list --count @{u}..HEAD 2>/dev/null" || echo 0)
+    [ "${ahead:-0}" -gt 0 ] 2>/dev/null && probs="$probs ${ahead} unpushed;"
+
+    if ! run "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' git ls-remote --heads origin >/dev/null 2>&1"; then
+        probs="$probs PUSH PATH BROKEN (auth?);"
+    fi
+
+    bak=$(run "find . -name '*.bak*' -not -path './.git/*' 2>/dev/null | head -20" | grep -c .)
+    [ "$bak" -gt 0 ] && probs="$probs ${bak} .bak files;"
+
+    [ -n "$probs" ] && report="$report\n$name:$probs"
+done
+
+ts=$(date '+%Y-%m-%d %H:%M')
+if [ -n "$report" ]; then
+    echo "$ts DRIFT:$(echo -e "$report" | tr '\n' ' ')" >> "$LOG"
+    body=$(echo -e "$report" | sed '/^$/d' | paste -sd'|')
+    "$HOME/.local/bin/ha-remind" "📦 Repo drift: $body" \
+        || echo "$ts notify failed" >> "$LOG"
+else
+    echo "$ts clean" >> "$LOG"
+fi
