@@ -98,15 +98,28 @@ def main() -> int:
         print("PASS: empty search -> teaching ModelRetry")
 
         # throttle actually enforces a minimum gap between ABB requests
+        # (file-based: wall-clock timestamp in _TS_FILE, shared across processes)
         import time as _t
         audiobook._MIN_INTERVAL = 0.4
-        audiobook._last_request[0] = 0.0
+        audiobook._STATE.mkdir(parents=True, exist_ok=True)
+        audiobook._TS_FILE.write_text("0")  # forget any prior request
+        for f in audiobook._CACHE_DIR.glob("*.html"):
+            f.unlink()  # cache hits bypass the throttle — start cold
         t0 = _t.monotonic()
-        by["audiobook_search"].func(query="project hail mary")  # 1 throttled request
-        by["audiobook_search"].func(query="project hail mary")  # 2nd waits >= 0.4s
+        by["audiobook_search"].func(query="project hail mary")  # 1st: no wait
+        # distinct query string (different cache key) that still matches the fake results
+        by["audiobook_search"].func(query="hail mary weir")     # 2nd waits >= 0.4s
         assert _t.monotonic() - t0 >= 0.4, "throttle should space requests"
         audiobook._MIN_INTERVAL = 0
         print("PASS: politeness throttle enforces min interval")
+
+        # identical repeat query is served from the disk cache — instant, no throttle
+        audiobook._MIN_INTERVAL = 5.0
+        t0 = _t.monotonic()
+        by["audiobook_search"].func(query="hail mary weir")
+        assert _t.monotonic() - t0 < 1.0, "repeat query should be a cache hit"
+        audiobook._MIN_INTERVAL = 0
+        print("PASS: repeat query served from cache")
 
         print("\nALL AUDIOBOOK TESTS PASSED")
         return 0
