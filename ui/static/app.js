@@ -346,8 +346,6 @@ const MODEL_ACCENT = {
   'bonsai-8b':      'blue',
   'lfm2.5-8b':      'red',
   'ornith-35b-uncensored': 'emerald',  // Loki — uncensored daily driver (docs/model-ornith.md)
-  'ornith-35b-ngram':      'emerald',
-  'ornith-35b-mtp':        'emerald',
   // z-engineer intentionally unmapped (media model, tracked in docs/ISSUES.md) → falls back
 };
 function applyModelAccent(id) {

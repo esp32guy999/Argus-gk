@@ -31,8 +31,6 @@ DEFAULT_MODEL = os.environ.get("ARGUS_DEFAULT_MODEL", "qwen3-next-80b")
 # CHAT_THINKING, soul.d matching all key on the real id).
 MODEL_DISPLAY = {
     "ornith-35b-uncensored": "Loki",          # Shane's name for the uncensored 35B
-    "ornith-35b-ngram":      "Loki (ngram)",
-    "ornith-35b-mtp":        "Loki (MTP)",
 }
 
 EXTERNAL_MODELS = {
@@ -51,7 +49,7 @@ def _is_vision(model_name: str) -> bool:
 # Models slow to cold-load (the local 80B offloads MoE layers to CPU → ~1-2 min cold).
 # These get warmed on selection and announce readiness (phone buzz + UI pill) so the
 # first turn doesn't look like a dead box. Fast/cloud models aren't warmed.
-WARM_ON_SELECT = {"qwen3-next-80b", "ornith-35b-uncensored", "ornith-35b-ngram", "ornith-35b-mtp"}
+WARM_ON_SELECT = {"qwen3-next-80b", "ornith-35b-uncensored"}
 _warming: set = set()   # models with an in-flight warm-up (dedupe rapid selects)
 
 def _warm_on_select(model_name: str) -> bool:
@@ -69,18 +67,19 @@ def _thinking_for_turn(model_name: str, message: str):
     model from pattern-completing history or emitting an RP gesture instead of work
     (2026-07-03: Loki answered a 4.5k-char build spec with 'pong', then with
     '*starts background task*'). ~1200 chars is well past any casual message."""
-    base = CHAT_THINKING.get(model_name)
-    if base is False and len(message or "") > 1200:
-        return True
-    return base
+    # 2026-07-03 v2 replay: thinking ON for a long spec was WORSE — ornith poured
+    # ~9k tokens into reasoning_content (invisible to the UI), then emitted a
+    # one-line preamble and stopped. Without --reasoning-budget in this llama.cpp
+    # build, unbounded thinking starves the visible answer. Keep chat thinking OFF;
+    # the soul rules carry the act-don't-narrate burden. Revisit after a llama.cpp
+    # upgrade adds --reasoning-budget (model card recommends 1024).
+    return CHAT_THINKING.get(model_name)
 
 CHAT_THINKING = {"qwen3.6-35b-a3b": False,
                  # ornith: same failure mode as qwen3.6 — unbounded think ran a 900-token
                  # budget dry with EMPTY content (probe 2026-07-03). Off = 85 tok/s and
                  # tool calls still work (verified round-trip).
-                 "ornith-35b-uncensored": False,
-                 "ornith-35b-ngram": False,
-                 "ornith-35b-mtp": False}
+                 "ornith-35b-uncensored": False}
 
 # Per-model context window (tokens). The local 80B is served at -c 8192 and is
 # VRAM-bound there — history MUST be budgeted to fit or llama.cpp truncates the
@@ -90,9 +89,7 @@ CHAT_THINKING = {"qwen3.6-35b-a3b": False,
 CONTEXT_WINDOW = {"qwen3-next-80b": 8192,
                   # ornith arms serve -c 131072 (A3B KV is tiny: 131k costs +680MB VRAM, 13.7GB
                   # total; 40k-token needle test passed @1667 tok/s prefill, 2026-07-03)
-                  "ornith-35b-uncensored": 131072,
-                  "ornith-35b-ngram": 131072,
-                  "ornith-35b-mtp": 131072}
+                  "ornith-35b-uncensored": 131072}
 _DEFAULT_LOCAL_CTX = 8192
 # Tokens reserved within the window for the system prompt + selected tool schemas
 # + the live user prompt + room for the reply. The remainder is the history budget.
