@@ -34,12 +34,19 @@ class SemanticSelector:
     """Embeds tool docs once (lazily), then ranks them against each query.
 
     embed_fn is injectable for testing; defaults to the anvil embeddings client.
+    `always` names tools included in every selection regardless of rank — the
+    system prompt references lookup_memory and start_background_task by name,
+    so they must never be cut by top-k (eval finding, 2026-07-05).
     """
 
-    def __init__(self, tools, *, embed_fn=None, top_k: int = 8):
+    DEFAULT_ALWAYS = ("lookup_memory", "start_background_task")
+
+    def __init__(self, tools, *, embed_fn=None, top_k: int = 8,
+                 always: tuple[str, ...] | None = DEFAULT_ALWAYS):
         self.tools = list(tools)
         self.embed_fn = embed_fn or embed
         self.top_k = top_k
+        self.always = tuple(always or ())
         self._vecs: list[list[float]] | None = None
 
     def _doc(self, t) -> str:
@@ -49,13 +56,21 @@ class SemanticSelector:
         if self._vecs is None:
             self._vecs = self.embed_fn([self._doc(t) for t in self.tools])
 
-    def select(self, context: str) -> list:
-        """Return the top_k tools most similar to context. Raises on embedding
-        failure so Registry.select() can fall back to its tag/all default."""
+    def rank(self, context: str) -> list:
+        """All tools ordered by similarity to context (most similar first).
+        Raises on embedding failure so Registry.select() can fall back."""
         if not self.tools:
             return []
         self._ensure_vectors()
         qv = self.embed_fn([context])[0]
         scored = sorted(zip(self.tools, self._vecs),
                         key=lambda tv: _cosine(qv, tv[1]), reverse=True)
-        return [t for t, _ in scored[:self.top_k]]
+        return [t for t, _ in scored]
+
+    def select(self, context: str) -> list:
+        """always-include tools + the top_k most similar others (deduped,
+        rank order preserved)."""
+        ranked = self.rank(context)
+        pinned = [t for t in ranked if t.name in self.always]
+        rest = [t for t in ranked if t.name not in self.always]
+        return pinned + rest[:self.top_k]

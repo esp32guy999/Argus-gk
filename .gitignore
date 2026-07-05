@@ -32,3 +32,4 @@ data/nec/
 # watcher state
 scripts/.music_staging_done
 scripts/.garden-last.log
+evals/results/

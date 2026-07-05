@@ -8,6 +8,21 @@ Expected Value.
 
 ## Open
 
+### MCP-lane tool descriptions embed poorly for semantic select()
+```
+found:             2026-07-05, by the eval suite (evals/run.py --selection-only)
+symptom:           "is anything printing on the P1S?" ranks GetLiveContext 16th of 65
+                   (top-8 cut) — its HA-supplied description never mentions devices,
+                   printers, or state; tags are just "home".
+blast radius:      Low — home-state queries can still route via pinned lookup_memory,
+                   but every MCP tool inherits whatever description the server ships,
+                   so selection quality is capped by upstream docs.
+fix candidate:     selection-side doc enrichment — SemanticSelector._doc() already
+                   folds in tags; let lanes attach alias/example text (Tool.example)
+                   and include it in _doc, or per-tool alias overrides in
+                   config/mcp_servers.yaml. Measure on the eval suite before keeping.
+```
+
 ### Audiobook lane down — ABB `/?s=` search returns the homepage
 ```
 category:          Deferred

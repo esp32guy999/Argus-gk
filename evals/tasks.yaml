@@ -1,0 +1,154 @@
+# Argus eval suite — fixed, verifiable tasks. The keep/discard arbiter for any
+# harness change (selector configs, prompts, budgets). Do not casually edit
+# existing tasks: scores are only comparable against an unchanged suite.
+#
+# Fields:
+#   id / category / prompt   — the task
+#   needs / needs_any        — selection scoring: tools that must be in the offered set
+#   expect_call              — grader: {tool, args_contains?} must appear in the call log
+#   expect_any               — grader: at least one of these tool names called
+#   forbid_mutating          — grader: no dry-run (mutating) tool may be called
+#   answer_regex / answer_contains — grader on the final text (case-insensitive)
+
+# ── utility / native ────────────────────────────────────────────────────
+- id: time-now
+  category: utility
+  prompt: "what time is it right now?"
+  needs: [get_time]
+  expect_any: [get_time, GetDateTime]
+  answer_regex: "\\d{1,2}[:.]\\d{2}"
+
+- id: calc-basic
+  category: utility
+  prompt: "what is 17 * 43 + 12?"
+  needs: [calc]
+  answer_contains: "743"
+
+- id: memory-lookup
+  category: memory
+  prompt: "what is the IP address of the unraid server?"
+  needs: [lookup_memory]
+  expect_call: { tool: lookup_memory }
+  answer_contains: "192.168.4.206"
+
+- id: weather-today
+  category: utility
+  prompt: "what's the weather like outside right now?"
+  needs_any: [weather_current, get_weather]
+  expect_any: [weather_current, get_weather]
+  answer_regex: "\\d+\\s*°|degrees|\\d+\\s*[cf]\\b"
+
+- id: weather-week
+  category: utility
+  prompt: "will it rain this week? give me the forecast"
+  needs_any: [weather_forecast, get_weather]
+  expect_any: [weather_forecast, get_weather]
+
+# ── home assistant (all mutations dry-run) ──────────────────────────────
+- id: light-on-workshop
+  category: home
+  prompt: "turn on the workshop light"
+  needs: [HassTurnOn]
+  expect_call: { tool: HassTurnOn, args_contains: "workshop" }
+
+- id: light-off-porch
+  category: home
+  prompt: "kill the porch lights please"
+  needs: [HassTurnOff]
+  expect_call: { tool: HassTurnOff, args_contains: "porch" }
+
+- id: shopping-add
+  category: home
+  prompt: "add milk to the shopping list"
+  needs: [HassListAddItem]
+  expect_call: { tool: HassListAddItem, args_contains: "milk" }
+
+- id: home-state
+  category: home
+  prompt: "is anything printing on the P1S right now?"
+  needs: [GetLiveContext]
+  expect_any: [GetLiveContext, lookup_memory]
+
+# ── media / arr (reads live, adds dry-run) ──────────────────────────────
+- id: movies-list
+  category: media
+  prompt: "how many movies are in radarr?"
+  needs: [radarr_listMovies]
+  expect_call: { tool: radarr_listMovies }
+  answer_regex: "\\d+"
+
+- id: movie-add
+  category: media
+  prompt: "grab the movie Dune Part Two for me"
+  needs: [radarr_add_movie]
+  expect_call: { tool: radarr_add_movie, args_contains: "dune" }
+
+- id: series-add
+  category: media
+  prompt: "download the tv show Severance"
+  needs: [sonarr_add_series]
+  expect_call: { tool: sonarr_add_series, args_contains: "severance" }
+
+- id: audiobook-find
+  category: media
+  prompt: "search audiobookbay for Project Hail Mary"
+  needs: [audiobook_search]
+  expect_call: { tool: audiobook_search, args_contains: "hail mary" }
+
+- id: music-playlists
+  category: media
+  prompt: "what playlists do I have in navidrome?"
+  needs: [navidrome_list_playlists]
+  expect_call: { tool: navidrome_list_playlists }
+
+- id: media-browse
+  category: media
+  prompt: "use the filesystem to list the files and folders inside the movies directory on the nas"
+  needs: [list_dir]
+  expect_call: { tool: list_dir }
+
+# ── web ─────────────────────────────────────────────────────────────────
+- id: web-lookup
+  category: web
+  prompt: "search the web for the current price of the RTX 5080"
+  needs: [web_search]
+  expect_call: { tool: web_search, args_contains: "5080" }
+
+# ── multi-step ──────────────────────────────────────────────────────────
+- id: multi-weather-list
+  category: multi
+  prompt: "check the weather, and if rain is likely add 'umbrella' to the shopping list"
+  needs_any: [weather_current, weather_forecast, get_weather]
+  expect_any: [weather_current, weather_forecast, get_weather]
+
+- id: multi-time-note
+  category: multi
+  prompt: "save a note with today's date saying the evals ran"
+  needs: [save_note]
+  expect_call: { tool: save_note }
+
+# ── restraint (right answer is NO tool / no mutation) ───────────────────
+- id: restraint-chat
+  category: restraint
+  prompt: "write me a two-line poem about anvils"
+  forbid_mutating: true
+  answer_regex: "\\n"
+
+- id: restraint-thanks
+  category: restraint
+  prompt: "thanks, that's all for now!"
+  forbid_mutating: true
+
+- id: restraint-knowledge
+  category: restraint
+  prompt: "explain the difference between TCP and UDP in one sentence"
+  forbid_mutating: true
+  answer_regex: "tcp|udp"
+
+- id: restraint-danger
+  category: restraint
+  prompt: "delete everything in the media trash folder"
+  needs: [purge_trash]
+  expect_any: [purge_trash]
+  # mutation is dry-run; the point is it picks the RIGHT dangerous tool
+  # (purge_trash) rather than improvising with delete_media or shell.
