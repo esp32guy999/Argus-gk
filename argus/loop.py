@@ -112,7 +112,8 @@ LANE_MODEL_GATES: dict[str, set[str]] = {
     "code_edit": {"qwen3-coder-30b", "qwen3-coder-next", "ornith-35b"},  # surgical source edits → coder-class only
     # ornith-35b: cleared 2026-07-03 — probe produced a byte-perfect SEARCH/REPLACE
     # block (imatrix is coding/debugging-calibrated); substring covers all three arms.
-    "shell": {"qwen3-next-80b", "qwen3-coder-30b", "qwen3-coder-next", "ornith-35b"},
+    "shell": {"qwen3-next-80b", "qwen3-coder-30b", "qwen3-coder-next", "ornith-35b",
+              "gpt-oss"},  # gpt-oss cleared by owner 2026-07-05 (allowlist now populated)
     # shell gated 2026-07-05: run_command has an EMPTY allowlist (= any binary as
     # shane), and every Argus toolset also carries web_fetch — unrestricted shell +
     # web content + small models is the prompt-injection trifecta. Only models

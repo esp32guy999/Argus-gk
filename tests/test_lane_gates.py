@@ -28,7 +28,7 @@ def main() -> int:
     print("PASS: shell lane has a model gate")
 
     # 2. small/ungated models never see run_command (or code_edit)
-    for m in ("gemma4-26b", "bonsai-8b", "lfm2.5-8b", "gpt-oss-20b", ""):
+    for m in ("gemma4-26b", "bonsai-8b", "lfm2.5-8b", ""):
         names = {t.name for t in _gate_tools(tools, m)}
         assert "run_command" not in names, f"{m or '(none)'} got a shell!"
         assert "edit_source" not in names, f"{m or '(none)'} got code_edit!"
@@ -36,8 +36,8 @@ def main() -> int:
     print("PASS: ungated models get no shell / code_edit; open lanes untouched")
 
     # 3. trusted models keep their clearances (substring match incl. served ids)
-    for m in ("qwen3-next-80b", "Qwen3-Next-80B-A3B-Instruct-IQ4_XS.gguf".lower()
-              if False else "qwen3-next-80b-instruct", "ornith-35b-uncensored"):
+    for m in ("qwen3-next-80b", "qwen3-next-80b-instruct", "ornith-35b-uncensored",
+              "gpt-oss-20b"):  # gpt-oss cleared 2026-07-05
         names = {t.name for t in _gate_tools(tools, m)}
         assert "run_command" in names, f"{m} should keep the shell"
     assert "edit_source" in {t.name for t in _gate_tools(tools, "qwen3-coder-30b")}
