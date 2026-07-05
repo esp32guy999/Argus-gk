@@ -116,7 +116,7 @@ models:
       -ncmoe 20 -c 131072
       --chat-template-file /home/shane/models/ornith-35b-uncensored/qwen36-chat-template.jinja
       --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
-      --dry-multiplier 0.8 --dry-base 1.75 --dry-allowed-length 2 --dry-penalty-last-n 2048
+      --dry-multiplier 0.8 --dry-base 1.75 --dry-allowed-length 2 --dry-penalty-last-n -1
       --repeat-penalty 1.05 --repeat-last-n 256
     ttl: 600
 
