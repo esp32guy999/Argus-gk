@@ -104,6 +104,10 @@ models:
   # quant ships a BROKEN chat template (leaks <|mask_start|>/<think> on memory prompts) — fixed
   # by overriding with qwen3.6's template below. draft-mtp/ngram spec-decode dropped: MTP crashed
   # with template/reasoning handling, ngram was slower. Plain + template = clean + stable.
+  # Anti-repetition (DRY + light repeat-penalty) added 2026-07-05: abliteration damages the
+  # output distribution, so on abstract/open-ended prompts Loki collapsed into verbatim
+  # broken-record loops. DRY (0.8/1.75/allowed-2) is the targeted loop-killer; repeat-penalty
+  # 1.05 is a mild backstop. Base qwen3.6 didn't need these — this is abliteration tax.
   "ornith-35b-uncensored":
     cmd: |
       ${server}
@@ -112,6 +116,8 @@ models:
       -ncmoe 20 -c 131072
       --chat-template-file /home/shane/models/ornith-35b-uncensored/qwen36-chat-template.jinja
       --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0
+      --dry-multiplier 0.8 --dry-base 1.75 --dry-allowed-length 2 --dry-penalty-last-n 2048
+      --repeat-penalty 1.05 --repeat-last-n 256
     ttl: 600
 
 
