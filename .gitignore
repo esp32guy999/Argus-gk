@@ -33,3 +33,4 @@ data/nec/
 scripts/.music_staging_done
 scripts/.garden-last.log
 evals/results/
+config/lane_grants.json
