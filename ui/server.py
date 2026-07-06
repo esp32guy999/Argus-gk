@@ -468,6 +468,47 @@ async def nec_translate(request: Request):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+@app.get("/argus/lane-grants")
+async def get_lane_grants():
+    """Per-model clearance for the high-blast lanes (shell, code_edit), for the
+    permissions widget. Excludes hard-denied models (Loki) and the cloud path."""
+    models = []
+    try:
+        async with httpx.AsyncClient(timeout=2) as c:
+            data = (await c.get(f"{_LOCAL_BASE}/v1/models")).json()
+        for m in data.get("data", []):
+            mid = m["id"]
+            if any(d in mid for d in loop.LANE_MODEL_DENY):
+                continue  # Loki et al. — never listed, never grantable
+            models.append({"id": mid, "display": MODEL_DISPLAY.get(mid, mid)})
+    except Exception:
+        pass
+    models.sort(key=lambda x: x["display"].lower())
+    gates = loop.effective_gates()
+    grants = {m["id"]: [ln for ln in loop.TOGGLEABLE_LANES
+                        if any(mm in m["id"] for mm in gates.get(ln, set()))]
+              for m in models}
+    return JSONResponse({"lanes": list(loop.TOGGLEABLE_LANES), "models": models,
+                         "grants": grants, "denied": sorted(loop.LANE_MODEL_DENY)})
+
+
+@app.post("/argus/lane-grants")
+async def set_lane_grants(request: Request):
+    """Write a full desired-state grants snapshot: {"grants": {model_id: [lanes]}}.
+    Denied models are dropped server-side; only TOGGLEABLE_LANES are honored."""
+    body = await request.json()
+    desired = body.get("grants", {}) or {}
+    per_lane = {ln: [] for ln in loop.TOGGLEABLE_LANES}
+    for mid, lanes in desired.items():
+        if any(d in mid for d in loop.LANE_MODEL_DENY):
+            continue
+        for ln in (lanes or []):
+            if ln in per_lane:
+                per_lane[ln].append(mid)
+    written = await asyncio.to_thread(loop.save_lane_grants, per_lane)
+    return JSONResponse({"ok": True, "grants": written})
+
+
 @app.get("/argus/history")
 async def get_history(conversation_id: str | None = None, limit: int = 100,
                      before_id: int | None = None):

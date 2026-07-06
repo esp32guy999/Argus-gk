@@ -5,6 +5,7 @@ records turn metrics. Pydantic AI is DRIVEN here; it is not the harness. If we
 ever swap the engine, only this module changes.
 """
 from __future__ import annotations
+import json
 import re
 import time
 
@@ -132,21 +133,80 @@ LANE_MODEL_GATES: dict[str, set[str]] = {
 # only — no shell, no source edits. (2026-07-05)
 LANE_MODEL_DENY: set[str] = {"ornith-35b-uncensored"}
 
+# ── Per-model lane permissions (config/lane_grants.json, driven by the UI widget) ─
+# The high-blast lanes below are toggleable per model from the permissions widget.
+# LANE_MODEL_GATES above is the in-code SEED (source of truth when no grants file
+# exists). At runtime the widget writes config/lane_grants.json, which OVERRIDES the
+# seed for these lanes so clearances change live with NO restart (hot-reloaded like
+# soul.md). LANE_MODEL_DENY is enforced regardless of the file — a denied model
+# (Loki) can never hold a gated lane, even via a hand-edited grants file.
+TOGGLEABLE_LANES: tuple[str, ...] = ("shell", "code_edit")
+_LANE_GRANTS_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "config", "lane_grants.json")
+_grants_cache: tuple[float, dict] = (0.0, {})
+
+
+def _load_lane_grants():
+    """Return {lane: {models}} from the grants file, hot-reloaded on change; None if
+    the file is absent (→ fall back to the LANE_MODEL_GATES seed)."""
+    global _grants_cache
+    try:
+        mtime = os.path.getmtime(_LANE_GRANTS_PATH)
+    except OSError:
+        return None
+    if mtime != _grants_cache[0]:
+        try:
+            raw = json.load(open(_LANE_GRANTS_PATH, encoding="utf-8"))
+            _grants_cache = (mtime, {ln: set(raw.get(ln, [])) for ln in TOGGLEABLE_LANES})
+        except Exception as e:
+            print(f"[lane_grants] read failed, using seed defaults: {e}")
+            return None
+    return _grants_cache[1]
+
+
+def effective_gates() -> dict:
+    """LANE_MODEL_GATES seed overlaid with live grants for the toggleable lanes."""
+    grants = _load_lane_grants()
+    if grants is None:
+        return LANE_MODEL_GATES
+    merged = dict(LANE_MODEL_GATES)
+    for lane in TOGGLEABLE_LANES:
+        merged[lane] = grants.get(lane, set())
+    return merged
+
+
+def save_lane_grants(per_lane: dict) -> dict:
+    """Persist per-lane model grants from the widget. Denied models (LANE_MODEL_DENY)
+    are stripped no matter what the caller sends. Returns the written mapping."""
+    clean = {}
+    for lane in TOGGLEABLE_LANES:
+        models = per_lane.get(lane, []) or []
+        clean[lane] = sorted({m for m in models
+                              if not any(d in m for d in LANE_MODEL_DENY)})
+    os.makedirs(os.path.dirname(_LANE_GRANTS_PATH), exist_ok=True)
+    with open(_LANE_GRANTS_PATH, "w", encoding="utf-8") as f:
+        json.dump(clean, f, indent=2)
+    _load_lane_grants()  # refresh the mtime cache immediately
+    return clean
+
 
 def _gate_tools(selected, model_name: str):
-    """Drop tools whose lane the current model isn't cleared for (per LANE_MODEL_GATES).
+    """Drop tools whose lane the current model isn't cleared for.
 
-    LANE_MODEL_DENY takes precedence over the allow-lists: a denied model is refused
-    ALL gated lanes even if its name substring-matches an allow entry. That's how an
-    untrusted model sharing a name-substring with a trusted one is still locked out."""
-    if not LANE_MODEL_GATES:
+    Clearance is effective_gates() (seed overlaid with the live grants file).
+    LANE_MODEL_DENY takes precedence: a denied model is refused ALL gated lanes even
+    if it substring-matches an allow entry. A lane PRESENT in the gates with an empty
+    allow-set is closed to everyone (distinct from a lane that's simply ungated)."""
+    gates = effective_gates()
+    if not gates:
         return selected
     denied = any(d in (model_name or "") for d in LANE_MODEL_DENY)
     kept = []
     for t in selected:
-        allow = LANE_MODEL_GATES.get(getattr(t, "provider", None))
-        if allow and (denied or not any(m in (model_name or "") for m in allow)):
-            continue
+        prov = getattr(t, "provider", None)
+        if prov in gates:
+            allow = gates[prov]
+            if denied or not any(m in (model_name or "") for m in allow):
+                continue
         kept.append(t)
     return kept
 

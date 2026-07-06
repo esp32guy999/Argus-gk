@@ -1,17 +1,23 @@
-"""Contract test for LANE_MODEL_GATES — the per-model tool-lane clearances.
+"""Contract test for the per-model tool-lane clearances (argus/loop.py).
 
-Offline + deterministic. The load-bearing assertion: the shell lane (empty
-allowlist = arbitrary commands as shane) is NEVER offered to an ungated model.
+Covers LANE_MODEL_GATES (the in-code seed), LANE_MODEL_DENY (hard deny that beats
+substring allows — keeps Loki out), and the runtime grants file written by the
+permissions widget (config/lane_grants.json → effective_gates()).
+
+Offline + deterministic. The load-bearing assertion: the shell lane (empty allowlist
+= arbitrary commands as shane) is NEVER offered to a model that isn't cleared, and a
+DENIED model can't hold it even via a hand-edited grants file.
 Runnable standalone:  python tests/test_lane_gates.py   (exit 0 = pass)
 """
 from __future__ import annotations
-import os, sys
+import os, sys, tempfile, shutil
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def main() -> int:
-    from argus.loop import _gate_tools, LANE_MODEL_GATES
+    from argus import loop
+    from argus.loop import _gate_tools, LANE_MODEL_GATES, LANE_MODEL_DENY
     from argus.registry import Tool
 
     def f():
@@ -23,25 +29,58 @@ def main() -> int:
         Tool("get_time", "clock", ["time"], f, provider="native"),
     ]
 
+    def offered(m):
+        return {t.name for t in _gate_tools(tools, m)}
+
     # 1. shell is gated at all
     assert "shell" in LANE_MODEL_GATES, "shell lane must be model-gated"
     print("PASS: shell lane has a model gate")
 
     # 2. small/ungated models never see run_command (or code_edit)
     for m in ("gemma4-26b", "bonsai-8b", "lfm2.5-8b", ""):
-        names = {t.name for t in _gate_tools(tools, m)}
-        assert "run_command" not in names, f"{m or '(none)'} got a shell!"
-        assert "edit_source" not in names, f"{m or '(none)'} got code_edit!"
-        assert "get_time" in names, f"{m}: ungated lanes must pass through"
+        n = offered(m)
+        assert "run_command" not in n, f"{m or '(none)'} got a shell!"
+        assert "edit_source" not in n, f"{m or '(none)'} got code_edit!"
+        assert "get_time" in n, f"{m}: ungated lanes must pass through"
     print("PASS: ungated models get no shell / code_edit; open lanes untouched")
 
-    # 3. trusted models keep their clearances (substring match incl. served ids)
-    for m in ("qwen3-next-80b", "qwen3-next-80b-instruct", "ornith-35b-uncensored",
-              "gpt-oss-20b"):  # gpt-oss cleared 2026-07-05
-        names = {t.name for t in _gate_tools(tools, m)}
-        assert "run_command" in names, f"{m} should keep the shell"
-    assert "edit_source" in {t.name for t in _gate_tools(tools, "qwen3-coder-30b")}
+    # 3. trusted (seed-cleared) models keep their clearances
+    for m in ("qwen3-next-80b", "qwen3-next-80b-instruct", "gpt-oss-20b"):
+        assert "run_command" in offered(m), f"{m} should keep the shell"
+    assert "edit_source" in offered("qwen3-coder-30b")
+    assert offered("ornith-35b") >= {"run_command", "edit_source"}, "official ornith-35b keeps both"
     print("PASS: trusted models keep shell/code_edit clearances")
+
+    # 4. LANE_MODEL_DENY — Loki is refused BOTH lanes even though its name embeds the
+    #    cleared 'ornith-35b' substring. Deny beats allow.
+    assert "ornith-35b-uncensored" in LANE_MODEL_DENY
+    loki = offered("ornith-35b-uncensored")
+    assert "run_command" not in loki and "edit_source" not in loki, "Loki must be denied all gated lanes"
+    assert "get_time" in loki, "denied model still gets open lanes"
+    print("PASS: LANE_MODEL_DENY locks Loki out (deny beats substring allow)")
+
+    # 5. runtime grants file (permissions widget) overrides the seed, hot.
+    tmp = tempfile.mkdtemp()
+    orig_path, orig_cache = loop._LANE_GRANTS_PATH, loop._grants_cache
+    loop._LANE_GRANTS_PATH = os.path.join(tmp, "lane_grants.json")
+    loop._grants_cache = (0.0, {})
+    try:
+        # grant gemma shell; TRY to sneak Loki full perms; leave code_edit empty
+        written = loop.save_lane_grants({
+            "shell": ["gemma4-26b", "ornith-35b-uncensored"],
+            "code_edit": [],
+        })
+        assert "ornith-35b-uncensored" not in written["shell"], "Loki must be stripped from writes"
+        assert "run_command" in offered("gemma4-26b"), "grant took effect live"
+        assert "edit_source" not in offered("gemma4-26b"), "only granted lane opens"
+        # an empty lane in the file closes it for EVERYONE (even the seed-trusted official)
+        assert "edit_source" not in offered("ornith-35b"), "empty code_edit grant closes it for all"
+        # Loki stays denied no matter what the file says
+        assert "run_command" not in offered("ornith-35b-uncensored"), "deny still wins over the file"
+        print("PASS: grants file overrides seed live; Loki stripped; empty lane closes for all")
+    finally:
+        loop._LANE_GRANTS_PATH, loop._grants_cache = orig_path, orig_cache
+        shutil.rmtree(tmp, ignore_errors=True)
 
     print("OK")
     return 0
