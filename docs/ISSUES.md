@@ -8,6 +8,22 @@ Expected Value.
 
 ## Open
 
+### Watchdog loop-nudges can crash the whole run via tool max_retries
+```
+found:             2026-07-05, ornith eval (restraint-danger task)
+symptom:           watchdog raises ModelRetry on repeated calls; those count toward
+                   the TOOL's max_retries=2 (registry.as_pydantic_tool) — a third
+                   repeat escalates to "Tool 'list_dir' exceeded max retries" which
+                   propagates as an exception and kills the run with a raw error
+                   instead of a graceful give-up.
+blast radius:      Medium — any model that triple-repeats a call gets a crash, not
+                   an answer. UI shows an error bubble.
+fix candidate:     catch UnexpectedModelBehavior in the loop driver and return
+                   _budget_summary-style text ("stopped: repeated list_dir 3x"), or
+                   have the watchdog short-circuit the run itself after N nudges.
+                   Add an eval task that forces a triple-repeat to lock the fix.
+```
+
 ### MCP-lane tool descriptions embed poorly for semantic select()
 ```
 found:             2026-07-05, by the eval suite (evals/run.py --selection-only)
