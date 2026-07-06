@@ -22,6 +22,9 @@ TOOL_RETRY = Counter("argus_tool_retry_total", "Teaching-retries raised", ["tool
 AGENT_TURNS = Counter("argus_agent_turns_total", "Agent task outcomes", ["outcome"])
 LOOP_DETECTED = Counter("argus_agent_loop_detected_total", "Repeated-call interventions")
 NO_PROGRESS = Counter("argus_agent_no_progress_total", "No-progress give-ups")
+ANNOUNCE_NUDGES = Counter(
+    "argus_agent_announce_nudges_total",
+    "Announce-without-acting corrections (reply promised action, called no tool)")
 TASK_DURATION = Histogram("argus_agent_task_duration_seconds", "Task wall-clock seconds")
 TOOLS_SELECTED = Histogram(
     "argus_tools_selected_per_turn", "Tools exposed to the model per task",

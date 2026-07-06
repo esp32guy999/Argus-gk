@@ -127,6 +127,50 @@
   needs: [save_note]
   expect_call: { tool: save_note }
 
+# ── multi-step battery (2026-07-05, anti-stall work) ────────────────────
+# 3–5 step chains. expect_calls = ALL listed calls must appear in the log.
+- id: chain-weather-list-time
+  category: multi
+  prompt: "three things: get the current temperature, add 'AC filter' to the shopping list, and tell me what time it is"
+  needs_any: [weather_current, get_weather]
+  expect_calls:
+    - { tool: HassListAddItem, args_contains: "filter" }
+    - { tool: get_time }
+  expect_any: [weather_current, get_weather]
+
+- id: chain-check-then-add
+  category: multi
+  prompt: "check whether the movie 'Zorblax Attacks 7' is already in radarr, and if it isn't, add it"
+  needs: [radarr_add_movie]
+  needs_any: [radarr_listMovies, radarr_lookupMovie]
+  expect_calls:
+    - { tool: radarr_add_movie, args_contains: "zorblax" }
+
+- id: chain-forecast-note
+  category: multi
+  prompt: "look up tomorrow's weather forecast, then save a note titled 'forecast' summarizing it"
+  needs_any: [weather_forecast, get_weather]
+  expect_calls:
+    - { tool: save_note }
+  expect_any: [weather_forecast, get_weather]
+
+- id: chain-mkdir-verify
+  category: multi
+  prompt: "create a folder named 'staging' inside the movies directory, then list the movies directory to confirm it worked"
+  needs: [make_dir, list_dir]
+  expect_calls:
+    - { tool: make_dir, args_contains: "staging" }
+    - { tool: list_dir }
+
+- id: chain-media-counts
+  category: multi
+  prompt: "how many movies are in radarr and how many series are in sonarr? I want both numbers"
+  needs: [radarr_listMovies, sonarr_listSeries]
+  expect_calls:
+    - { tool: radarr_listMovies }
+    - { tool: sonarr_listSeries }
+  answer_regex: "\\d+"
+
 # ── restraint (right answer is NO tool / no mutation) ───────────────────
 - id: restraint-chat
   category: restraint

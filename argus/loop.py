@@ -5,6 +5,7 @@ records turn metrics. Pydantic AI is DRIVEN here; it is not the harness. If we
 ever swap the engine, only this module changes.
 """
 from __future__ import annotations
+import re
 import time
 
 from pydantic_ai import Agent
@@ -134,6 +135,61 @@ def _gate_tools(selected, model_name: str):
     return kept
 
 
+# ── anti-stall (2026-07-05) ─────────────────────────────────────────────
+# Two local-model failure modes the eval suite measures:
+#  1. announce-then-stop — the reply promises an action ("let me check…") but
+#     the run made zero tool calls. One corrective retry, then honesty.
+#  2. budget exhaustion that discards progress — replaced by a summary built
+#     from the tools actually called, so partial work is visible + resumable.
+
+_ANNOUNCE_RX = re.compile(
+    r"\b(let me|i[’']ll|i will|i[’']m going to|one (moment|sec\w*)|hold on"
+    r"|checking|looking (that|it) up|working on (it|that)|give me a (sec\w*|moment))\b"
+    r"[^.!?]{0,80}[.!?…]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_unfinished(text: str, tool_calls: int) -> bool:
+    """True when a reply that made NO tool calls ENDS on an announcement —
+    the tail anchor keeps poems/explanations that merely contain 'I'll' safe."""
+    if tool_calls or not text:
+        return False
+    return bool(_ANNOUNCE_RX.search(text.strip()[-160:]))
+
+
+def _nudge_prompt(prompt: str, text: str) -> str:
+    return (
+        prompt + "\n\n[CORRECTION: your previous reply ended by announcing an action "
+        f"instead of performing it (“…{text.strip()[-120:]}”). Nothing runs after "
+        "you stop writing. CALL the tools now and deliver the finished result. "
+        "If you genuinely cannot, say so plainly.]"
+    )
+
+
+def _budget_summary(turn_budget: int, called: list[str]) -> str:
+    steps = " → ".join(dict.fromkeys(called)) if called else "no tool calls completed"
+    return (
+        f"Stopped at the {turn_budget}-turn budget before finishing. "
+        f"Progress so far: {steps}. The task may be partially done — "
+        "say “continue” to resume the remaining steps."
+    )
+
+
+def _make_sink(called: list[str], on_event=None):
+    """Wrap the caller's on_event so the driver also records which tools ran
+    (fuel for the nudge check and the budget summary)."""
+    def _sink(phase, detail, step):
+        if phase == "tool":
+            called.append(detail)
+        if on_event:
+            try:
+                on_event(phase, detail, step)
+            except Exception:
+                pass
+    return _sink
+
+
 def make_model(model_name: str = "local",
                base_url: str = "http://localhost:4000/v1") -> OpenAIChatModel:
     """Point the engine at the LiteLLM proxy. Model-agnostic via model_name."""
@@ -162,37 +218,53 @@ def _thinking_settings(enable_thinking: bool | None):
 async def stream_run(registry: Registry, prompt: str, *, model_name: str = "local",
                      base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
                      message_history=None, on_event=None,
-                     enable_thinking: bool | None = None):
+                     enable_thinking: bool | None = None, anti_stall: bool = True):
     """Async generator yielding CUMULATIVE assistant text as it streams.
 
     Same setup as run() (tool selection + watchdog + turn budget) but uses Pydantic
     AI's run_stream so a server can emit bubble_update events. stream_text() yields
     the full text-so-far each step, matching Forge's {content} contract.
     `message_history` (prior turns) is what gives the model memory across turns.
+    Anti-stall: an announce-without-acting reply gets one corrective second pass,
+    streamed as a continuation of the same bubble.
     """
     selected = _gate_tools(registry.select(prompt), model_name)
     metrics.TOOLS_SELECTED.observe(len(selected))
+    called: list[str] = []
+    sink = _make_sink(called, on_event)
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
         system_prompt=_system_prompt(model_name),
-        capabilities=[watchdog.make_capability(on_event=on_event)],
+        capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()
+    limits = UsageLimits(request_limit=turn_budget)
+    settings = _thinking_settings(enable_thinking)
+    final = ""
     try:
         async with agent.run_stream(
             prompt, message_history=message_history,
-            usage_limits=UsageLimits(request_limit=turn_budget),
-            model_settings=_thinking_settings(enable_thinking),
+            usage_limits=limits, model_settings=settings,
         ) as result:
             async for text in result.stream_text():   # cumulative text-so-far
+                final = text
                 yield text
+        if anti_stall and _looks_unfinished(final, len(called)):
+            metrics.ANNOUNCE_NUDGES.inc()
+            sink("nudge", "announce-without-acting", 0)
+            async with agent.run_stream(
+                _nudge_prompt(prompt, final), message_history=message_history,
+                usage_limits=limits, model_settings=settings,
+            ) as result2:
+                async for text in result2.stream_text():
+                    yield f"{final}\n\n{text}"
         metrics.AGENT_TURNS.labels("ok").inc()
     except UsageLimitExceeded:
         metrics.AGENT_TURNS.labels("exhausted").inc()
         metrics.NO_PROGRESS.inc()
-        yield (f"Stopped after the {turn_budget}-turn budget without finishing — "
-               "avoiding a stall.")
+        sink("exhausted", None, 0)
+        yield _budget_summary(turn_budget, called)
     except Exception:
         metrics.AGENT_TURNS.labels("error").inc()
         raise
@@ -202,29 +274,39 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
 
 def run(registry: Registry, prompt: str, *, model_name: str = "local",
         base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
-        message_history=None, enable_thinking: bool | None = None) -> str:
+        message_history=None, enable_thinking: bool | None = None,
+        on_event=None, anti_stall: bool = True) -> str:
     selected = _gate_tools(registry.select(prompt), model_name)
     metrics.TOOLS_SELECTED.observe(len(selected))
+    called: list[str] = []
+    sink = _make_sink(called, on_event)
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
         system_prompt=_system_prompt(model_name),
-        capabilities=[watchdog.make_capability()],   # anti-stall: repeated-call detection
+        capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()
+    limits = UsageLimits(request_limit=turn_budget)
+    settings = _thinking_settings(enable_thinking)
     try:
-        result = agent.run_sync(
-            prompt, message_history=message_history,
-            usage_limits=UsageLimits(request_limit=turn_budget),
-            model_settings=_thinking_settings(enable_thinking),
-        )
+        result = agent.run_sync(prompt, message_history=message_history,
+                                usage_limits=limits, model_settings=settings)
+        output = result.output
+        if anti_stall and _looks_unfinished(output, len(called)):
+            metrics.ANNOUNCE_NUDGES.inc()
+            sink("nudge", "announce-without-acting", 0)
+            result = agent.run_sync(_nudge_prompt(prompt, output),
+                                    message_history=message_history,
+                                    usage_limits=limits, model_settings=settings)
+            output = result.output
         metrics.AGENT_TURNS.labels("ok").inc()
-        return result.output
-    except UsageLimitExceeded:                        # turn budget hit -> give up gracefully
+        return output
+    except UsageLimitExceeded:                        # turn budget hit -> report progress
         metrics.AGENT_TURNS.labels("exhausted").inc()
         metrics.NO_PROGRESS.inc()
-        return (f"Stopped after the {turn_budget}-turn budget without finishing — "
-                "avoiding a stall. Try rephrasing or narrowing the request.")
+        sink("exhausted", None, 0)
+        return _budget_summary(turn_budget, called)
     except Exception:
         metrics.AGENT_TURNS.labels("error").inc()
         raise
@@ -235,31 +317,41 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
 async def run_async(registry: Registry, prompt: str, *, model_name: str = "local",
                     base_url: str = "http://localhost:4000/v1", turn_budget: int = 12,
                     message_history=None, on_event=None,
-                    enable_thinking: bool | None = None) -> str:
+                    enable_thinking: bool | None = None, anti_stall: bool = True) -> str:
     """Non-streaming async run — for the background task runner. Same tool selection
     + watchdog + budget as run(), returns the final text. Higher default budget since
     background jobs are expected to be multi-step."""
     selected = _gate_tools(registry.select(prompt), model_name)
     metrics.TOOLS_SELECTED.observe(len(selected))
+    called: list[str] = []
+    sink = _make_sink(called, on_event)
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
         system_prompt=_system_prompt(model_name),
-        capabilities=[watchdog.make_capability(on_event=on_event)],
+        capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()
+    limits = UsageLimits(request_limit=turn_budget)
+    settings = _thinking_settings(enable_thinking)
     try:
-        result = await agent.run(
-            prompt, message_history=message_history,
-            usage_limits=UsageLimits(request_limit=turn_budget),
-            model_settings=_thinking_settings(enable_thinking),
-        )
+        result = await agent.run(prompt, message_history=message_history,
+                                 usage_limits=limits, model_settings=settings)
+        output = result.output
+        if anti_stall and _looks_unfinished(output, len(called)):
+            metrics.ANNOUNCE_NUDGES.inc()
+            sink("nudge", "announce-without-acting", 0)
+            result = await agent.run(_nudge_prompt(prompt, output),
+                                     message_history=message_history,
+                                     usage_limits=limits, model_settings=settings)
+            output = result.output
         metrics.AGENT_TURNS.labels("ok").inc()
-        return result.output
+        return output
     except UsageLimitExceeded:
         metrics.AGENT_TURNS.labels("exhausted").inc()
         metrics.NO_PROGRESS.inc()
-        return f"Stopped after the {turn_budget}-turn budget without finishing."
+        sink("exhausted", None, 0)
+        return _budget_summary(turn_budget, called)
     except Exception:
         metrics.AGENT_TURNS.labels("error").inc()
         raise

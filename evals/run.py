@@ -67,14 +67,20 @@ def grade_selection(task: dict, offered, ranked_names: list[str]) -> dict:
     return out
 
 
+def _call_matches(log: CallLog, ec: dict) -> bool:
+    ok = bool(log.called(ec["tool"]))
+    if ok and ec.get("args_contains"):
+        ok = log.args_contain(ec["tool"], ec["args_contains"])
+    return ok
+
+
 def grade_live(task: dict, log: CallLog, answer: str) -> dict:
     checks: dict[str, bool] = {}
     ec = task.get("expect_call")
     if ec:
-        ok = bool(log.called(ec["tool"]))
-        if ok and ec.get("args_contains"):
-            ok = log.args_contain(ec["tool"], ec["args_contains"])
-        checks["expect_call"] = ok
+        checks["expect_call"] = _call_matches(log, ec)
+    for i, ec in enumerate(task.get("expect_calls", [])):   # multi-step: ALL must appear
+        checks[f"step{i + 1}:{ec['tool']}"] = _call_matches(log, ec)
     if task.get("expect_any"):
         checks["expect_any"] = any(log.called(t) for t in task["expect_any"])
     if task.get("forbid_mutating"):
@@ -97,6 +103,8 @@ def main() -> int:
     ap.add_argument("--model", default="gemma4-26b")
     ap.add_argument("--base-url", default="http://localhost:9090/v1")
     ap.add_argument("--selection-only", action="store_true")
+    ap.add_argument("--no-anti-stall", action="store_true",
+                    help="A/B: disable the driver's announce-nudge/summary fixes")
     ap.add_argument("--only", nargs="*", help="task ids to run")
     ap.add_argument("--compare", nargs=2, metavar="JSON", help="diff two result files")
     args = ap.parse_args()
@@ -139,15 +147,28 @@ def main() -> int:
 
         if not args.selection_only:
             log.reset()
+            stall = {"loops": 0, "nudges": 0, "exhausted": False}
+
+            def on_event(phase, detail, step, _s=stall):
+                if phase == "loop":
+                    _s["loops"] += 1
+                elif phase == "nudge":
+                    _s["nudges"] += 1
+                elif phase == "exhausted":
+                    _s["exhausted"] = True
+
             t0 = time.perf_counter()
             try:
                 answer = loop.run(reg, t["prompt"], model_name=args.model,
-                                  base_url=args.base_url, turn_budget=8)
+                                  base_url=args.base_url, turn_budget=8,
+                                  on_event=on_event,
+                                  anti_stall=not args.no_anti_stall)
             except Exception as e:
                 answer = f"(loop error: {e})"
             row["live"] = grade_live(t, log, answer)
             row["live"]["seconds"] = round(time.perf_counter() - t0, 1)
             row["live"]["answer"] = (answer or "")[:400]
+            row["live"]["stall"] = stall
         results.append(row)
         _print_row(row)
 
@@ -191,6 +212,9 @@ def summarize(results, cfg, args, suite_sha) -> dict:
         agg["live_success_rate"] = round(sum(1 for l in lives if l["success"]) / len(lives), 3)
         agg["avg_tool_calls"] = round(sum(l["tool_calls"] for l in lives) / len(lives), 1)
         agg["avg_seconds"] = round(sum(l["seconds"] for l in lives) / len(lives), 1)
+        agg["stalls_exhausted"] = sum(1 for l in lives if l.get("stall", {}).get("exhausted"))
+        agg["stalls_looped"] = sum(l.get("stall", {}).get("loops", 0) for l in lives)
+        agg["stalls_nudged"] = sum(l.get("stall", {}).get("nudges", 0) for l in lives)
     return {"config": cfg, "model": args.model, "suite_sha": suite_sha,
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "aggregate": agg, "tasks": results}
 

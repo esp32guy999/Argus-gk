@@ -56,3 +56,24 @@ less context**, and it is what production now runs (main.py's bare
 
 Run the suite after ANY harness change (selector, prompts, budgets, lanes) and
 compare before keeping the change — that's the point of it.
+
+## Addendum — anti-stall batch (same day)
+
+Driver fixes in all three run paths (`run`/`run_async`/`stream_run`, `anti_stall=True`):
+announce-without-acting → one corrective retry (tail-anchored regex + zero-calls guard,
+poems safe — tests/test_anti_stall.py); budget exhaustion → progress summary from the
+call log instead of discarding the work. 5 multi-step chains added to the suite (27
+tasks), `expect_calls` grader, per-task stall telemetry (loops/nudges/exhausted).
+
+A/B (gemma4-26b, semantic:8+core): 26/27 both arms — no regression. Loop/exhaustion
+count deltas (10→3, 2→1) are run-to-run sampling variance, NOT the fix: the nudge never
+fired on gemma (0 triggers — it acts rather than announces), and the fixes only change
+what happens AFTER a stall. What the batch actually buys: (1) exhaustion now returns
+"Progress so far: lookup_memory → list_dir → make_dir … say continue" instead of a bare
+give-up; (2) the announce guard protects the chat path + weaker models at zero cost when
+untriggered; (3) stall rate is now a measured number per model.
+
+The one persistent failure (chain-weather-list-time) is tool CONFUSION, not a stall:
+gemma picks todo_get_items (read) over HassListAddItem (write), loops, wanders. Same
+root cause as the open MCP-description issue — description enrichment is the fix, and
+the suite will measure it. Deferred: cycle detection (A→B→A→B), plan-first scaffold.
