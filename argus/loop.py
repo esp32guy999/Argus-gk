@@ -122,14 +122,30 @@ LANE_MODEL_GATES: dict[str, set[str]] = {
 }
 
 
+# Models DENIED every gated (system-changing) lane, even when a name substring in
+# LANE_MODEL_GATES would otherwise clear them. Deny beats allow. This exists because
+# the gate matches by substring: "ornith-35b" clears the trusted official base, but
+# that string is ALSO embedded in "ornith-35b-uncensored" (Loki, the abliterated
+# finetune) — so without an explicit deny Loki silently inherits shell + code_edit.
+# Loki fabricates at the edges (eval 24/27: a hallucinated IP + a falsely-claimed
+# action) and Shane doesn't trust it with the system. Kept for chat/creative use
+# only — no shell, no source edits. (2026-07-05)
+LANE_MODEL_DENY: set[str] = {"ornith-35b-uncensored"}
+
+
 def _gate_tools(selected, model_name: str):
-    """Drop tools whose lane the current model isn't cleared for (per LANE_MODEL_GATES)."""
+    """Drop tools whose lane the current model isn't cleared for (per LANE_MODEL_GATES).
+
+    LANE_MODEL_DENY takes precedence over the allow-lists: a denied model is refused
+    ALL gated lanes even if its name substring-matches an allow entry. That's how an
+    untrusted model sharing a name-substring with a trusted one is still locked out."""
     if not LANE_MODEL_GATES:
         return selected
+    denied = any(d in (model_name or "") for d in LANE_MODEL_DENY)
     kept = []
     for t in selected:
         allow = LANE_MODEL_GATES.get(getattr(t, "provider", None))
-        if allow and not any(m in (model_name or "") for m in allow):
+        if allow and (denied or not any(m in (model_name or "") for m in allow)):
             continue
         kept.append(t)
     return kept
