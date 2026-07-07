@@ -12,6 +12,7 @@ Exposes the same synchronous registry.Tool contract as every other lane.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from typing import Any
 
@@ -21,6 +22,97 @@ from pydantic_ai.exceptions import ModelRetry
 from ..registry import Tool
 
 KEEPALIVE: list["MCPConnection"] = []   # connections live for the process lifetime
+
+# ── Write verification ────────────────────────────────────────────────────────
+# MCP tools are passed straight through from an external server, so a state-changing
+# call that quietly does nothing (or that HA answers with a "Sorry…" *speech* string
+# instead of a protocol error) reaches the model as hollow success — it can't close
+# the loop on feedback it never got. For WRITE tools we inspect the result and:
+#   - escalate a no-op / failure into a ModelRetry the model must act on, and
+#   - enrich a real success with WHAT changed (ground truth), so the model (and the
+#     transcript) can verify the effect instead of trusting a canned phrase.
+# Read tools (Get*/List*/context) pass through untouched. Per-server opt-out via
+# `verify_writes: false`; explicit `read_tools`/`write_tools` lists override the guess.
+_WRITE_HINTS = (
+    "turnon", "turnoff", "toggle", "set", "add", "remove", "delete", "complete",
+    "cancel", "broadcast", "pause", "unpause", "play", "mute", "unmute", "next",
+    "previous", "lock", "unlock", "open", "close", "press", "start", "stop",
+    "increase", "decrease", "boost", "activate", "trigger", "send", "create",
+)
+_FAIL_PHRASES = (
+    "sorry", "not aware", "no valid target", "couldn't find", "could not find",
+    "can't find", "cannot find", "unable to", "no matching", "don't have any",
+    "do not have", "not found", "no entities", "failed to",
+)
+
+
+def _classifies_write(name: str, server: dict) -> bool:
+    """Best-effort: is this MCP tool a state-changing (write) call?"""
+    if name in server.get("read_tools", []):
+        return False
+    if name in server.get("write_tools", []):
+        return True
+    n = name.lower()
+    if n.startswith("get") or n.startswith("list") or n.endswith("_get_items") \
+            or "livecontext" in n or "datetime" in n or "status" in n:
+        return False
+    return any(v in n for v in _WRITE_HINTS)
+
+
+def _find_key(obj, key):
+    """Recursively pull the first value for `key` out of a nested dict/list."""
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            r = _find_key(v, key)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _find_key(v, key)
+            if r is not None:
+                return r
+    return None
+
+
+def _verify_write(name: str, text: str, structured):
+    """Return (ok, message, enriched_text) for a write result.
+
+    ok=False -> caller raises ModelRetry(message). ok=True -> return enriched_text.
+    Uses HA's structured success/failed/code when present — HA's MCP server returns
+    that block as a JSON *text* string rather than structuredContent, so we parse the
+    text too — and falls back to failure-phrase detection on the speech string. When
+    neither yields a signal the call passes through unchanged (never block what we
+    can't verify)."""
+    data = structured
+    if data is None and text:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, (dict, list)):
+                data = parsed
+        except (ValueError, TypeError):
+            pass
+    success = _find_key(data, "success")
+    failed = _find_key(data, "failed")
+    code = _find_key(data, "code")                  # e.g. no_valid_targets
+    low = (text or "").lower()
+    phrase_fail = any(p in low for p in _FAIL_PHRASES)
+
+    if code or phrase_fail or (isinstance(success, list) and not success and not failed):
+        detail = text or (f"error code {code!r}" if code else "no entities matched")
+        return (False,
+                f"{name} changed nothing — {detail}. Verify the target exists and is the "
+                f"right type (e.g. porch lights are `switch.*`, not `light.*`), then retry "
+                f"or report honestly that it didn't work — do NOT claim success.",
+                text)
+    if isinstance(failed, list) and failed:
+        return (False, f"{name}: some targets failed: {failed}. {text or ''}".strip(), text)
+    if isinstance(success, list) and success:
+        changed = ", ".join(s.get("name") or s.get("id", "?")
+                            for s in success if isinstance(s, dict)) or str(success)
+        return (True, "", f"{text}\n[verified changed: {changed}]".strip())
+    return (True, "", text)
 
 
 class MCPConnection:
@@ -87,9 +179,16 @@ class MCPConnection:
         text = "\n".join(
             getattr(c, "text", "") for c in (result.content or []) if getattr(c, "text", "")
         )
+        structured = getattr(result, "structuredContent", None)
         if getattr(result, "isError", False):
             raise ModelRetry(f"mcp tool '{name}' error: {text or 'unknown error'}")
-        return text or getattr(result, "structuredContent", None) or ""
+        # Verify state-changing calls so a no-op/failure can't pass as hollow success.
+        if self.spec.get("verify_writes", True) and _classifies_write(name, self.spec):
+            ok, msg, enriched = _verify_write(name, text, structured)
+            if not ok:
+                raise ModelRetry(msg)
+            return enriched or structured or ""
+        return text or structured or ""
 
     def close(self) -> None:
         if self._loop and self._stop:
