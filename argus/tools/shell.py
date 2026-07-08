@@ -145,8 +145,11 @@ def tools(manifest_path: str = "config/shell_tools.yaml") -> list[Tool]:
             name=cfg.get("tool_name", "run_command"),
             description=cfg.get(
                 "description",
-                "Execute a shell command on the Argus host (guarded). "
-                "Returns exit_code, stdout, stderr.",
+                "Execute a shell command on the Argus host (guarded). Use for system and "
+                "hardware status/inspection: GPU temperature and utilization (nvidia-smi), "
+                "disk space and usage (df), memory usage (free), CPU and processes (ps), "
+                "service status (systemctl), network (ss, ip), and reading files or logs. "
+                "Returns ok, exit_code, stdout, stderr.",
             ),
             tags=cfg.get("tags", ["shell", "cli", "system", "command", "exec"]),
             func=run_command,
