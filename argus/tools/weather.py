@@ -90,13 +90,15 @@ def current(location: str = DEFAULT_LOCATION) -> dict:
     return {
         "location": name,
         "temp": round(cur.get("temperature_2m", 0)),
+        "temp_c": round((cur.get("temperature_2m", 0) - 32) * 5 / 9),   # both units (F5/Idea4)
         "feels_like": round(cur.get("apparent_temperature", 0)),
+        "feels_like_c": round((cur.get("apparent_temperature", 0) - 32) * 5 / 9),
         "humidity": cur.get("relative_humidity_2m"),
         "wind_mph": round(cur.get("wind_speed_10m", 0)),
         "condition": label,
         "emoji": emoji,
         "is_day": bool(cur.get("is_day", 1)),
-        "units": "F",
+        "units": "temp/feels_like in °F; temp_c/feels_like_c in °C",
     }
 
 
@@ -111,10 +113,11 @@ def forecast(location: str = DEFAULT_LOCATION, days: int = 5) -> dict:
     out_days = []
     for i, date in enumerate(daily.get("time", [])):
         label, emoji = _describe(daily.get("weather_code", [None])[i])
+        hi, lo = daily["temperature_2m_max"][i], daily["temperature_2m_min"][i]
         out_days.append({
             "date": date,
-            "high": round(daily["temperature_2m_max"][i]),
-            "low": round(daily["temperature_2m_min"][i]),
+            "high": round(hi), "high_c": round((hi - 32) * 5 / 9),
+            "low": round(lo), "low_c": round((lo - 32) * 5 / 9),
             "precip_pct": daily.get("precipitation_probability_max", [None] * (i + 1))[i],
             "condition": label, "emoji": emoji,
         })
@@ -122,6 +125,7 @@ def forecast(location: str = DEFAULT_LOCATION, days: int = 5) -> dict:
         "location": name,
         "current": {
             "temp": round(cur.get("temperature_2m", 0)),
+            "temp_c": round((cur.get("temperature_2m", 0) - 32) * 5 / 9),
             "feels_like": round(cur.get("apparent_temperature", 0)),
             "humidity": cur.get("relative_humidity_2m"),
             "wind_mph": round(cur.get("wind_speed_10m", 0)),

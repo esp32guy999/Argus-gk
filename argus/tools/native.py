@@ -72,7 +72,9 @@ def get_gpu() -> dict:
     parts = [p.strip() for p in line.split(",")]
     if len(parts) < 5:
         raise ModelRetry(f"get_gpu: unexpected nvidia-smi output: {line!r}")
-    return {"name": parts[4], "temperature_c": int(parts[0]),
+    temp_c = int(parts[0])
+    return {"name": parts[4], "temperature_c": temp_c,
+            "temperature_f": round(temp_c * 9 / 5 + 32),   # both units so cross-tool compares don't trip
             "utilization_pct": int(parts[1]),
             "vram_used_mib": int(parts[2]), "vram_total_mib": int(parts[3])}
 
@@ -89,6 +91,72 @@ def get_disk(path: str = "/") -> dict:
     gb = lambda b: round(b / 1e9, 1)
     return {"path": path, "total_gb": gb(total), "used_gb": gb(used), "free_gb": gb(free),
             "percent_used": round(used / total * 100) if total else 0}
+
+
+def get_ha_state(query: str) -> dict:
+    """Read the current state of a Home Assistant entity by fuzzy name OR entity_id.
+    Accepts 'porch lights', 'switch.porch_lights', or just 'porch' — resolves to the
+    real entity and returns its state + friendly name. Use to check whether a light /
+    switch / sensor / device is on/off or to read any HA value. ONE forgiving call — no
+    need to guess the exact entity_id or friendly name (avoids trial-and-error)."""
+    import os
+    import re
+    import httpx
+    base = os.environ.get("HA_URL", "http://nyx:8123").rstrip("/")
+    token = os.environ.get("HA_TOKEN", "")
+    if not token:
+        raise ModelRetry("get_ha_state: HA_TOKEN is not configured on this host.")
+    try:
+        r = httpx.get(f"{base}/api/states",
+                      headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        r.raise_for_status()
+        states = r.json()
+    except httpx.HTTPError as e:
+        raise ModelRetry(f"get_ha_state: could not reach Home Assistant ({e}).")
+
+    def norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    q = norm(query)
+    qwords = set(q.split())
+    scored = []
+    for s in states:
+        eid = s.get("entity_id", "")
+        fn = s.get("attributes", {}).get("friendly_name", "")
+        cands = {norm(eid), norm(eid.split(".", 1)[-1]), norm(fn)}
+        if query.lower() == eid.lower():
+            score = 100
+        elif q in cands:
+            score = 60
+        elif any(c and (q in c or c in q) for c in cands):
+            score = 30
+        elif qwords and any(c and qwords.issubset(set(c.split())) for c in cands):
+            score = 20
+        else:
+            score = 0
+        if score:
+            # a "what's the state" query usually means a DEVICE, not an automation/scene
+            domain = eid.split(".", 1)[0]
+            if domain in ("automation", "scene", "script", "zone", "group", "person"):
+                score -= 5
+            elif domain in ("light", "switch", "sensor", "binary_sensor", "climate",
+                            "lock", "cover", "fan", "media_player"):
+                score += 5
+            scored.append((score, s))
+    if not scored:
+        raise ModelRetry(f"get_ha_state: no Home Assistant entity matched {query!r}. "
+                         "Try the device's friendly name or its entity_id.")
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    def fmt(s):
+        a = s.get("attributes", {})
+        return {"entity_id": s["entity_id"], "name": a.get("friendly_name"),
+                "state": s.get("state")}
+    out = fmt(scored[0][1])
+    extra = [fmt(s) for sc, s in scored[1:4] if sc >= 30]
+    if extra:
+        out["other_matches"] = extra
+    return out
 
 
 def start_background_task(task: str) -> dict:
@@ -154,6 +222,17 @@ def tools() -> list[Tool]:
                   "df", "system"],
             func=get_disk,
             example={"path": "/"},
+        ),
+        Tool(
+            name="get_ha_state",
+            description=("Read a Home Assistant entity's current state by fuzzy name or "
+                         "entity_id (e.g. 'porch lights', 'switch.porch_lights', 'porch'). "
+                         "Use to check if a light/switch/sensor/device is on/off or read "
+                         "any HA value — one forgiving call, no need to guess the exact id."),
+            tags=["home assistant", "ha", "entity", "state", "light", "switch", "sensor",
+                  "device", "on", "off", "status", "is", "smart home"],
+            func=get_ha_state,
+            example={"query": "porch lights"},
         ),
         Tool(
             name="start_background_task",
