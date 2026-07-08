@@ -56,6 +56,16 @@ def main():
         T["restore_from_trash"](d["trashed_to"])
         check(os.path.exists(os.path.join(root, "Artist/Album/01.flac")), "restore_from_trash recovers")
 
+        # glob delete (F6): '*.bak' deletes every match, leaves non-matches
+        for n in ("a.bak", "b.bak", "keep.txt"):
+            open(os.path.join(root, "Artist/Album", n), "w").write("z")
+        g = T["delete_media"](os.path.join(root, "Artist/Album/*.bak"))
+        check(g.get("deleted_count") == 2
+              and not os.path.exists(os.path.join(root, "Artist/Album/a.bak"))
+              and not os.path.exists(os.path.join(root, "Artist/Album/b.bak"))
+              and os.path.exists(os.path.join(root, "Artist/Album/keep.txt")),
+              "delete_media expands *.bak (2 deleted, keep.txt untouched)")
+
         # purge
         d2 = T["delete_media"](os.path.join(root, "Artist/Album/03.mp3"))
         T["purge_trash"](os.path.join(root, ".argus-trash"))

@@ -132,9 +132,24 @@ def tools(manifest_path: str = "config/media_fs.yaml") -> list[Tool]:
         return {"copied": abs_s, "to": abs_d}
 
     def delete_media(path: str) -> dict:
-        """Delete a file or folder under the media roots. By default this is a SOFT
-        delete: the item is moved into <root>/<trash>/<timestamp>/ and is recoverable.
+        """Delete a file or folder under the media roots. Supports wildcards
+        (e.g. '/home/shane/tv/*.bak' deletes every matching file). By default this is a
+        SOFT delete: items move into <root>/<trash>/<timestamp>/ and are recoverable.
         (Hard, permanent deletion only if the owner enabled hard_delete in config.)"""
+        # Wildcard support — "delete all *.bak" is the natural request. Expand the glob,
+        # then soft-delete each match that resolves under an allowed root (each is
+        # re-validated by the recursive call, so the glob can't escape the roots).
+        if any(ch in str(path) for ch in "*?["):
+            import glob as _glob
+            done, skipped = [], []
+            for m in sorted(_glob.glob(os.path.expanduser(str(path)))):
+                try:
+                    done.append(delete_media(m))
+                except ModelRetry:
+                    skipped.append(m)
+            if not done:
+                raise ModelRetry(f"media_fs: no files under the media roots matched {path!r}.")
+            return {"deleted_count": len(done), "items": done, "skipped": skipped}
         abs_p, root = _resolve_under(path)
         if not os.path.exists(abs_p):
             raise ModelRetry(f"media_fs: {path!r} does not exist.")
