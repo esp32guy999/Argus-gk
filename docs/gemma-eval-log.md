@@ -190,3 +190,13 @@ when it lacks a tool; faithfully relayed the two tool lies (which were the *tool
 now fixed). Confirmed bugs found + fixed by the eval: F1 (shell/system tools), F4
 (lidarr_get_album). Standing model weaknesses (not bugs): F2 entity thrash, F5 unit wobble.
 **The thesis holds: fix the tools, gemma is usable.**
+
+## Idea5 — sandboxed code execution (a deliberate capability GAP)
+Round 8 probe ("write + run a Python script"): gemma generates correct code but CANNOT
+execute it — by design. The shell allowlist excludes interpreters (python3/bash/node) so
+a model can't bypass the allowlist via a script, and code_edit is off (no roots). gemma
+handled the block honestly (said it can't run scripts, still answered from knowledge).
+If we WANT code-gen+exec as a real capability, the safe path is a dedicated tool that
+runs generated code INSIDE the bwrap sandbox (interpreters allowed there, ro host +
+ephemeral scratch) — giving execution WITHOUT weakening the general shell allowlist.
+Not built. This is the "genuinely-risky flow" the sandbox was made for.
