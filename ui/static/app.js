@@ -531,7 +531,7 @@ function _buildMessageNodes(msgs) {
     el.className = `message ${role}`;
     el.dataset.msgId = msg.id;
     el.textContent = text;
-    if (role === 'assistant') { _renderInlineHtml(el, text); _renderLinks(el, text); }
+    if (role === 'assistant') { _renderInlineHtml(el, text); _renderLinks(el, text); _renderChoices(el, text); }
     if (role === 'assistant' && msg.model)   // colour the side-bars by the model that produced this reply
       el.style.setProperty('--msg-accent', modelColor(msg.model));
     if (meta) {
@@ -986,6 +986,30 @@ function _renderLinks(bubble, text) {
   }
   bubble.appendChild(wrap);
 }
+
+// Render [[CHOICES: Option A ;; Option B ;; Option C]] as tappable buttons that SEND
+// the chosen text as the user's next message — multiple-choice quick replies. Keep
+// choices plain (no [[LINKS]]/inline HTML in the same bubble).
+function _renderChoices(bubble, text) {
+  const m = text.match(/\[\[CHOICES:([\s\S]*?)\]\]/);
+  if (!m) return;
+  bubble.textContent = text.replace(m[0], '').trim();
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-links';                 // reuse the tappable-button styling
+  for (const raw of m[1].split(';;')) {
+    const label = raw.trim();
+    if (!label) continue;
+    const b = document.createElement('button');
+    b.className = 'chat-link';
+    b.type = 'button';
+    b.textContent = label;
+    b.addEventListener('click', () => {
+      if (typeof inputEl !== 'undefined' && inputEl) { inputEl.value = label; send(); }
+    });
+    wrap.appendChild(b);
+  }
+  bubble.appendChild(wrap);
+}
 if (!window._htmlEmbedWired) {
   window._htmlEmbedWired = true;
   window.addEventListener('message', (e) => {
@@ -1140,6 +1164,7 @@ async function send() {
       state.pendingMsgEl.textContent = stripCommandTags(raw);
       _renderInlineHtml(state.pendingMsgEl, stripCommandTags(raw));   // inline sandboxed HTML (flagged)
       _renderLinks(state.pendingMsgEl, stripCommandTags(raw));        // native tappable links
+      _renderChoices(state.pendingMsgEl, stripCommandTags(raw));      // multiple-choice quick replies
       addMeta(state.pendingMsgEl, `${modelLabel(state.pendingModel)} · ${fmtTime(new Date())}${state.pendingDurMeta || ''}`);
       processCommandTags(raw, state.pendingMsgEl);
       // dataset.msgId is what swipe-to-delete reads (the only delete affordance now).
@@ -1363,7 +1388,7 @@ function connectEvents() {
     globalEvents.addEventListener('chat_message', e => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
       const el = appendMessage(m.role || 'assistant', m.content || '');
-      if ((m.role || 'assistant') === 'assistant') { _renderInlineHtml(el, m.content || ''); _renderLinks(el, m.content || ''); }
+      if ((m.role || 'assistant') === 'assistant') { _renderInlineHtml(el, m.content || ''); _renderLinks(el, m.content || ''); _renderChoices(el, m.content || ''); }
     });
     globalEvents.addEventListener('bubble_done', e => {
       let data;
