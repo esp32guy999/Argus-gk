@@ -70,6 +70,16 @@ SPECS = {
 }
 
 
+# Child-item monitoring for the already-in-library path. A re-request must MONITOR the
+# items it's missing (the *arr apps only search MONITORED items), else the search runs
+# over nothing and "downloads" never start. radarr omitted: a movie is its own item.
+CHILDREN = {
+    "lidarr":  dict(list_path="/album",   id_param="artistId", monitor_path="/album/monitor",  id_key="albumIds"),
+    "readarr": dict(list_path="/book",    id_param="authorId", monitor_path="/book/monitor",   id_key="bookIds"),
+    "sonarr":  dict(list_path="/episode", id_param="seriesId", monitor_path="/episode/monitor", id_key="episodeIds"),
+}
+
+
 def _services(manifest_path: str) -> dict:
     data = yaml.safe_load(open(manifest_path)) or {}
     out = {}
@@ -111,6 +121,74 @@ def _make_add(base: str, headers: dict, spec: dict):
                              f"Options: {[it['name'] for it in items]}.")
         return items[0]["id"]
 
+    def _present(it) -> bool:
+        """True if this child item's files are already fully present."""
+        st = it.get("statistics") or {}
+        fc = st.get("trackFileCount", st.get("bookFileCount", st.get("fileCount")))
+        tc = st.get("trackCount", st.get("bookCount"))
+        if isinstance(fc, int) and isinstance(tc, int):
+            return tc > 0 and fc >= tc
+        return bool(it.get("hasFile"))
+
+    def _remonitor(match: dict, monitor: str) -> dict:
+        """Already-in-library path. The old code fired a search WITHOUT monitoring, so
+        the *arr searched its (zero) monitored items and downloaded nothing — while
+        returning searching:true (hollow success). Now: ensure the entity + its missing
+        items are monitored, THEN search, and report honestly (incl. 'nothing missing')."""
+        if not match.get("monitored"):        # entity must be monitored to search its items
+            try:
+                httpx.put(f"{base}/api/{api}{spec['add']}/{match['id']}",
+                          headers=headers, json={**match, "monitored": True}, timeout=30)
+            except httpx.RequestError:
+                pass
+        child = CHILDREN.get(spec.get("svc"))
+        monitored_now = missing = 0
+        if child:
+            try:
+                items = _get(child["list_path"], **{child["id_param"]: match["id"]})
+            except httpx.HTTPError:
+                items = []
+            missing = sum(1 for it in items if not _present(it))
+            if monitor == "none":
+                targets = []
+            elif monitor in ("all", "future", "existing"):
+                targets = items
+            else:                              # missing / latest / first -> what we lack
+                targets = [it for it in items if not _present(it)]
+            ids = [it["id"] for it in targets]
+            if ids:
+                try:
+                    r = httpx.put(f"{base}/api/{api}{child['monitor_path']}", headers=headers,
+                                  json={child["id_key"]: ids, "monitored": True}, timeout=30)
+                    monitored_now = len(ids) if r.status_code < 400 else 0
+                except httpx.RequestError:
+                    monitored_now = 0
+        else:                                  # radarr: the movie IS the item
+            missing = 0 if match.get("hasFile") else 1
+            monitored_now = 0 if match.get("hasFile") else 1
+        # honest early-outs — no false "searching"
+        if monitor == "none":
+            return {"added": False, "already_in_library": True, "title": _title(match),
+                    "searching": False, "monitored": 0,
+                    "note": "already in the library; monitor=none, so nothing was monitored or searched"}
+        if missing == 0:
+            return {"added": False, "already_in_library": True, "title": _title(match),
+                    "searching": False, "monitored": monitored_now,
+                    "note": "already in the library and every item is already present — nothing to download"}
+        cmd_name, key, is_list = spec["search_cmd"]
+        payload = {"name": cmd_name, key: [match["id"]] if is_list else match["id"]}
+        try:
+            cr = httpx.post(f"{base}/api/{api}/command", headers=headers, json=payload, timeout=30)
+            searched = cr.status_code < 400
+        except httpx.RequestError:
+            searched = False
+        return {"added": False, "already_in_library": True, "title": _title(match),
+                "monitored": monitored_now, "missing": missing, "searching": searched,
+                "note": (f"already in library; monitored {monitored_now} missing item(s) and "
+                         "started a search — will download and import once grabbed"
+                         if searched else
+                         f"monitored {monitored_now} item(s) but the search could not be started")}
+
     def add(**kwargs):
         query = kwargs[spec["param"]]
         monitor = kwargs.get("monitor") or spec["monitor_default"]
@@ -128,20 +206,7 @@ def _make_add(base: str, headers: dict, spec: dict):
             raise ModelRetry(f"{spec['tool']}: no {noun} found matching '{query}'.")
         match = results[0]
         if match.get("id"):
-            # Already in the library != already downloaded. Trigger a search for any
-            # MISSING items instead of the old "nothing to do" dead end.
-            cmd_name, key, is_list = spec["search_cmd"]
-            payload = {"name": cmd_name, key: [match["id"]] if is_list else match["id"]}
-            try:
-                cr = httpx.post(f"{base}/api/{api}/command", headers=headers,
-                                json=payload, timeout=30)
-                searched = cr.status_code < 400
-            except httpx.RequestError:
-                searched = False
-            return {"added": False, "already_in_library": True, "title": _title(match),
-                    "searching": searched,
-                    "note": ("already in the library; searching for any missing items"
-                             if searched else "already in the library; search could not be started")}
+            return _remonitor(match, monitor)
         try:
             qp = _quality_id(quality)
             root = _get("/rootfolder")[0]["path"]
@@ -303,7 +368,7 @@ def _make_lidarr_album(base: str, headers: dict):
 def tools(manifest_path: str = "config/openapi.yaml") -> list[Tool]:
     out = []
     for name, (base, headers) in _services(manifest_path).items():
-        spec = SPECS[name]
+        spec = dict(SPECS[name], svc=name)
         out.append(Tool(
             name=spec["tool"], description=spec["desc"] + " (acquires + starts download)",
             tags=spec["tags"], func=_make_add(base, headers, spec),
