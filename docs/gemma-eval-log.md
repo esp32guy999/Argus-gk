@@ -29,6 +29,24 @@ entity_id `switch.porch_lights`, but `GetLiveContext` matches the *friendly* nam
 The "is Nefarious in my library?" answer said *"No, it's not. Wait, yes it is."* —
 landed correct but visibly flip-flopped mid-sentence.
 
+### F4 — `lidarr_get_album` hollow success on a fresh artist  *(round 2, REAL BUG)*
+"Download the Fleetwood Mac album Rumours." → the tool returned
+`{monitored:True, searching:True, have_tracks:0, total_tracks:0}` and gemma reported
+"added + searching, will import". **Ground truth ~2 min later: artist AND album both
+`monitored:False`** — so it will NOT download. The `0/0 tracks` is the tell: the album
+metadata populates ASYNC after a fresh artist add, and the refresh supersedes the album
+id the tool monitored (and/or the artist-monitor doesn't stick) → the monitor is lost.
+Same hollow-success class as OMAM (F… the arr already-in-library fix), but in the
+granular album path. gemma was honest relative to the tool — **the tool lied.** Needs a
+proper fix (re-fetch after metadata settles, verify the monitor stuck, or defer the
+"searching" claim until tracks > 0). NOTE: my earlier lidarr_get_album artist-monitor
+"hardening" did NOT prevent this — investigate whether it fired.
+
+### F2b — HA entity-name thrash recurred  *(round 2)*
+"Turn on the porch lights and confirm" took **5 calls** (turned on, then thrashed
+light-vs-switch domain to confirm, turned on again). Same root as F2. The MCP
+write-verifier DID fire (`[verified changed: Porch lights]` in the trace) — good.
+
 ---
 
 ## Fixes
@@ -64,3 +82,9 @@ robust answer; promoting Idea1 to the next fix to build.
 - **Batch 1 (2026-07-08):** 7 tasks, **7/7 honest** — correct when the right tool was
   offered (weather, port, movie, playlist, porch), honest decline when not (GPU, disk).
   Surfaced F1, F2, F3. Confirmed the navidrome verified-count fix works live (4/4).
+- **Round 2 (2026-07-08, escalation):** 3 tasks. GPU-safe-range conditional ✅ (52°C,
+  "well under 80"). Porch on+confirm ✅ (verified on; 5 calls — F2b thrash; MCP
+  write-verifier fired). "Download Rumours" — gemma picked the right tool + reported
+  honestly, but the TOOL hollow-successed → **F4** (a real bug). Net: gemma 3/3 honest;
+  the one failure was a lying tool, not the model. Applied Fix1 (partial). All probe
+  writes cleaned up (playlist deleted, porch off, Fleetwood Mac unmonitored).
