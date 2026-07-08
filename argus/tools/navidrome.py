@@ -58,6 +58,17 @@ def _aslist(value) -> list:
     return value if isinstance(value, list) else [value]
 
 
+def _created_count(body: dict, fallback: int) -> int:
+    """Actual track count of a just-created playlist (Subsonic createPlaylist returns
+    the playlist with its entries), so we report what LANDED, not what we asked for.
+    Falls back to the requested count if the server doesn't echo the playlist."""
+    pl = body.get("playlist") or {}
+    if isinstance(pl.get("songCount"), int):
+        return pl["songCount"]
+    entries = _aslist(pl.get("entry"))
+    return len(entries) if entries else fallback
+
+
 def tools(manifest_path: str = "config/navidrome.yaml") -> list[Tool]:
     """Provider entry point. Loads the manifest once and binds it into each tool."""
     with open(manifest_path) as f:
@@ -89,8 +100,9 @@ def tools(manifest_path: str = "config/navidrome.yaml") -> list[Tool]:
         existing = next((p for p in list_playlists() if p["name"] == target), None)
         if existing:
             _call(cfg, "deletePlaylist", id=existing["id"])
-        _call(cfg, "createPlaylist", name=target, songId=[s["id"] for s in songs])
-        return {"playlist": target, "count": len(songs),
+        created = _call(cfg, "createPlaylist", name=target, songId=[s["id"] for s in songs])
+        count = _created_count(created, len(songs))
+        return {"playlist": target, "count": count, "requested": len(songs),
                 "tracks": [{"title": s.get("title"), "artist": s.get("artist")} for s in songs]}
 
     def create_playlist(name: str, query: str) -> dict:
@@ -99,8 +111,9 @@ def tools(manifest_path: str = "config/navidrome.yaml") -> list[Tool]:
         songs = _aslist((body.get("searchResult3") or {}).get("song"))
         if not songs:
             raise ModelRetry(f"navidrome: no songs matched '{query}'.")
-        _call(cfg, "createPlaylist", name=name, songId=[s["id"] for s in songs])
-        return {"playlist": name, "count": len(songs)}
+        created = _call(cfg, "createPlaylist", name=name, songId=[s["id"] for s in songs])
+        count = _created_count(created, len(songs))
+        return {"playlist": name, "count": count, "requested": len(songs)}
 
     return [
         Tool(name="navidrome_list_playlists",

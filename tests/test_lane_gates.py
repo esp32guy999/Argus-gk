@@ -32,6 +32,13 @@ def main() -> int:
     def offered(m):
         return {t.name for t in _gate_tools(tools, m)}
 
+    # Hermetic: ignore any live config/lane_grants.json (the permissions widget writes
+    # one) so these assertions test the in-code SEED, not the operator's current grants.
+    import tempfile
+    _op, _oc = loop._LANE_GRANTS_PATH, loop._grants_cache
+    loop._LANE_GRANTS_PATH = os.path.join(tempfile.gettempdir(), "argus_no_such_grants.json")
+    loop._grants_cache = (0.0, {})
+
     # 1. shell is gated at all
     assert "shell" in LANE_MODEL_GATES, "shell lane must be model-gated"
     print("PASS: shell lane has a model gate")
@@ -82,6 +89,7 @@ def main() -> int:
         loop._LANE_GRANTS_PATH, loop._grants_cache = orig_path, orig_cache
         shutil.rmtree(tmp, ignore_errors=True)
 
+    loop._LANE_GRANTS_PATH, loop._grants_cache = _op, _oc   # restore the live path
     print("OK")
     return 0
 

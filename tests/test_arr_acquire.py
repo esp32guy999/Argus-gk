@@ -154,6 +154,16 @@ def main() -> int:
         assert POSTS["/api/v3/command"]["movieIds"] == [5], POSTS
         print("PASS: already-in-library now searches missing (MoviesSearch), not 'nothing to do'")
 
+        # LIDARR already-in-library: the real bug (gemma/OMAM). Must MONITOR the missing
+        # album THEN search — not fire a hollow search over zero monitored albums.
+        POSTS.clear()
+        out = by["lidarr_add_artist"].func(artist="existing band", monitor="missing")
+        assert out["already_in_library"] and not out["added"], out
+        assert out["monitored"] == 1 and out["missing"] == 1 and out["searching"], out
+        assert POSTS["/api/v1/album/monitor"] == {"albumIds": [111], "monitored": True}, POSTS
+        assert POSTS["/api/v1/command"] == {"name": "ArtistSearch", "artistId": 5}, POSTS
+        print("PASS: lidarr already-in-library MONITORS the missing album, then searches")
+
         # lidarr_get_album: targets ONE album by an existing artist + fires AlbumSearch
         POSTS.clear()
         out = by["lidarr_get_album"].func(artist="Cyndi Lauper", album="she's so unusual")
