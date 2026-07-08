@@ -32,15 +32,26 @@ A state-changing call reports success / "searching" / "done" while changing **no
   `ModelRetry`, enrich success with what changed).
 - ✅ HA REST `turn_on` on an empty target → `200 []`. Surfaced via the MCP verifier.
 
-**Audit checklist — sweep these for hollow success:**
-- [ ] `navidrome` create_playlist / dj — confirm the playlist/queue actually changed?
-- [ ] `media_fs` copy / move / delete — confirm the file actually moved/removed?
-- [ ] `audiobook` grab (`/api/grab`) — confirm the torrent was really added, or trust 200?
-- [ ] `lidarr_get_album` — returns `monitored:true` optimistically; confirm monitor+search took.
-- [ ] radarr/sonarr/readarr **fresh-add** path — confirm the item was added *and* monitored.
-- [ ] HA writes beyond turn on/off (`HassLightSet`, `HassSetVolume`, `HassMedia*`,
-      `HassList*Item`) — confirm the `success/failed` parse fires for each shape.
-- [ ] `shell` — returns real stdout/exit, but does the caller check the exit code?
+**Audit checklist — swept 2026-07-08 (every write-capable lane):**
+- [x] `audiobook.grab` — FIXED (qBt `"Fails."` at HTTP 200; see instances above).
+- [x] `navidrome` — CLEAN: `_call` raises `ModelRetry` on any non-`ok` API status.
+      Tightened: report the *verified* track count from the createPlaylist response
+      (+ `requested`), not the intended count.
+- [x] `media_fs` copy / move / delete — CLEAN: every write is a `shutil`/`os` op that
+      *raises* on failure, so a returned success dict is a real postcondition.
+- [x] `lidarr_get_album` — mostly ok (it *does* monitor the album); HARDENED to also
+      ensure the artist is monitored, so an unmonitored artist can't swallow the search.
+- [x] radarr/sonarr/readarr **fresh-add** — CLEAN: the add POST raises on ≥400; async
+      "will download once imported" is honest (can't be known at add time).
+- [x] `code_edit` — CLEAN (exemplary): checks `old_string` exists + is unique *before*
+      writing, raises on failure, keeps backups + an audit log.
+- [x] `shell` — CLEAN (returns real `exit_code`/`stderr`). Added an explicit `ok`
+      field so a non-zero exit can't be misread as success.
+- [x] `n8n` — returns the real webhook response; a 2xx *trigger* ≠ workflow success,
+      but that's inherent to fire-and-forget webhooks, not a lie. No change.
+- [~] HA writes beyond turn on/off (`HassLightSet`, `HassSetVolume`, `HassMedia*`,
+      `HassList*Item`) — covered by the MCP write-verifier; individual result shapes
+      not yet asserted one-by-one. Low risk; revisit if one misbehaves.
 
 ---
 

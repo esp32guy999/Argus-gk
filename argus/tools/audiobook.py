@@ -214,6 +214,14 @@ def _qbt_add(magnet: str) -> None:
                      data={"urls": magnet, "category": cfg.get("category", "audiobooks")})
         if add.status_code >= 300:
             raise ModelRetry(f"audiobook: qBittorrent rejected the add (HTTP {add.status_code}).")
+        # qBt's /torrents/add returns HTTP 200 with body "Fails." when it REJECTS the
+        # magnet (bad/duplicate hash) — trusting the status alone is hollow success.
+        # Success is "Ok." (or, on some builds, an empty body); anything else is a reject.
+        body = (add.text or "").strip()
+        if body.lower().startswith("fails") or (body and "ok" not in body.lower()):
+            raise ModelRetry(
+                f"audiobook: qBittorrent did not accept the magnet (response: {body[:80]!r}). "
+                "The torrent hash may be invalid or already in the client.")
 
 
 def grab(page_url: str, title: str = "") -> dict:

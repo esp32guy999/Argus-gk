@@ -335,6 +335,14 @@ def _make_lidarr_album(base: str, headers: dict):
                     "addOptions": {"monitor": "none", "searchForMissingAlbums": False}}
             match = _send("POST", "/artist", body)
 
+        # An existing artist may be monitored=false; ensure it's monitored so the album
+        # search isn't silently ignored (the already-in-library lesson). Best-effort.
+        if not match.get("monitored"):
+            try:
+                _send("PUT", f"/artist/{match['id']}", {**match, "monitored": True})
+            except ModelRetry:
+                pass
+
         albums = _get("/album", artistId=match["id"])
         if not albums:
             return {"artist": match.get("artistName"), "added_artist": True, "searching": False,

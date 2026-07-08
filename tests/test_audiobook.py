@@ -22,7 +22,7 @@ SEARCH_HTML = """<html><body>
 PAGE_HTML = f"""<html><body><table>
 <tr><td>Info Hash:</td><td>{HASH}</td></tr></table></body></html>"""
 
-QBT = {"logged_in": False, "added": None}
+QBT = {"logged_in": False, "added": None, "add_response": b"Ok."}
 
 
 class _H(BaseHTTPRequestHandler):
@@ -51,7 +51,7 @@ class _H(BaseHTTPRequestHandler):
             self.send_response(200); self.end_headers(); self.wfile.write(b"Ok.")
         elif self.path == "/api/v2/torrents/add":
             QBT["added"] = raw
-            self.send_response(200); self.end_headers(); self.wfile.write(b"Ok.")
+            self.send_response(200); self.end_headers(); self.wfile.write(QBT["add_response"])
         else:
             self.send_response(404); self.end_headers()
 
@@ -88,6 +88,17 @@ def main() -> int:
         assert HASH in QBT["added"] and "magnet" in QBT["added"], QBT["added"]
         assert "tr.example" in QBT["added"], "magnet should carry trackers"
         print("PASS: audiobook_get scrapes hash -> magnet -> qBt add")
+
+        # qBt returns HTTP 200 with body "Fails." when it REJECTS a magnet — this must
+        # NOT read as success (the hollow-success fix).
+        QBT["add_response"] = b"Fails."
+        try:
+            by["audiobook_get"].func(query="project hail mary")
+            print("FAIL: qBt 'Fails.' should raise, not report grabbed"); return 1
+        except ModelRetry as e:
+            assert "did not accept" in str(e), str(e)
+        QBT["add_response"] = b"Ok."
+        print("PASS: qBt 200 'Fails.' -> ModelRetry, not hollow success")
 
         # no results -> teaching ModelRetry
         try:

@@ -133,6 +133,7 @@ def tools(manifest_path: str = "config/shell_tools.yaml") -> list[Tool]:
         out, out_tr = _truncate(proc.stdout or "")
         err, err_tr = _truncate(proc.stderr or "")
         return {
+            "ok": proc.returncode == 0,          # explicit so a non-zero exit can't be misread as success
             "exit_code": proc.returncode,
             "stdout": out,
             "stderr": err,
