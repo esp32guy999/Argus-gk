@@ -60,6 +60,19 @@ answered "59°C" — verified accurate). **But "free disk space" STILL doesn't s
 enrichment is an unreliable lever for tool selection.** Dedicated tools (Idea1) are the
 robust answer; promoting Idea1 to the next fix to build.
 
+### Fix2 — dedicated `get_gpu` / `get_disk` native tools  *(F1 fully resolved)*
+`native.py`: `get_gpu` (nvidia-smi → temp/util/VRAM) and `get_disk` (shutil.disk_usage
+→ free/used GB). Deterministic, honest (raise on failure), available to ALL models (no
+shell grant). **Verified live: both now surface for GPU/disk queries and gemma used them
+correctly** — "40°C" and "355.3 GB free" (the disk query that failed twice under Fix1).
+This is the robust answer Idea1 predicted; description-enrichment (Fix1) was the weak one.
+
+### Fix3 — `lidarr_get_album` confirms the monitor stuck  *(F4 resolved)*
+After monitoring the album, re-fetch and require `monitored==True` AND `trackCount>0`
+before claiming `searching:True`. On a fresh artist with unready metadata (0 tracks) it
+now returns `searching:False` + an honest "still populating, ask again in ~30s" instead
+of hollow success. Unit-tested (test_arr_acquire: 0-track album defers, no AlbumSearch).
+
 ---
 
 ## Ideas (backlog)
@@ -88,3 +101,7 @@ robust answer; promoting Idea1 to the next fix to build.
   honestly, but the TOOL hollow-successed → **F4** (a real bug). Net: gemma 3/3 honest;
   the one failure was a lying tool, not the model. Applied Fix1 (partial). All probe
   writes cleaned up (playlist deleted, porch off, Fleetwood Mac unmonitored).
+- **Round 3 (2026-07-08, fixes):** built Fix2 (`get_gpu`/`get_disk`) → GPU + disk both
+  work now (gemma: "40°C", "355.3 GB free"). Built Fix3 (F4 confirm) → `lidarr_get_album`
+  defers honestly on unready metadata. F1 + F4 both fully resolved; suite green
+  (test_arr_acquire incl. F4 regression). Open: F2/F2b (HA entity thrash — Idea2).

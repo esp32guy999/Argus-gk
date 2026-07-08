@@ -12,6 +12,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 POSTS = {}   # api_path -> last posted body
+MON = {112}  # album ids currently monitored (stateful, so re-fetch confirms the PUT stuck)
 
 
 class _H(BaseHTTPRequestHandler):
@@ -40,12 +41,14 @@ class _H(BaseHTTPRequestHandler):
             self._j(200, [{"id": 1, "name": "Standard"}])
         elif p.endswith("/rootfolder"):
             self._j(200, [{"path": "/media"}])
-        elif p.endswith("/album"):   # lidarr_get_album: albums for an artist
+        elif p.endswith("/album"):   # lidarr_get_album: albums for an artist (monitored reflects MON)
             self._j(200, [
-                {"id": 111, "title": "She’s So Unusual", "monitored": False,
+                {"id": 111, "title": "She’s So Unusual", "monitored": 111 in MON,
                  "statistics": {"trackFileCount": 0, "trackCount": 23}},
-                {"id": 112, "title": "True Colors", "monitored": True,
-                 "statistics": {"trackFileCount": 10, "trackCount": 10}}])
+                {"id": 112, "title": "True Colors", "monitored": 112 in MON,
+                 "statistics": {"trackFileCount": 10, "trackCount": 10}},
+                {"id": 113, "title": "Fresh Drop", "monitored": 113 in MON,
+                 "statistics": {"trackFileCount": 0, "trackCount": 0}}])  # metadata not ready
         elif p.endswith("/artist"):   # lidarr library list (not /artist/lookup)
             self._j(200, [{"id": 13, "artistName": "Cyndi Lauper", "monitored": True}])
         else:
@@ -60,7 +63,10 @@ class _H(BaseHTTPRequestHandler):
     def do_PUT(self):
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n).decode() or "{}")
-        POSTS[urlparse(self.path).path] = body
+        path = urlparse(self.path).path
+        POSTS[path] = body
+        if path.endswith("/album/monitor") and body.get("monitored"):
+            MON.update(body.get("albumIds", []))   # reflect the monitor so re-fetch confirms
         self._j(202, body)
 
 
@@ -156,22 +162,32 @@ def main() -> int:
 
         # LIDARR already-in-library: the real bug (gemma/OMAM). Must MONITOR the missing
         # album THEN search — not fire a hollow search over zero monitored albums.
-        POSTS.clear()
+        POSTS.clear(); MON.clear(); MON.update({112})   # fresh monitor state
         out = by["lidarr_add_artist"].func(artist="existing band", monitor="missing")
         assert out["already_in_library"] and not out["added"], out
-        assert out["monitored"] == 1 and out["missing"] == 1 and out["searching"], out
-        assert POSTS["/api/v1/album/monitor"] == {"albumIds": [111], "monitored": True}, POSTS
+        # missing = albums 111 (0/23) and 113 (0/0); 112 (10/10) is present
+        assert out["monitored"] == 2 and out["missing"] == 2 and out["searching"], out
+        assert POSTS["/api/v1/album/monitor"] == {"albumIds": [111, 113], "monitored": True}, POSTS
         assert POSTS["/api/v1/command"] == {"name": "ArtistSearch", "artistId": 5}, POSTS
-        print("PASS: lidarr already-in-library MONITORS the missing album, then searches")
+        print("PASS: lidarr already-in-library MONITORS the missing albums, then searches")
 
         # lidarr_get_album: targets ONE album by an existing artist + fires AlbumSearch
-        POSTS.clear()
+        POSTS.clear(); MON.clear(); MON.update({112})   # 111 unmonitored so the tool monitors it
         out = by["lidarr_get_album"].func(artist="Cyndi Lauper", album="she's so unusual")
         assert out["album"] == "She’s So Unusual" and out["searching"], out
         assert out["have_tracks"] == 0 and out["total_tracks"] == 23, out
         assert POSTS["/api/v1/album/monitor"] == {"albumIds": [111], "monitored": True}, POSTS
         assert POSTS["/api/v1/command"] == {"name": "AlbumSearch", "albumIds": [111]}, POSTS
         print("PASS: lidarr_get_album monitors + AlbumSearches just the named album")
+
+        # F4: a fresh album whose metadata isn't ready (0 tracks) must DEFER honestly —
+        # no false 'searching', and no AlbumSearch fired over an empty album.
+        POSTS.clear(); MON.clear(); MON.update({112})
+        out = by["lidarr_get_album"].func(artist="Cyndi Lauper", album="Fresh Drop")
+        assert out["album"] == "Fresh Drop" and out["searching"] is False, out
+        assert out["total_tracks"] == 0 and "populating" in out["note"], out
+        assert "/api/v1/command" not in POSTS, "must not search a 0-track album"
+        print("PASS: lidarr_get_album defers honestly on unready (0-track) metadata [F4]")
 
         # fuzzy: a wrong-but-close title still lands on the real album (the user's case)
         POSTS.clear()

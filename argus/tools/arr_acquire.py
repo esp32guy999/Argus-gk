@@ -355,11 +355,28 @@ def _make_lidarr_album(base: str, headers: dict):
 
         if not best.get("monitored"):
             _send("PUT", "/album/monitor", {"albumIds": [best["id"]], "monitored": True})
+        # Confirm the monitor actually STUCK before claiming success. On a freshly-added
+        # artist the album metadata populates async (0 tracks) and a refresh can supersede
+        # the album id we just monitored, silently dropping the flag -> hollow success
+        # (the Rumours/F4 bug). Re-fetch and require monitored==True AND tracks known.
+        try:
+            fresh = _get("/album", artistId=match["id"])
+            cur = next((a for a in fresh if a.get("id") == best["id"]), None)
+        except httpx.HTTPError:
+            cur = None
+        st = (cur or best).get("statistics") or {}
+        total = st.get("trackCount", 0) or 0
+        stuck = bool(cur and cur.get("monitored"))
+        if not stuck or total == 0:
+            return {"artist": match.get("artistName"), "album": best.get("title"),
+                    "monitored": stuck, "searching": False, "total_tracks": total,
+                    "note": ("added, but the album metadata is still populating (new artist) "
+                             "so the monitor isn't confirmed yet — nothing will download "
+                             "until it settles. Ask for this album again in ~30 seconds.")}
         cmd = _send("POST", "/command", {"name": "AlbumSearch", "albumIds": [best["id"]]})
-        st = best.get("statistics") or {}
         return {"artist": match.get("artistName"), "album": best.get("title"),
                 "monitored": True, "searching": True,
-                "have_tracks": st.get("trackFileCount", 0), "total_tracks": st.get("trackCount", 0),
+                "have_tracks": st.get("trackFileCount", 0), "total_tracks": total,
                 "command_id": cmd.get("id"),
                 "note": "monitored + searching this album; it imports once a release is grabbed"}
 
