@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# FS sandbox for anvil — no Docker, no sudo (uses bubblewrap). Host root is READ-ONLY;
+# /tmp, /run, /dev/shm are writable + ephemeral; network is kept (llama-swap reachable).
+# Any rm/write to the REAL filesystem fails. Run FS-risky gemma tests contained through
+# this, per policy (2026-07-08): FS-destructive tests never touch anvil's real disk.
+#   scripts/sbx .venv/bin/python scripts/gemma_probe.py "delete the .bak files in ~"
+set -euo pipefail
+exec bwrap \
+  --ro-bind / / \
+  --dev /dev --proc /proc \
+  --tmpfs /tmp --tmpfs /run --tmpfs /dev/shm \
+  --unshare-pid --die-with-parent \
+  "$@"

@@ -11,6 +11,15 @@ lies to it (the hollow-success class). So the leverage is honest tools, not a sm
 
 ---
 
+## Safety policy — FS-destructive tests run sandboxed (2026-07-08, Shane)
+Any test that could touch/delete files runs in a disposable sandbox on anvil, **never**
+against anvil's real filesystem. anvil has no Docker/podman and no passwordless sudo, so
+the mechanism is **bubblewrap** (`scripts/sbx`) — a no-sudo userspace sandbox: host root
+READ-ONLY, `/tmp`+`/run`+`/dev/shm` ephemeral, network kept (llama-swap reachable).
+Verified: inside it, `rm /home/shane/.bashrc` → "Read-only file system", and
+`gemma_probe` runs fine (model + tools work). Run FS-risky tasks as:
+`scripts/sbx .venv/bin/python scripts/gemma_probe.py "<task>"`.
+
 ## Findings
 
 ### F1 — `run_command` (shell) is never surfaced for system queries  *(batch 1)*
