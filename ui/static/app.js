@@ -1168,9 +1168,12 @@ async function send() {
       }
 
       state.pendingMsgEl.textContent = stripCommandTags(raw);
-      _renderInlineHtml(state.pendingMsgEl, stripCommandTags(raw));   // inline sandboxed HTML (flagged)
-      _renderLinks(state.pendingMsgEl, stripCommandTags(raw));        // native tappable links
-      _renderChoices(state.pendingMsgEl, stripCommandTags(raw));      // multiple-choice quick replies
+      // Pass RAW (not stripped) — these renderers extract their own [[...]] markers and
+      // reset the bubble text. stripCommandTags eats [[CHOICES]]/[[LINKS]] before they
+      // can see them, which is why buttons never rendered on streamed (claude-code) replies.
+      _renderInlineHtml(state.pendingMsgEl, raw);   // inline sandboxed HTML (flagged)
+      _renderLinks(state.pendingMsgEl, raw);        // native tappable links
+      _renderChoices(state.pendingMsgEl, raw);      // multiple-choice quick replies
       addMeta(state.pendingMsgEl, `${modelLabel(state.pendingModel)} · ${fmtTime(new Date())}${state.pendingDurMeta || ''}`);
       processCommandTags(raw, state.pendingMsgEl);
       // dataset.msgId is what swipe-to-delete reads (the only delete affordance now).
