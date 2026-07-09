@@ -48,6 +48,9 @@ def build_registry() -> Registry:
     if os.path.exists("config/code_edit.yaml"):
         from .tools import code_edit                         # read/write/edit source (allowlist + backups)
         lanes.append(("code-edit", "config/code_edit.yaml", code_edit.tools))
+    if os.path.exists("config/run_code.yaml"):
+        from .tools import run_code                          # EXPERIMENTAL: write+run code, bwrap-sandboxed
+        lanes.append(("run-code", "config/run_code.yaml", run_code.tools))
     if os.path.exists("config/openapi.yaml"):
         from .tools import arr_acquire
         if arr_acquire.has_any():                          # *arr acquisition (write side)

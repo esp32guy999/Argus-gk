@@ -120,6 +120,12 @@ LANE_MODEL_GATES: dict[str, set[str]] = {
     # shane), and every Argus toolset also carries web_fetch — unrestricted shell +
     # web content + small models is the prompt-injection trifecta. Only models
     # trusted for code edits (+ the 80B daily driver) get a shell.
+    "run_code": {"gemma4-26b", "qwen3-next-80b", "qwen3-coder-30b", "qwen3-coder-next"},
+    # run_code (EXPERIMENTAL 2026-07-08): write+execute code, but ONLY inside the
+    # bubblewrap sandbox (read-only host, NO network, hard timeout) — so it's safe to
+    # clear for capable local models incl. gemma (the sandbox is the guardrail, not the
+    # gate). Loki stays out via LANE_MODEL_DENY. No export yet (proven code can't leave
+    # the ephemeral scratch without a future human-gated promotion step).
 }
 
 

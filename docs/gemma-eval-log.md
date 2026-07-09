@@ -200,3 +200,15 @@ If we WANT code-gen+exec as a real capability, the safe path is a dedicated tool
 runs generated code INSIDE the bwrap sandbox (interpreters allowed there, ro host +
 ephemeral scratch) — giving execution WITHOUT weakening the general shell allowlist.
 Not built. This is the "genuinely-risky flow" the sandbox was made for.
+
+## Round 9 (2026-07-08) — run_code built + eval'd (Idea5 phase 1)
+Built the `run_code` lane (argus/tools/run_code.py): write+execute python/bash inside a
+bubblewrap sandbox — read-only host, NO network (--unshare-net), ephemeral tmpfs scratch,
+hard timeout; code fed on stdin. Opt-in (config/run_code.yaml), gated in LANE_MODEL_GATES
+(gemma + coders + 80B; Loki denied). Tests (test_run_code): compute works, host read-only
+(canary absent), network unreachable, runaway timed out, bash works — all green.
+Eval: gemma WROTE + RAN correct code — first-10-primes (was blocked pre-run_code) and a
+std-dev calc — read the real stdout, reported honestly. It chose run_code over run_command.
+Capability works, fully contained. **Export (promote proven code out of the sandbox) is
+phase 2 — deliberately NOT built; it stays a human-gated step (model proposes, Shane
+disposes; artifact-only, e.g. land on a branch to merge).**
