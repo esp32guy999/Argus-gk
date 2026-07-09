@@ -509,6 +509,49 @@ async def set_lane_grants(request: Request):
     return JSONResponse({"ok": True, "grants": written})
 
 
+@app.post("/argus/make")
+async def make_app_endpoint(request: Request):
+    """/make slash command — export a code block to an installed desktop app on anvil
+    (icon + executable + trusted .desktop launcher). Human-initiated promotion of code.
+    Defaults to the fast programmatic icon; ai_icon:true uses Lumen (evicts the LLM)."""
+    import subprocess
+    import sys
+    import tempfile
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    code = body.get("code") or ""
+    desc = (body.get("desc") or "").strip()
+    lang = "bash" if body.get("language") == "bash" else "python"
+    if not name or not code.strip():
+        return JSONResponse({"error": "need a name and a code block"}, status_code=400)
+    fd, cf = tempfile.mkstemp(suffix=".txt")
+    os.write(fd, code.encode()); os.close(fd)
+    try:
+        args = [sys.executable, os.path.join(os.path.dirname(__file__), os.pardir,
+                                             "scripts", "make_app.py"),
+                "--name", name, "--desc", desc or name, "--lang", lang, "--code-file", cf]
+        if not body.get("ai_icon"):
+            args.append("--no-ai-icon")
+        r = await asyncio.to_thread(subprocess.run, args, capture_output=True, text=True, timeout=240)
+        if r.returncode != 0:
+            return JSONResponse({"error": (r.stderr or "make failed")[-500:]}, status_code=500)
+        out = json.loads(r.stdout); out["ok"] = True
+        return JSONResponse(out)
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+    finally:
+        try: os.unlink(cf)
+        except OSError: pass
+
+
+@app.get("/argus/make/icon")
+async def make_app_icon(slug: str):
+    p = os.path.expanduser(f"~/.local/share/argus-apps/{os.path.basename(slug)}.png")
+    if os.path.isfile(p):
+        return FileResponse(p, media_type="image/png", headers={"Cache-Control": "no-store"})
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
 @app.get("/argus/history")
 async def get_history(conversation_id: str | None = None, limit: int = 100,
                      before_id: int | None = None):

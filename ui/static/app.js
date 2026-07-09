@@ -1061,6 +1061,12 @@ async function send() {
     return sendDocQuery(text);
   }
 
+  // /make → export a code block to an installed desktop app on anvil (human-gated
+  // promotion of code). Syntax: /make <Name> [:: description]  + a ```code``` block.
+  if (text.startsWith('/make')) {
+    return handleMake(text);
+  }
+
   // Build attachments array with base64 data for staged files
   const attachments = stagedFiles
     .filter(s => s.dataUrl)
@@ -1204,6 +1210,44 @@ function addMeta(el, text) {
   m.className = 'msg-meta';
   m.textContent = text;
   el.appendChild(m);
+}
+
+// /make <Name> [:: description] + a fenced ```code``` block → build a desktop app.
+// Grabs the code block from THIS message, else the most recent code block in the chat.
+async function handleMake(text) {
+  const fence = /```(\w+)?\s*\n([\s\S]*?)```/;
+  appendMessage('user', text);
+  let m = text.match(fence);
+  if (!m) {  // fall back to the last code block rendered in the conversation
+    const pres = [...document.querySelectorAll('#chat-messages pre, #chat-messages code')];
+    const last = pres.reverse().find(p => (p.textContent || '').trim().length > 20);
+    if (last) m = ['', '', last.textContent];
+  }
+  const header = text.replace(fence, '').replace(/^\/make\s*/, '').trim();
+  const [namePart, ...descParts] = header.split('::');
+  const name = (namePart || '').trim();
+  const desc = descParts.join('::').trim();
+  const code = m ? m[2] : '';
+  const language = (m && m[1] === 'bash') ? 'bash' : 'python';
+  if (!name || !code.trim()) {
+    appendMessage('assistant', '⚠️ /make needs a name and a code block.\nTry: `/make My App :: what it does` then a ```python code block.');
+    return;
+  }
+  const el = appendMessage('assistant', `🔨 Building “${name}”…`);
+  try {
+    const r = await fetch('/argus/make', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, desc, code, language }),
+    }).then(r => r.json());
+    if (r.error) { el.textContent = '⚠️ /make failed: ' + r.error; return; }
+    el.innerHTML = `✅ Installed <b>${escHtml(r.name)}</b> on anvil’s Desktop — double-click to run.`;
+    const img = document.createElement('img');
+    img.src = '/argus/make/icon?slug=' + encodeURIComponent(r.slug) + '&t=' + Date.now();
+    img.style.cssText = 'display:block;margin-top:8px;width:88px;height:88px;border-radius:18px;box-shadow:0 2px 10px rgba(0,0,0,.4)';
+    el.appendChild(img);
+  } catch (e) {
+    el.textContent = '⚠️ /make error: ' + e.message;
+  }
 }
 
 async function sendDocQuery(text) {
