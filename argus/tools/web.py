@@ -176,6 +176,7 @@ def tools() -> list[Tool]:
                          "top results with title, url, snippet."),
             tags=["web", "search", "internet", "research", "lookup", "online"],
             func=web_search,
+            provider="web",
             example={"query": "Bambu P1S PETG print temperature recommended"},
         ),
         Tool(
@@ -184,6 +185,7 @@ def tools() -> list[Tool]:
                          "browser). Use to read a URL in full, e.g. a web_search result."),
             tags=["web", "fetch", "browse", "url", "internet", "read", "page"],
             func=web_fetch,
+            provider="web",
             example={"url": "https://wiki.bambulab.com/en/p1/manual"},
         ),
     ]

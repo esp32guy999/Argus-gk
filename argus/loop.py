@@ -204,8 +204,43 @@ def save_lane_grants(per_lane: dict) -> dict:
     return clean
 
 
+# ── research-lane isolation (2026-07-09) ────────────────────────────────
+# The bubble wrap is around the CONSEQUENCES, not the content: a prompt-injected web
+# page can only ever produce a wrong summary if it has no actionable tool to reach for.
+# So web-derived tools (provider "web") and tools that ACT on the homelab are NEVER
+# offered in the same turn. Read-only is the safe default: on a tie, web wins and the
+# actionable lanes drop. Tools in neither set (native clock, weather, docs) are always
+# kept — isolation only ever removes reach, never read-only capability.
+WEB_PROVIDER = "web"
+ACTIONABLE_PROVIDERS: frozenset[str] = frozenset({
+    "shell", "code_edit", "run_code", "fs", "media_fs",
+    "arr_acquire", "lidarr", "n8n", "navidrome", "audiobook", "openapi",
+})
+
+
+def _apply_research_isolation(kept, model_name: str):
+    """If any web tool survived gating, drop every actionable-lane tool from the same
+    selection. No-op unless web tools are actually present. Web wins ties (read-only is
+    the safe default). Disable with ARGUS_RESEARCH_ISOLATION=off."""
+    if os.environ.get("ARGUS_RESEARCH_ISOLATION", "on").lower() == "off":
+        return kept
+    if not any(getattr(t, "provider", None) == WEB_PROVIDER for t in kept):
+        return kept  # no web content in play → normal operation, untouched
+    dropped = [t for t in kept if getattr(t, "provider", None) in ACTIONABLE_PROVIDERS]
+    if dropped:
+        names = ", ".join(sorted(t.name for t in dropped))
+        print(f"[research-isolation] web lane active for {model_name!r}; "
+              f"withheld actionable tools: {names}")
+        try:
+            metrics.RESEARCH_ISOLATION_DROPS.labels(model_name or "").inc(len(dropped))
+        except Exception:
+            pass  # metric optional; never let observability break the gate
+    return [t for t in kept if getattr(t, "provider", None) not in ACTIONABLE_PROVIDERS]
+
+
 def _gate_tools(selected, model_name: str):
-    """Drop tools whose lane the current model isn't cleared for.
+    """Drop tools whose lane the current model isn't cleared for, then apply
+    research-lane isolation (web vs actionable are mutually exclusive per turn).
 
     Clearance is effective_gates() (seed overlaid with the live grants file).
     LANE_MODEL_DENY takes precedence: a denied model is refused ALL gated lanes even
@@ -213,7 +248,7 @@ def _gate_tools(selected, model_name: str):
     allow-set is closed to everyone (distinct from a lane that's simply ungated)."""
     gates = effective_gates()
     if not gates:
-        return selected
+        return _apply_research_isolation(list(selected), model_name)
     denied = any(d in (model_name or "") for d in LANE_MODEL_DENY)
     kept = []
     for t in selected:
@@ -223,7 +258,7 @@ def _gate_tools(selected, model_name: str):
             if denied or not any(m in (model_name or "") for m in allow):
                 continue
         kept.append(t)
-    return kept
+    return _apply_research_isolation(kept, model_name)
 
 
 # ── anti-stall (2026-07-05) ─────────────────────────────────────────────

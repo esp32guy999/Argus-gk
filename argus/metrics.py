@@ -20,6 +20,9 @@ TOOL_RETRY = Counter("argus_tool_retry_total", "Teaching-retries raised", ["tool
 
 # --- agent / control lane ---
 AGENT_TURNS = Counter("argus_agent_turns_total", "Agent task outcomes", ["outcome"])
+RESEARCH_ISOLATION_DROPS = Counter(
+    "argus_research_isolation_drops_total",
+    "Actionable tools withheld because the web/research lane was active", ["model"])
 LOOP_DETECTED = Counter("argus_agent_loop_detected_total", "Repeated-call interventions")
 NO_PROGRESS = Counter("argus_agent_no_progress_total", "No-progress give-ups")
 ANNOUNCE_NUDGES = Counter(
