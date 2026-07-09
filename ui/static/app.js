@@ -51,7 +51,11 @@ function safeUrl(u) {
 }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function stripCommandTags(text) {
-  return String(text || '').replace(/\[\[[^\]]+\]\]/g, '').trim();
+  // Strip media/command tags (e.g. [[IMAGE:]]/[[VIDEO:]], rendered by processCommandTags)
+  // but LEAVE the interactive button markers — [[CHOICES:...]] and [[LINKS:...]] are
+  // consumed + removed by _renderChoices/_renderLinks. Stripping them here (as this did
+  // before) killed the buttons in every render path.
+  return String(text || '').replace(/\[\[(?!CHOICES:|LINKS:)[^\]]+\]\]/g, '').trim();
 }
 function fmtTime(ts) {
   if (!ts) return '';
