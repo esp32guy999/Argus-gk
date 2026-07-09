@@ -126,6 +126,11 @@ LANE_MODEL_GATES: dict[str, set[str]] = {
     # clear for capable local models incl. gemma (the sandbox is the guardrail, not the
     # gate). Loki stays out via LANE_MODEL_DENY. No export yet (proven code can't leave
     # the ephemeral scratch without a future human-gated promotion step).
+    "fs": {"qwen3-next-80b", "qwen3-coder-30b", "qwen3-coder-next"},
+    # fs (2026-07-08): the official @modelcontextprotocol/server-filesystem MCP server at
+    # SYSTEM-WIDE root (/) — read/write/edit/delete anywhere shane can. Owner-chosen blast
+    # radius; still trusted coders + the 80B only by default (NOT gemma; it fabricates),
+    # Loki denied via LANE_MODEL_DENY. Widen per-model in the permissions widget.
 }
 
 
@@ -146,7 +151,7 @@ LANE_MODEL_DENY: set[str] = {"ornith-35b-uncensored"}
 # seed for these lanes so clearances change live with NO restart (hot-reloaded like
 # soul.md). LANE_MODEL_DENY is enforced regardless of the file — a denied model
 # (Loki) can never hold a gated lane, even via a hand-edited grants file.
-TOGGLEABLE_LANES: tuple[str, ...] = ("shell", "code_edit")
+TOGGLEABLE_LANES: tuple[str, ...] = ("shell", "code_edit", "fs")
 _LANE_GRANTS_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "config", "lane_grants.json")
 _grants_cache: tuple[float, dict] = (0.0, {})
 

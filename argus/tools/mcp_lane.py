@@ -202,7 +202,7 @@ class MCPConnection:
             self._loop.call_soon_threadsafe(self._loop.stop)
 
 
-def _wrap(conn: MCPConnection, mcp_tool, tags: list) -> Tool:
+def _wrap(conn: MCPConnection, mcp_tool, tags: list, provider: str = "mcp") -> Tool:
     name = mcp_tool.name  # captured per-tool (no late-binding bug)
 
     def dispatch(**kwargs):
@@ -213,7 +213,7 @@ def _wrap(conn: MCPConnection, mcp_tool, tags: list) -> Tool:
         description=mcp_tool.description or name,
         tags=list(tags),
         func=dispatch,
-        provider="mcp",
+        provider=provider,   # per-server (config `provider:`) so a server can be lane-gated
         schema=mcp_tool.inputSchema,   # external schema -> registry uses Tool.from_schema
     )
 
@@ -230,6 +230,7 @@ def tools(manifest_path: str = "config/mcp_servers.yaml", *, _sink: list | None 
         conn.start()
         keep.append(conn)
         tags = server.get("tags", [])
+        provider = server.get("provider", "mcp")   # gate key; defaults to shared "mcp"
         for mt in conn.list_tools():
-            out.append(_wrap(conn, mt, tags))
+            out.append(_wrap(conn, mt, tags, provider))
     return out
