@@ -167,7 +167,10 @@ def _load_lane_grants():
     if mtime != _grants_cache[0]:
         try:
             raw = json.load(open(_LANE_GRANTS_PATH, encoding="utf-8"))
-            _grants_cache = (mtime, {ln: set(raw.get(ln, [])) for ln in TOGGLEABLE_LANES})
+            # only lanes the file actually specifies — an absent toggleable lane (e.g.
+            # one added to the code after the file was written) falls back to the SEED,
+            # not to "granted to nobody".
+            _grants_cache = (mtime, {ln: set(raw[ln]) for ln in TOGGLEABLE_LANES if ln in raw})
         except Exception as e:
             print(f"[lane_grants] read failed, using seed defaults: {e}")
             return None
@@ -181,7 +184,8 @@ def effective_gates() -> dict:
         return LANE_MODEL_GATES
     merged = dict(LANE_MODEL_GATES)
     for lane in TOGGLEABLE_LANES:
-        merged[lane] = grants.get(lane, set())
+        if lane in grants:                 # file specifies it (even empty = revoke-all)
+            merged[lane] = grants[lane]     # else keep the seed for that lane
     return merged
 
 
