@@ -1212,35 +1212,72 @@ function addMeta(el, text) {
   el.appendChild(m);
 }
 
-// /make <Name> [:: description] + a fenced ```code``` block → build a desktop app.
-// Grabs the code block from THIS message, else the most recent code block in the chat.
+const MAKE_HELP_HTML = `
+<b>/make</b> — promote a code block into an installed app on anvil's Desktop.<br>
+<br>
+<b>Usage</b><br>
+<code>/make &lt;Name&gt; [:: description] [flags]</code><br>
+…then a fenced <code>\`\`\`</code> code block. If you omit the block, it grabs the
+<b>last code block</b> in the conversation (so after a model or <code>run_code</code>
+writes something, just <code>/make Name</code>).<br>
+<br>
+<b>Language</b> — inferred from the fence: <code>\`\`\`python</code> (default) or
+<code>\`\`\`bash</code>. Or force with <code>--bash</code>.<br>
+<br>
+<b>Flags</b><br>
+• <code>--ai-icon</code> — generate the icon with Lumen (Krea 2). Nicer, but briefly
+evicts the chat model off the GPU. Default is an instant programmatic icon.<br>
+• <code>--no-terminal</code> — launch without a terminal window (for GUI apps).
+Default opens a terminal so you see the output.<br>
+• <code>-help</code> / <code>--help</code> — this message.<br>
+<br>
+<b>Where it lands</b> — executable → <code>~/.local/share/argus-apps/</code>,
+launcher → <code>~/Desktop/&lt;name&gt;.desktop</code> (clickable, marked trusted).<br>
+<br>
+<b>Example</b><br>
+<code>/make Dice Roller :: rolls a die --ai-icon</code><br>
+<code>\`\`\`python</code><br>
+<code>import random; print("You rolled", random.randint(1,6))</code><br>
+<code>input("Enter to close…")</code><br>
+<code>\`\`\`</code>`;
+
+// /make <Name> [:: description] [flags] + a fenced ```code``` block → build a desktop app.
 async function handleMake(text) {
-  const fence = /```(\w+)?\s*\n([\s\S]*?)```/;
   appendMessage('user', text);
+  const raw = text.replace(/^\/make\b\s*/, '');
+  if (/^(-h|--help|-help|help)\s*$/i.test(raw.trim())) {
+    const h = appendMessage('assistant', ''); h.innerHTML = MAKE_HELP_HTML; return;
+  }
+  const fence = /```(\w+)?\s*\n([\s\S]*?)```/;
   let m = text.match(fence);
   if (!m) {  // fall back to the last code block rendered in the conversation
     const pres = [...document.querySelectorAll('#chat-messages pre, #chat-messages code')];
     const last = pres.reverse().find(p => (p.textContent || '').trim().length > 20);
     if (last) m = ['', '', last.textContent];
   }
-  const header = text.replace(fence, '').replace(/^\/make\s*/, '').trim();
+  let header = raw.replace(fence, '').trim();
+  const aiIcon = /(^|\s)(--ai-icon|--ai)(?=\s|$)/.test(header);
+  const noTerminal = /(^|\s)--no-terminal(?=\s|$)/.test(header);
+  const forceBash = /(^|\s)--bash(?=\s|$)/.test(header);
+  header = header.replace(/(^|\s)(--ai-icon|--ai|--no-terminal|--bash)(?=\s|$)/g, ' ').trim();
   const [namePart, ...descParts] = header.split('::');
   const name = (namePart || '').trim();
   const desc = descParts.join('::').trim();
   const code = m ? m[2] : '';
-  const language = (m && m[1] === 'bash') ? 'bash' : 'python';
+  const language = (forceBash || (m && m[1] === 'bash')) ? 'bash' : 'python';
   if (!name || !code.trim()) {
-    appendMessage('assistant', '⚠️ /make needs a name and a code block.\nTry: `/make My App :: what it does` then a ```python code block.');
+    appendMessage('assistant', '⚠️ /make needs a name and a code block. Type `/make -help` for usage.');
     return;
   }
   const el = appendMessage('assistant', `🔨 Building “${name}”…`);
   try {
     const r = await fetch('/argus/make', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, desc, code, language }),
+      body: JSON.stringify({ name, desc, code, language, ai_icon: aiIcon, terminal: !noTerminal }),
     }).then(r => r.json());
     if (r.error) { el.textContent = '⚠️ /make failed: ' + r.error; return; }
-    el.innerHTML = `✅ Installed <b>${escHtml(r.name)}</b> on anvil’s Desktop — double-click to run.`;
+    const via = r.icon_source === 'lumen' ? ' (Lumen icon)' : '';
+    el.innerHTML = `✅ Installed <b>${escHtml(r.name)}</b> on anvil’s Desktop${via} — double-click to run.`;
     const img = document.createElement('img');
     img.src = '/argus/make/icon?slug=' + encodeURIComponent(r.slug) + '&t=' + Date.now();
     img.style.cssText = 'display:block;margin-top:8px;width:88px;height:88px;border-radius:18px;box-shadow:0 2px 10px rgba(0,0,0,.4)';

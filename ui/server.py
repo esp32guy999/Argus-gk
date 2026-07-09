@@ -532,6 +532,8 @@ async def make_app_endpoint(request: Request):
                 "--name", name, "--desc", desc or name, "--lang", lang, "--code-file", cf]
         if not body.get("ai_icon"):
             args.append("--no-ai-icon")
+        if body.get("terminal") is False:
+            args.append("--no-terminal")
         r = await asyncio.to_thread(subprocess.run, args, capture_output=True, text=True, timeout=240)
         if r.returncode != 0:
             return JSONResponse({"error": (r.stderr or "make failed")[-500:]}, status_code=500)
