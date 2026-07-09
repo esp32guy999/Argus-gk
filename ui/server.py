@@ -183,6 +183,33 @@ app = FastAPI()
 app.mount("/metrics", make_asgi_app())
 
 
+async def _model_load_watcher(interval: float = 5.0):
+    """Poll llama-swap's /running and phone-push whenever the resident model CHANGES —
+    i.e. a new model was loaded into Forge (chat swap, warm, whatever). Skips the boot
+    baseline (no buzz for what's already loaded when the server starts); an idle-evict
+    resets state so reloading even the same model counts as a fresh load."""
+    last, primed = None, False
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=4) as c:
+                data = (await c.get(f"{_LOCAL_BASE}/running")).json()
+            ready = [r.get("model") for r in data.get("running", []) if r.get("state") == "ready"]
+            cur = ready[0] if ready else None
+            if not primed:
+                last, primed = cur, True                 # boot baseline — don't buzz
+            elif cur and cur != last:
+                display = MODEL_DISPLAY.get(cur, cur)
+                await asyncio.to_thread(_notify, "🧠 Model loaded in Forge",
+                                        f"{display} is now resident on the GPU.")
+                publish("model_loaded", {"model": cur, "display": display})
+                last = cur
+            elif not cur:
+                last = None                              # evicted → next load (even same) buzzes
+        except Exception:
+            pass
+        await asyncio.sleep(interval)
+
+
 @app.on_event("startup")
 async def _bind_task_loop():
     # Capture the server's event loop so background tasks can be scheduled onto it
@@ -197,6 +224,8 @@ async def _bind_task_loop():
     # The Work Ledger reconciler: advance/notify in-flight jobs without a human poke.
     from argus import ledger
     asyncio.create_task(ledger.reconcile_loop(store, publish))
+    # Buzz the phone whenever llama-swap loads a NEW model into Forge (any swap).
+    asyncio.create_task(_model_load_watcher())
 
 
 @app.on_event("shutdown")
