@@ -496,6 +496,28 @@ body {
   letter-spacing: 0.08em;
 }
 
+/* Roundtable "To:" addressee bar — sits just above the input in the Roundtable room. */
+#rt-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px 0;
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+#rt-bar.hidden { display: none; }
+.rt-bar-label { color: var(--text-dim, #9aa); font-size: 0.85em; margin-right: 2px; }
+.rt-to {
+  padding: 5px 11px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text, #ddd);
+  font-size: 0.85em;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.rt-to.active { background: #2b3a4a; border-color: #4a6a8a; color: #fff; }
 #chat-input-area {
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
   background: var(--surface);

@@ -350,6 +350,140 @@ async def chat(request: Request):
     return JSONResponse({"id": bubble_id})
 
 
+# ── Roundtable ──────────────────────────────────────────────────────────────
+# A three-way room: Shane + Gemma (local, via llama-swap) + Claude (via the
+# stateless :8100 shim). Unlike /argus/chat this is a PURE chat-completion path
+# — no harness loop, no tools. A roundtable is a discussion, not a tool-execution
+# turn, so there's no hollow-success surface and replies stay conversational.
+# Each addressed model is fed the SAME speaker-labeled transcript so it knows who
+# said what and that it's a group chat. For "both", Gemma answers first and is
+# persisted, then Claude answers seeing her fresh reply. Streams over the same
+# bubble_update/bubble_done SSE the UI already consumes.
+ROUNDTABLE_MODELS = {
+    "gemma":  {"id": "gemma4-26b", "base": MODEL_URL,
+               "base_alt": None, "speaker": "Gemma"},
+    "claude": {"id": "claude", "base": "http://127.0.0.1:8100/v1",
+               "base_alt": None, "speaker": "Claude"},
+}
+_RT_SPEAKER_BY_MODEL = {"gemma4-26b": "Gemma", "claude": "Claude"}
+
+
+def _roundtable_system(speaker: str, other: str) -> str:
+    return (
+        f"You are {speaker}, one voice at a roundtable with Shane (a human) and "
+        f"{other} (another AI). It's a group chat — everyone sees every message, and "
+        f"the transcript below is labeled by speaker. Respond ONLY as {speaker}, in "
+        f"your own voice: do NOT write lines for Shane or {other}. Be concise and "
+        f"conversational. You may agree with, build on, or push back on what {other} "
+        f"said, and you can address the room or reply to someone by name. Do not prefix "
+        f"your reply with your own name — the interface labels it for you."
+    )
+
+
+def _roundtable_transcript(conversation_id: str) -> str:
+    """The shared, speaker-labeled transcript every participant is shown."""
+    rows = store.get_messages(conversation_id, limit=40)   # oldest-first
+    lines = []
+    for r in rows:
+        if r["role"] == "user":
+            who = "Shane"
+        else:
+            who = _RT_SPEAKER_BY_MODEL.get(r["model"], r["model"] or "Assistant")
+        lines.append(f"{who}: {r['content']}")
+    return "\n".join(lines)
+
+
+async def _stream_completion(base_url: str, model_id: str, messages: list):
+    """Stream an OpenAI chat-completion, yielding the ACCUMULATED text so far
+    (the contract the UI's bubble_update expects)."""
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {"model": model_id, "messages": messages, "stream": True}
+    acc = ""
+    timeout = httpx.Timeout(300.0, connect=15.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("POST", url, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    continue
+                choices = chunk.get("choices") or [{}]
+                delta = (choices[0].get("delta") or {}).get("content")
+                if delta:
+                    acc += delta
+                    yield acc
+
+
+@app.post("/argus/roundtable")
+async def roundtable(request: Request):
+    body = await request.json()
+    message = (body.get("message") or "").strip()
+    to = (body.get("to") or "both").lower()
+    conversation_id = _cid(body.get("conversation_id"))
+    if not message:
+        raise HTTPException(400, "empty roundtable message")
+
+    order = ["gemma", "claude"] if to == "both" else [to]
+    targets = [t for t in order if t in ROUNDTABLE_MODELS]
+    if not targets:
+        raise HTTPException(400, "roundtable 'to' must be gemma, claude, or both")
+
+    # Persist Shane's turn first so it's in the transcript every model is shown.
+    user_row = await asyncio.to_thread(
+        store.add_message, conversation_id, "user", message, None)
+
+    # One bubble per speaker, in speaking order, so the UI can lay out placeholders.
+    bubbles = [{"id": uuid.uuid4().hex, "target": t,
+                "model": ROUNDTABLE_MODELS[t]["id"],
+                "speaker": ROUNDTABLE_MODELS[t]["speaker"]} for t in targets]
+
+    async def run_round():
+        _turn_begin(conversation_id, bubbles[0]["id"])
+        try:
+            for b in bubbles:
+                spec = ROUNDTABLE_MODELS[b["target"]]
+                other = "Claude" if spec["speaker"] == "Gemma" else "Gemma"
+                # Rebuild the transcript FRESH per speaker so Claude sees Gemma's
+                # just-persisted reply when the room was addressed with "both".
+                transcript = await asyncio.to_thread(
+                    _roundtable_transcript, conversation_id)
+                messages = [
+                    {"role": "system",
+                     "content": _roundtable_system(spec["speaker"], other)},
+                    {"role": "user",
+                     "content": f"{transcript}\n\n{spec['speaker']}:"},
+                ]
+                _turn_touch(conversation_id, "writing", spec["speaker"])
+                final = ""
+                try:
+                    async for acc in _stream_completion(
+                            spec["base"], spec["id"], messages):
+                        final = acc
+                        publish("bubble_update", {"id": b["id"], "content": acc})
+                except Exception as e:  # one speaker failing must not sink the room
+                    publish("bubble_done",
+                            {"id": b["id"], "error": f"{spec['speaker']}: {e}"})
+                    continue
+                row = await asyncio.to_thread(
+                    store.add_message, conversation_id, "assistant",
+                    final, spec["id"])
+                publish("bubble_done", {"id": b["id"], "db_id": row["id"],
+                                        "user_id": user_row["id"],
+                                        "conversation_id": conversation_id,
+                                        "speaker": spec["speaker"]})
+        finally:
+            _turn_end(conversation_id)
+
+    asyncio.create_task(run_round())
+    return JSONResponse({"user_id": user_row["id"], "bubbles": bubbles})
+
+
 @app.get("/argus/turn_status")
 async def turn_status(conversation_id: str | None = None):
     """Pollable 'is a turn running + what's it doing' — the robust (non-SSE) heartbeat the

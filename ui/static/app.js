@@ -13,6 +13,8 @@ const state = {
   currentModel:   null,
   conversationId: null,
   conversations: [],
+  rtTo:           'both',    // Roundtable addressee: gemma | claude | both
+  rtBubbles:      {},        // Roundtable: bubbleId -> {el, speaker, target} (parallel to pending path)
   currentView:    'chat',
   abortCtl:       null,     // AbortController for active chat
   pendingBubbleId:null,     // SSE id we're listening for
@@ -350,8 +352,16 @@ const MODEL_ACCENT = {
   'bonsai-8b':      'blue',
   'lfm2.5-8b':      'red',
   'ornith-35b-uncensored': 'emerald',  // Loki — uncensored daily driver (docs/model-ornith.md)
+  'claude':           'blue',    // Claude at the Roundtable (via the :8100 shim; distinct from claude-code's orange)
   // z-engineer intentionally unmapped (media model, tracked in docs/ISSUES.md) → falls back
 };
+// ── Roundtable ─────────────────────────────────────────────────────────────
+// A three-way room (Shane · Gemma · Claude) living in a fixed conversation id.
+// Its replies stream over the same SSE bubbles as chat, but are routed by id
+// through state.rtBubbles instead of the single-pending path.
+const RT_CID = 'roundtable';
+const RT_SPEAKER = { 'gemma4-26b': 'Gemma', 'claude': 'Claude' };  // model id -> display name
+function isRoundtable() { return state.conversationId === RT_CID; }
 function applyModelAccent(id) {
   const a = ACCENTS[MODEL_ACCENT[id]] || ACCENTS.orange;
   const s = document.documentElement.style;
@@ -527,7 +537,7 @@ function _buildMessageNodes(msgs) {
     }
     const role = msg.role === 'user' ? 'user' : 'assistant';
     const text = role === 'assistant' ? stripCommandTags(msg.content) : (msg.content || '');
-    const modelDisplay = state.modelCfg?.[msg.model]?.display || msg.model;
+    const modelDisplay = RT_SPEAKER[msg.model] || state.modelCfg?.[msg.model]?.display || msg.model;
     const meta = role === 'assistant' && msg.model
       ? `${modelDisplay} · ${fmtTime(msg.timestamp)}`
       : fmtTime(msg.timestamp);
@@ -1071,6 +1081,11 @@ async function send() {
     return handleMake(text);
   }
 
+  // Roundtable room → three-way orchestration (Shane · Gemma · Claude).
+  if (isRoundtable()) {
+    return sendRoundtable(text);
+  }
+
   // Build attachments array with base64 data for staged files
   const attachments = stagedFiles
     .filter(s => s.dataUrl)
@@ -1210,6 +1225,52 @@ async function send() {
     state._healedByPoll = false;
     sendBtn.classList.remove('is-stop');
   }
+}
+
+// ── Roundtable send / room ──────────────────────────────────────────────────
+async function sendRoundtable(text) {
+  appendMessage('user', text);          // Shane's turn (right-aligned like normal)
+  scrollBottom();
+  let data;
+  try {
+    const res = await fetch(`${BRAIN}/roundtable`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ message: text, to: state.rtTo,
+                                conversation_id: RT_CID }),
+    });
+    if (!res.ok) { appendMessage('assistant', `[Roundtable error ${res.status}]`); return; }
+    data = await res.json();
+  } catch (e) {
+    appendMessage('assistant', `[Roundtable error: ${e.message}]`);
+    return;
+  }
+  // One placeholder bubble per addressed speaker; SSE fills them by id (sequentially).
+  (data.bubbles || []).forEach(b => {
+    const el = appendMessage('assistant typing', '');
+    el.style.setProperty('--msg-accent', modelColor(b.model));
+    state.rtBubbles[b.id] = { el, speaker: b.speaker, model: b.model };
+  });
+  scrollBottom();
+}
+
+async function openRoundtable() {
+  state.conversationId = RT_CID;
+  renderConversations();
+  updateRtBar();
+  await loadHistory();
+  closeOverlay('conv-drawer');
+  switchView('chat');
+  inputEl.focus();
+}
+
+// Show the To: bar only in the Roundtable room; reflect the current addressee.
+function updateRtBar() {
+  const bar = $('rt-bar');
+  if (!bar) return;
+  bar.classList.toggle('hidden', !isRoundtable());
+  bar.querySelectorAll('.rt-to').forEach(b =>
+    b.classList.toggle('active', b.dataset.to === state.rtTo));
 }
 
 function addMeta(el, text) {
@@ -1422,6 +1483,16 @@ function connectEvents() {
     globalEvents.addEventListener('bubble_update', e => {
       try {
         const data = JSON.parse(e.data);
+        // Roundtable bubbles are routed by id (there can be two live at once).
+        const rt = state.rtBubbles[data.id];
+        if (rt) {
+          if (rt.el.classList.contains('typing')) {
+            rt.el.classList.remove('typing'); rt.el.classList.add('streaming');
+          }
+          rt.el.textContent = data.content || '';
+          scrollBottom();
+          return;
+        }
         if (data.id !== state.pendingBubbleId || !state.pendingMsgEl) return;
         state.lastDeltaTs = Date.now();   // mark the stream alive — lets the reconciler tell a live turn from a dead socket
         const content = data.content || '';
@@ -1481,6 +1552,20 @@ function connectEvents() {
     globalEvents.addEventListener('bubble_done', e => {
       let data;
       try { data = JSON.parse(e.data); } catch { return; }
+      // Roundtable bubble finalises independently of the single-pending path.
+      const rt = state.rtBubbles[data.id];
+      if (rt) {
+        rt.el.classList.remove('typing', 'streaming');
+        const raw = data.error ? `[${rt.speaker} couldn't reply: ${data.error}]`
+                               : (rt.el.textContent || '');
+        rt.el.textContent = stripCommandTags(raw);
+        _renderInlineHtml(rt.el, raw); _renderLinks(rt.el, raw); _renderChoices(rt.el, raw);
+        addMeta(rt.el, `${rt.speaker} · ${fmtTime(new Date())}`);
+        if (data.db_id) rt.el.dataset.msgId = data.db_id;
+        delete state.rtBubbles[data.id];
+        scrollBottom();
+        return;
+      }
       if(window._dbgLog) window._dbgLog('DONE: id=' + data.id + ' pending=' + state.pendingBubbleId + ' err=' + (data.error || ''));
       if (data.id !== state.pendingBubbleId) return;
       console.log('[z-edit-debug] bubble_done received', {id: data.id, db_id: data.db_id, error: data.error, hasResolve: !!state.pendingResolve});
@@ -1555,6 +1640,7 @@ function renderConversations() {
 async function selectConversation(id) {
   state.conversationId = id;
   renderConversations();
+  updateRtBar();
   await loadHistory();
   closeOverlay('conv-drawer');
   switchView('chat');
@@ -1572,6 +1658,7 @@ async function newConversation() {
     state.conversationId = null;  // fall back to default thread
   }
   await loadConversations();
+  updateRtBar();
   await loadHistory();
   closeOverlay('conv-drawer');
   switchView('chat');
@@ -2355,6 +2442,15 @@ function _wireUI_rest() {
   });
   $('conv-drawer-backdrop').addEventListener('click', () => closeOverlay('conv-drawer'));
   $('conv-new').addEventListener('click', () => newConversation());
+  $('conv-roundtable')?.addEventListener('click', () => openRoundtable());
+  // Roundtable "To:" addressee bar — tap to pick who the next message goes to.
+  $('rt-bar')?.addEventListener('click', e => {
+    const btn = e.target.closest('.rt-to');
+    if (!btn) return;
+    state.rtTo = btn.dataset.to;
+    updateRtBar();
+    inputEl.focus();
+  });
 
   // (chat input + send listeners moved to wireUI critical path)
 

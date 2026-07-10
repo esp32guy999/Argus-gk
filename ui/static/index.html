@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#0a0a0f">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=44">
+  <link rel="stylesheet" href="/static/styles.css?v=45">
   <title>Claude Desktop Next</title>
 </head>
 <body>
@@ -76,6 +76,12 @@
     <section class="view active" id="view-chat">
       <div id="chat-messages"></div>
       <button class="scroll-pill" id="scroll-pill">↓ New messages</button>
+      <div id="rt-bar" class="hidden">
+        <span class="rt-bar-label">To:</span>
+        <button class="rt-to" data-to="gemma">🟢 Gemma</button>
+        <button class="rt-to" data-to="claude">🔵 Claude</button>
+        <button class="rt-to active" data-to="both">👥 Both</button>
+      </div>
       <div id="chat-input-area">
         <div id="chat-attach" title="Attach files (or paste / drag)" style="cursor:pointer;position:relative;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
@@ -243,7 +249,8 @@
       <div id="conv-drawer-header">
         <h3>Conversations</h3>
       </div>
-      <button id="conv-new" class="btn-primary" style="width:100%;margin-bottom:12px;">+ New Chat</button>
+      <button id="conv-new" class="btn-primary" style="width:100%;margin-bottom:8px;">+ New Chat</button>
+      <button id="conv-roundtable" class="btn-primary" style="width:100%;margin-bottom:12px;background:#2b3a4a;">🎙 Roundtable — Shane · Gemma · Claude</button>
       <div id="conv-list"></div>
     </div>
   </div>
@@ -298,6 +305,6 @@
   <script src="/static/widgets/permissions.js?v=1"></script>
   <!-- DISABLED 2026-05-25 — kills iOS Safari (black screen). See https://github.com/esp32guy999/claude-desktop-next   <script src="/static/widgets/ccpair.js?v=1"></script> -->
   <script src="/static/nec.js?v=2"></script>
-  <script src="/static/app.js?v=56"></script>
+  <script src="/static/app.js?v=57"></script>
 </body>
 </html>
