@@ -218,14 +218,34 @@ ACTIONABLE_PROVIDERS: frozenset[str] = frozenset({
 })
 
 
-def _apply_research_isolation(kept, model_name: str):
-    """If any web tool survived gating, drop every actionable-lane tool from the same
-    selection. No-op unless web tools are actually present. Web wins ties (read-only is
-    the safe default). Disable with ARGUS_RESEARCH_ISOLATION=off."""
+# Marker (from tools/web.py provenance envelope) proving web content has entered a
+# session. Per-session isolation is stateless: if any prior turn carries this string,
+# the session is web-tainted and actionable lanes stay off — no session-id plumbing,
+# and a fresh session (empty history) is the reset.
+_WEB_TAINT_MARKER = "UNTRUSTED WEB DATA"
+
+
+def _history_web_tainted(history) -> bool:
+    if not history:
+        return False
+    try:
+        blob = str(history)
+    except Exception:
+        return False
+    return _WEB_TAINT_MARKER in blob
+
+
+def _apply_research_isolation(kept, model_name: str, history=None):
+    """Drop every actionable-lane tool when the web/research lane is in play. Trigger
+    is per-SESSION: either a web tool survived gating THIS turn, or a prior turn already
+    pulled web content into context (the provenance marker is in history). Web wins ties
+    (read-only is the safe default). Disable with ARGUS_RESEARCH_ISOLATION=off; reset by
+    starting a fresh session (empty history)."""
     if os.environ.get("ARGUS_RESEARCH_ISOLATION", "on").lower() == "off":
         return kept
-    if not any(getattr(t, "provider", None) == WEB_PROVIDER for t in kept):
-        return kept  # no web content in play → normal operation, untouched
+    web_now = any(getattr(t, "provider", None) == WEB_PROVIDER for t in kept)
+    if not web_now and not _history_web_tainted(history):
+        return kept  # no web content this turn or earlier this session → untouched
     dropped = [t for t in kept if getattr(t, "provider", None) in ACTIONABLE_PROVIDERS]
     if dropped:
         names = ", ".join(sorted(t.name for t in dropped))
@@ -238,17 +258,19 @@ def _apply_research_isolation(kept, model_name: str):
     return [t for t in kept if getattr(t, "provider", None) not in ACTIONABLE_PROVIDERS]
 
 
-def _gate_tools(selected, model_name: str):
+def _gate_tools(selected, model_name: str, history=None):
     """Drop tools whose lane the current model isn't cleared for, then apply
-    research-lane isolation (web vs actionable are mutually exclusive per turn).
+    research-lane isolation (web vs actionable are mutually exclusive, per SESSION).
 
     Clearance is effective_gates() (seed overlaid with the live grants file).
     LANE_MODEL_DENY takes precedence: a denied model is refused ALL gated lanes even
     if it substring-matches an allow entry. A lane PRESENT in the gates with an empty
-    allow-set is closed to everyone (distinct from a lane that's simply ungated)."""
+    allow-set is closed to everyone (distinct from a lane that's simply ungated).
+    `history` (prior turns) lets isolation persist across the session once web content
+    has been pulled in — not just the turn it happened."""
     gates = effective_gates()
     if not gates:
-        return _apply_research_isolation(list(selected), model_name)
+        return _apply_research_isolation(list(selected), model_name, history)
     denied = any(d in (model_name or "") for d in LANE_MODEL_DENY)
     kept = []
     for t in selected:
@@ -258,7 +280,7 @@ def _gate_tools(selected, model_name: str):
             if denied or not any(m in (model_name or "") for m in allow):
                 continue
         kept.append(t)
-    return _apply_research_isolation(kept, model_name)
+    return _apply_research_isolation(kept, model_name, history)
 
 
 # ── anti-stall (2026-07-05) ─────────────────────────────────────────────
@@ -354,7 +376,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     Anti-stall: an announce-without-acting reply gets one corrective second pass,
     streamed as a continuation of the same bubble.
     """
-    selected = _gate_tools(registry.select(prompt), model_name)
+    selected = _gate_tools(registry.select(prompt), model_name, message_history)
     metrics.TOOLS_SELECTED.observe(len(selected))
     called: list[str] = []
     sink = _make_sink(called, on_event)
@@ -402,7 +424,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
         base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
         message_history=None, enable_thinking: bool | None = None,
         on_event=None, anti_stall: bool = True) -> str:
-    selected = _gate_tools(registry.select(prompt), model_name)
+    selected = _gate_tools(registry.select(prompt), model_name, message_history)
     metrics.TOOLS_SELECTED.observe(len(selected))
     called: list[str] = []
     sink = _make_sink(called, on_event)
@@ -447,7 +469,7 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     """Non-streaming async run — for the background task runner. Same tool selection
     + watchdog + budget as run(), returns the final text. Higher default budget since
     background jobs are expected to be multi-step."""
-    selected = _gate_tools(registry.select(prompt), model_name)
+    selected = _gate_tools(registry.select(prompt), model_name, message_history)
     metrics.TOOLS_SELECTED.observe(len(selected))
     called: list[str] = []
     sink = _make_sink(called, on_event)
