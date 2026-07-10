@@ -18,6 +18,8 @@ from pydantic_ai.messages import (
     ModelMessage, ModelRequest, ModelResponse, UserPromptPart, TextPart,
 )
 
+from . import metrics
+
 def est_tokens(text: str) -> int:
     """Cheap, model-agnostic token estimate: ~3.5 chars/token, rounded up.
     Used to budget history against a model's context window without a real
@@ -77,9 +79,59 @@ CREATE TABLE IF NOT EXISTS memory_candidates (
     source          TEXT                -- where it came from, e.g. 'web_fetch:<url>' | 'user'
 );
 CREATE INDEX IF NOT EXISTS idx_memcand_ts ON memory_candidates(ts);
+
+-- Long-term memory facts with an explicit LIFECYCLE state machine (Task 3, per
+-- specs/memory_system.md §6a). A fact is never destructively deleted: superseded and
+-- invalidated rows stay for decision-provenance/audit. Confirmation requires a TRUSTED
+-- signal (§6b) — repetition can't confirm. Thresholds for promotion are NOT encoded
+-- here; they're data-derived (§11). This is the evidence-independent mechanism only.
+CREATE TABLE IF NOT EXISTS memory_facts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    key             TEXT NOT NULL,       -- what the fact is about, e.g. 'printer.ip'
+    value           TEXT NOT NULL,       -- the claim
+    state           TEXT NOT NULL,       -- proposed|observed|confirmed|superseded|invalidated
+    source          TEXT,                -- origin: 'user'|'tool'|'web_fetch:<url>'|model id
+    trust           REAL NOT NULL DEFAULT 0,   -- 0..1, evolves with state; tuned from data later
+    mention_count   INTEGER NOT NULL DEFAULT 0, -- observed N times (does NOT auto-confirm)
+    superseded_by   INTEGER,             -- fact id that replaced this one, if any
+    conversation_id TEXT,
+    created_ts      REAL NOT NULL,
+    updated_ts      REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_facts_state ON memory_facts(state, updated_ts);
+CREATE INDEX IF NOT EXISTS idx_facts_key ON memory_facts(key);
+
+-- Append-only audit of every state transition (§7). Nothing about a fact changes
+-- without a row here, so consolidation is a REVERSIBLE transformation: replay the log.
+CREATE TABLE IF NOT EXISTS consolidation_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL NOT NULL,
+    fact_id     INTEGER NOT NULL,
+    from_state  TEXT,
+    to_state    TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    signal      TEXT                     -- what justified it: 'user'|'tool_groundtruth'|'multi_source'|'mention'|...
+);
+CREATE INDEX IF NOT EXISTS idx_conslog_fact ON consolidation_log(fact_id, id);
 """
 
 MEMORY_CANDIDATE_KINDS = ("dead_end", "correction", "repeat_lookup", "rule", "other")
+
+# ── Memory fact lifecycle (state machine) ───────────────────────────────
+FACT_STATES = ("proposed", "observed", "confirmed", "superseded", "invalidated")
+# History states: retained for audit, hidden from active recall.
+FACT_HISTORY_STATES = ("superseded", "invalidated")
+# Allowed transitions. invalidated is terminal (kept immutable for audit).
+_FACT_TRANSITIONS: dict[str, set[str]] = {
+    "proposed":    {"observed", "confirmed", "superseded", "invalidated"},
+    "observed":    {"confirmed", "superseded", "invalidated"},
+    "confirmed":   {"superseded", "invalidated"},
+    "superseded":  {"invalidated"},
+    "invalidated": set(),
+}
+# Only these signals may promote a fact to 'confirmed'. A mention count is NOT here —
+# that's the poisoning-by-repetition defense (§6b): repetition can never confirm.
+TRUSTED_SIGNALS = ("user", "tool_groundtruth", "multi_source")
 
 # Columns added after the table first shipped; ALTER-migrated onto live dbs in _migrate().
 _JOB_MIGRATIONS = {
@@ -156,6 +208,113 @@ class Store:
         if kind:
             q += " WHERE kind = ?"
             args = (kind,)
+        q += " ORDER BY id DESC LIMIT ?"
+        args += (limit,)
+        with self._lock:
+            rows = self._conn.execute(q, args).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Memory facts + lifecycle state machine (Task 3 mechanism) ──────────
+    def add_fact(self, key: str, value: str, *, source: str | None = None,
+                 trust: float = 0.0, conversation_id: str | None = None) -> dict:
+        """Create a fact in the 'proposed' state. Promotion happens only via
+        transition_fact() — never here, and never by mere repetition (§6b)."""
+        ts = time.time()
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO memory_facts (key, value, state, source, trust, "
+                "mention_count, conversation_id, created_ts, updated_ts) "
+                "VALUES (?, ?, 'proposed', ?, ?, 0, ?, ?, ?)",
+                (key, value, source, trust, conversation_id, ts, ts),
+            )
+            self._conn.commit()
+            fid = cur.lastrowid
+        return self.get_fact(fid)
+
+    def get_fact(self, fact_id: int) -> dict | None:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM memory_facts WHERE id = ?",
+                                    (fact_id,)).fetchone()
+        return dict(r) if r else None
+
+    def observe_fact(self, fact_id: int, *, reason: str = "observed") -> dict | None:
+        """Record that a fact was seen/used again. Increments mention_count and, on the
+        FIRST observation, moves proposed→observed. It NEVER reaches 'confirmed' — a
+        mention count is not a trusted signal (poisoning-by-repetition defense §6b)."""
+        f = self.get_fact(fact_id)
+        if f is None:
+            raise ValueError(f"no such fact {fact_id}")
+        ts = time.time()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE memory_facts SET mention_count = mention_count + 1, "
+                "updated_ts = ? WHERE id = ?", (ts, fact_id))
+            self._conn.commit()
+        if f["state"] == "proposed":
+            return self.transition_fact(fact_id, "observed", reason=reason, signal="mention")
+        return self.get_fact(fact_id)
+
+    def transition_fact(self, fact_id: int, to_state: str, *, reason: str,
+                        signal: str | None = None) -> dict:
+        """Move a fact through its lifecycle, enforcing the state machine and logging
+        the transition to consolidation_log (append-only, reversible §7).
+
+        HARD RULE (§6b): promotion to 'confirmed' requires a TRUSTED signal
+        (user / tool_groundtruth / multi_source). Repetition / 'mention' can't confirm."""
+        if to_state not in FACT_STATES:
+            raise ValueError(f"unknown state {to_state!r}")
+        f = self.get_fact(fact_id)
+        if f is None:
+            raise ValueError(f"no such fact {fact_id}")
+        frm = f["state"]
+        if to_state not in _FACT_TRANSITIONS.get(frm, set()):
+            raise ValueError(f"illegal transition {frm} -> {to_state}")
+        if to_state == "confirmed" and signal not in TRUSTED_SIGNALS:
+            raise ValueError(
+                f"confirmation requires a trusted signal {TRUSTED_SIGNALS}, got {signal!r} "
+                f"(repetition/mention cannot confirm — poisoning defense)")
+        if not reason:
+            raise ValueError("a transition must record a reason (audit §7)")
+        ts = time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO consolidation_log (ts, fact_id, from_state, to_state, "
+                "reason, signal) VALUES (?, ?, ?, ?, ?, ?)",
+                (ts, fact_id, frm, to_state, reason, signal))
+            self._conn.execute(
+                "UPDATE memory_facts SET state = ?, updated_ts = ? WHERE id = ?",
+                (to_state, ts, fact_id))
+            self._conn.commit()
+        try:
+            metrics.MEMORY_TRANSITIONS.labels(to_state).inc()
+        except Exception:
+            pass
+        return self.get_fact(fact_id)
+
+    def list_facts(self, *, state: str | None = None,
+                   include_history: bool = True) -> list[dict]:
+        """Facts, newest-updated first. include_history=False hides superseded/
+        invalidated rows (kept for audit, but off the active-recall path §6a)."""
+        q = "SELECT * FROM memory_facts"
+        clauses, args = [], []
+        if state:
+            clauses.append("state = ?"); args.append(state)
+        elif not include_history:
+            qs = ",".join("?" * len(FACT_HISTORY_STATES))
+            clauses.append(f"state NOT IN ({qs})"); args.extend(FACT_HISTORY_STATES)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " ORDER BY updated_ts DESC"
+        with self._lock:
+            rows = self._conn.execute(q, tuple(args)).fetchall()
+        return [dict(r) for r in rows]
+
+    def consolidation_log(self, *, fact_id: int | None = None, limit: int = 500) -> list[dict]:
+        """Append-only transition history. Filter by fact for its full audit trail."""
+        q = "SELECT * FROM consolidation_log"
+        args: tuple = ()
+        if fact_id is not None:
+            q += " WHERE fact_id = ?"; args = (fact_id,)
         q += " ORDER BY id DESC LIMIT ?"
         args += (limit,)
         with self._lock:

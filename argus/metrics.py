@@ -23,6 +23,17 @@ AGENT_TURNS = Counter("argus_agent_turns_total", "Agent task outcomes", ["outcom
 RESEARCH_ISOLATION_DROPS = Counter(
     "argus_research_isolation_drops_total",
     "Actionable tools withheld because the web/research lane was active", ["model"])
+
+# Memory fact lifecycle (Task 3). Observability so promotion/consolidation thresholds
+# can be TUNED FROM DATA (specs/memory_system.md §11), not guessed up front.
+MEMORY_TRANSITIONS = Counter(
+    "argus_memory_fact_transitions_total", "Fact state transitions", ["to_state"])
+MEMORY_FALSE_CONFIRMATIONS = Counter(
+    "argus_memory_false_confirmations_total",
+    "Facts later found wrong after being confirmed (tune promotion criteria)")
+MEMORY_FALSE_INVALIDATIONS = Counter(
+    "argus_memory_false_invalidations_total",
+    "Facts wrongly invalidated then restored (tune invalidation criteria)")
 LOOP_DETECTED = Counter("argus_agent_loop_detected_total", "Repeated-call interventions")
 NO_PROGRESS = Counter("argus_agent_no_progress_total", "No-progress give-ups")
 ANNOUNCE_NUDGES = Counter(
