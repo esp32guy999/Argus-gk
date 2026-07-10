@@ -38,6 +38,10 @@ def main() -> int:
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     port = srv.server_address[1]
+    # The fixture is served over loopback, which the production SSRF guard (correctly)
+    # blocks. This test exercises extraction/truncation, not SSRF (that's covered by
+    # test_provenance_envelope.py), so neutralise the guard for the local fixture.
+    web._ssrf_guard = lambda _u: None
     try:
         # 1. html -> text: keeps content, drops script/style/nav/footer, gets title
         title, text = web._html_to_text(PAGE.decode())
@@ -46,18 +50,22 @@ def main() -> int:
         assert "tracking junk" not in text and "menu junk" not in text and "copyright" not in text, text
         print("PASS: _html_to_text extracts content, drops boilerplate + script/style")
 
-        # 2. web_fetch over a real socket
+        # 2. web_fetch over a real socket — content present + wrapped in the envelope
         out = web.web_fetch(f"http://127.0.0.1:{port}/page")
         assert out["title"] == "PETG Guide" and "240C" in out["text"], out
         assert out["truncated"] is False, out
-        print("PASS: web_fetch returns title + readable text")
+        assert "UNTRUSTED WEB DATA" in out["text"], "fetch output not provenance-wrapped"
+        assert out["text"].rstrip().endswith("]"), "close marker not final line"
+        print("PASS: web_fetch returns title + readable text, provenance-wrapped")
 
-        # 3. web_fetch truncates to the configured cap
+        # 3. web_fetch truncates the CONTENT to the cap (envelope markers are added
+        #    after truncation, so the wrapped string is longer than the cap by design).
         web._FETCH_MAX = 20
         out2 = web.web_fetch(f"http://127.0.0.1:{port}/page")
-        assert len(out2["text"]) <= 20 and out2["truncated"] is True, out2
+        assert out2["truncated"] is True, out2
+        assert "END UNTRUSTED WEB DATA" in out2["text"], "close marker lost on truncation"
         web._FETCH_MAX = 6000
-        print("PASS: web_fetch truncates + flags")
+        print("PASS: web_fetch truncates content + keeps envelope intact")
 
         # 4. HTTP error -> teaching ModelRetry
         try:
