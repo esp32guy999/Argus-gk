@@ -48,7 +48,7 @@ def save_note(note: str) -> dict:
     (NOTES_DIR / fname).write_text(body)
     try:                                  # make it searchable right now (best-effort)
         from .. import memory
-        memory.add_note(fname, body)
+        memory.add_note(fname, body, fact_id=fact["id"])   # link chunk → lifecycle fact
     except Exception:
         pass
     return {"saved": True, "state": fact["state"], "fact_id": fact["id"], "file": fname}

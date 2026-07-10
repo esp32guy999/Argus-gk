@@ -48,8 +48,32 @@ def lookup_memory(query: str) -> list:
             "down?). Answer from the current context or say you don't know — do not "
             "invent IPs/ports/paths."
         )
-    hits = idx.search(query, k=5)
-    return hits or [{"note": "no matching homelab facts found for that query"}]
+    # State-aware recall (specs/memory_system.md §6a). Over-fetch, then resolve each
+    # note-backed hit's LIVE lifecycle state: drop invalidated/superseded (a known-false
+    # or replaced memory is never recalled as truth), flag proposed/observed as
+    # unconfirmed so the agent doesn't treat a guess as fact. Curated docs (no fact_id)
+    # pass through untouched. Over-fetching keeps the result count up after drops.
+    hits = idx.search(query, k=12)
+    store = None
+    out: list = []
+    for h in hits:
+        fid = h.get("fact_id")
+        if fid:
+            if store is None:
+                from ..storage import get_store
+                store = get_store()
+            fact = store.get_fact(fid)
+            if fact is not None:
+                st = fact["state"]
+                if st in ("invalidated", "superseded"):
+                    continue
+                h = {**h, "state": st}
+                if st in ("proposed", "observed"):
+                    h["unconfirmed"] = True
+        out.append(h)
+        if len(out) >= 5:
+            break
+    return out or [{"note": "no matching homelab facts found for that query"}]
 
 
 def get_gpu() -> dict:

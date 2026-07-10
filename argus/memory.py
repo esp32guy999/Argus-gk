@@ -38,9 +38,12 @@ def _resolve_sources(sources: list[str] | None) -> list[pathlib.Path]:
     return files
 
 
-def _chunk(text: str, source: str, max_chars: int = 1200) -> list[dict]:
+def _chunk(text: str, source: str, max_chars: int = 1200,
+           fact_id: int | None = None) -> list[dict]:
     """Heading-scoped chunks. Each chunk carries its source + nearest markdown
-    heading as context so a retrieved snippet is self-describing."""
+    heading as context so a retrieved snippet is self-describing. When the chunk backs
+    a lifecycle fact (a note), it also carries fact_id so recall can resolve the fact's
+    LIVE state (drop if invalidated, flag if unconfirmed) — see native.lookup_memory."""
     chunks: list[dict] = []
     heading = ""
     buf: list[str] = []
@@ -52,7 +55,7 @@ def _chunk(text: str, source: str, max_chars: int = 1200) -> list[dict]:
         if body:
             prefix = f"[{source}] {heading}".strip()
             chunks.append({"source": source, "heading": heading,
-                           "text": f"{prefix}\n{body}"})
+                           "text": f"{prefix}\n{body}", "fact_id": fact_id})
         buf, size = [], 0
 
     for line in text.splitlines():
@@ -115,7 +118,8 @@ class DocMemory:
             ((c, _cosine(qv, v)) for c, v in zip(self.chunks, self.vectors)),
             key=lambda cv: cv[1], reverse=True,
         )
-        return [{"source": c["source"], "text": c["text"], "score": round(s, 3)}
+        return [{"source": c["source"], "text": c["text"], "score": round(s, 3),
+                 "fact_id": c.get("fact_id")}
                 for c, s in scored[:k]]
 
 
@@ -138,13 +142,14 @@ def get_index() -> DocMemory | None:
     return _INDEX
 
 
-def add_note(source: str, text: str) -> bool:
+def add_note(source: str, text: str, fact_id: int | None = None) -> bool:
     """Append a note's chunks to the LIVE index so it's searchable immediately,
-    without a full rebuild. No-op (returns False) if the index isn't built."""
+    without a full rebuild. No-op (returns False) if the index isn't built. fact_id
+    links the chunk to its lifecycle fact so recall can be state-aware."""
     idx = _INDEX
     if idx is None:
         return False
-    chunks = _chunk(text, source)
+    chunks = _chunk(text, source, fact_id=fact_id)
     if not chunks:
         return False
     idx.vectors.extend(idx.embed_fn([c["text"] for c in chunks]))

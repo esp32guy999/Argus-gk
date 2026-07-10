@@ -52,10 +52,12 @@ def main() -> int:
     assert hits2[0]["source"] == "media.md", hits2
     print("PASS: distinct query -> distinct source")
 
-    # 4. result shape: source/text/score
+    # 4. result shape: source/text/score/fact_id (fact_id links a hit to its lifecycle
+    #    fact so recall can be state-aware; None for curated docs).
     h = hits[0]
-    assert set(h) == {"source", "text", "score"} and isinstance(h["score"], float), h
-    print("PASS: result contract {source, text, score}")
+    assert set(h) == {"source", "text", "score", "fact_id"} and isinstance(h["score"], float), h
+    assert h["fact_id"] is None, f"curated-doc hit should have no fact_id: {h}"
+    print("PASS: result contract {source, text, score, fact_id}")
 
     # 5. empty index -> no hits, no crash
     assert memory.DocMemory([], []).search("anything", embed_fn=stub_embed) == []
