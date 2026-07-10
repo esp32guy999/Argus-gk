@@ -154,3 +154,21 @@ notes:             No periodic checkpoint; WAL only truncates on last-connection
                    PRAGMA wal_checkpoint(TRUNCATE) on a timer or every N writes
                    in Store. Not urgent at current sizes.
 ```
+
+## web_search backend down — DDG 202, no Brave key (2026-07-10)
+
+blast radius:      Medium — the research lane (Task 1) is hardened but its SEARCH
+                   is effectively non-functional; blocks Task 3's SOTA research round.
+found:             Running the Task 3 research round via argus web_search — every
+                   query returned "no results".
+root cause:        html.duckduckgo.com now answers the scrape path with HTTP 202
+                   (anti-bot challenge, not 200) so _ddg() parses zero hits. The
+                   Brave fallback needs BRAVE_API_KEY, which is NOT set in the argus
+                   env (~/.config/argus/env) nor the shell. So both search paths are
+                   dead: DDG blocked, Brave unconfigured. web_fetch is unaffected.
+fix candidates:    (1) Set BRAVE_API_KEY in ~/.config/argus/env — Shane has a Brave
+                   key from the old modular-brain build (BRAVE_API_KEY in ~/.bashrc
+                   historically, 999/mo cap). (2) Harden _ddg() to treat 202 as a
+                   retry/failure with a teaching message instead of silent empty.
+                   (3) Consider a different keyless backend (SearXNG on the LAN).
+needs Shane:       The Brave key. Then the Task 3 research round can actually run.
