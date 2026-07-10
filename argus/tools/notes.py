@@ -54,6 +54,22 @@ def save_note(note: str) -> dict:
     return {"saved": True, "state": fact["state"], "fact_id": fact["id"], "file": fname}
 
 
+def flag_memory_candidate(summary: str, kind: str = "other", detail: str | None = None) -> dict:
+    """Flag a moment that MIGHT be worth remembering later — a dead end, a correction, a
+    repeated lookup, or a stated rule/preference. This is a LOW-STAKES note-to-self: it
+    records a candidate for later review. It does NOT create a durable memory or fact and
+    has NO effect on what you recall — so use it freely whenever something seems notable;
+    curation happens later. `kind` is one of: dead_end, correction, repeat_lookup, rule,
+    other (anything else becomes 'other'). `summary` is one line; `detail` is optional."""
+    if not summary or not summary.strip():
+        raise ModelRetry("flag_memory_candidate: empty summary. Provide one line describing "
+                         "what's worth remembering.")
+    from ..storage import get_store
+    row = get_store().add_memory_candidate(
+        kind, summary.strip(), detail=detail, source="flag_memory_candidate")
+    return {"flagged": True, "id": row["id"], "kind": row["kind"]}
+
+
 def tools() -> list[Tool]:
     return [
         Tool(
@@ -64,5 +80,17 @@ def tools() -> list[Tool]:
             tags=["notes", "save", "remember", "write", "memory", "knowledge"],
             func=save_note,
             example={"note": "PETG on the P1S: nozzle 240C, bed 70C, dry 65C/6h."},
-        )
+        ),
+        Tool(
+            name="flag_memory_candidate",
+            description=("Flag a moment that might be worth remembering later (a dead end, "
+                         "a correction, a repeated lookup, a stated rule/preference). "
+                         "LOW-STAKES: records a candidate for later review — does NOT create "
+                         "a durable memory and does not affect recall. Use it freely. kind ∈ "
+                         "{dead_end, correction, repeat_lookup, rule, other}."),
+            tags=["memory", "flag", "candidate", "remember", "note-to-self", "interesting",
+                  "worth", "dead-end", "correction"],
+            func=flag_memory_candidate,
+            example={"summary": "User prefers metric units in all answers", "kind": "rule"},
+        ),
     ]
