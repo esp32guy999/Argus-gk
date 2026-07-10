@@ -1,0 +1,52 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Radarr (curated)",
+    "version": "v3"
+  },
+  "paths": {
+    "/api/v3/system/status": {
+      "get": {
+        "operationId": "getSystemStatus",
+        "summary": "Get Radarr system status (version, build, OS).",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/api/v3/movie": {
+      "get": {
+        "operationId": "listMovies",
+        "summary": "List all movies in the Radarr library.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/api/v3/movie/lookup": {
+      "get": {
+        "operationId": "lookupMovie",
+        "summary": "Search for a movie by title.",
+        "parameters": [
+          {
+            "name": "term",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    }
+  }
+}

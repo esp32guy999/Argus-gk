@@ -1,0 +1,31 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Readarr (curated)",
+    "version": "v3"
+  },
+  "paths": {
+    "/api/v1/system/status": {
+      "get": {
+        "operationId": "getSystemStatus",
+        "summary": "Get Readarr system status (version, build, OS).",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/api/v1/book": {
+      "get": {
+        "operationId": "listBooks",
+        "summary": "List all books in the Readarr library.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    }
+  }
+}

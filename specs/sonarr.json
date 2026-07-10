@@ -1,0 +1,52 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Sonarr (curated)",
+    "version": "v3"
+  },
+  "paths": {
+    "/api/v3/system/status": {
+      "get": {
+        "operationId": "getSystemStatus",
+        "summary": "Get Sonarr system status (version, build, OS).",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v3/series": {
+      "get": {
+        "operationId": "listSeries",
+        "summary": "List all TV series in the Sonarr library.",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v3/series/lookup": {
+      "get": {
+        "operationId": "lookupSeries",
+        "summary": "Search for a TV series by title.",
+        "parameters": [
+          {
+            "name": "term",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  }
+}

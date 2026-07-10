@@ -1,0 +1,38 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Prowlarr (curated)",
+    "version": "v1"
+  },
+  "paths": {
+    "/api/v1/system/status": {
+      "get": {
+        "operationId": "getSystemStatus",
+        "summary": "Get Prowlarr system status (version, build, OS).",
+        "responses": {"200": {"description": "OK"}}
+      }
+    },
+    "/api/v1/indexer": {
+      "get": {
+        "operationId": "listIndexers",
+        "summary": "List the configured search indexers (name, enabled, protocol).",
+        "responses": {"200": {"description": "OK"}}
+      }
+    },
+    "/api/v1/search": {
+      "get": {
+        "operationId": "searchReleases",
+        "summary": "Search all indexers for a release by query; returns available results.",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {"200": {"description": "OK"}}
+      }
+    }
+  }
+}
