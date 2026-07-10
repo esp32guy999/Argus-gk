@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from argus.main import build_registry
 from argus import loop, metrics
-from argus.storage import Store
+from argus.storage import get_store
 from prometheus_client import make_asgi_app
 import httpx
 import relogin
@@ -111,7 +111,7 @@ registry = build_registry()
 # Conversation store (the DA seam) — gives the model memory + backs the history UI.
 DB_PATH = os.environ.get("ARGUS_DB", "argus.db")
 HISTORY_TURNS = int(os.environ.get("ARGUS_HISTORY_TURNS", "20"))  # max prior msgs fed to model
-store = Store(DB_PATH)
+store = get_store(DB_PATH)   # canonical process-wide store; tools reach the same DB
 
 
 # Local-model serving goes through llama-swap (MODEL_URL → :9090), which loads the

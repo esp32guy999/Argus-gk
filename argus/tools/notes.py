@@ -23,10 +23,11 @@ NOTES_DIR = pathlib.Path(
 
 
 def save_note(note: str) -> dict:
-    """Save a durable note to the knowledge base so it can be recalled later with
-    lookup_memory. Use this to remember a fact, decision, setting, or research
-    finding the user wants kept. Provide the full note text (a clear first line
-    becomes its title)."""
+    """Save a note to memory so it can be recalled later with lookup_memory. Use this
+    to remember a fact, decision, setting, or research finding. Provide the full note
+    text (a clear first line becomes its title). The note is recorded as a *proposed*
+    memory — it is retrievable immediately but not treated as confirmed truth until it
+    has been corroborated; it can later be superseded or invalidated."""
     if not note or not note.strip():
         raise ModelRetry("save_note: empty note. Provide the text to save.")
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
@@ -35,13 +36,22 @@ def save_note(note: str) -> dict:
     stamp = time.strftime("%Y-%m-%d %H:%M")
     fname = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}.md"
     body = f"{note.strip()}\n\n_saved by argus {stamp}_\n"
+
+    # B2 (specs/memory_system.md §6a/§6b): nothing is born permanent. Every durable save
+    # enters the fact lifecycle as `proposed`, carrying provenance — never a god-mode
+    # instant-durable write that would bypass supersession/invalidation/audit. The fact
+    # row is the source of truth; the note file + live index are the recall substrate,
+    # kept in sync so lookup_memory still finds it (recall must not regress).
+    from ..storage import get_store
+    fact = get_store().add_fact(key=first, value=note.strip(), source="save_note")
+
     (NOTES_DIR / fname).write_text(body)
-    try:                                  # make it searchable right now
+    try:                                  # make it searchable right now (best-effort)
         from .. import memory
         memory.add_note(fname, body)
     except Exception:
         pass
-    return {"saved": True, "file": fname}
+    return {"saved": True, "state": fact["state"], "fact_id": fact["id"], "file": fname}
 
 
 def tools() -> list[Tool]:

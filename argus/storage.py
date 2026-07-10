@@ -10,6 +10,7 @@ serialization format. Tool-call replay can be added later if a turn needs it.
 """
 from __future__ import annotations
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -520,3 +521,20 @@ class Store:
                 (category,),
             ).fetchone()
         return r["m"] if r and r["m"] is not None else None
+
+
+# ── Process-wide Store singleton ──────────────────────────────────────────
+# Tools are pure functions with no Store handle. This lets them reach the SAME
+# DB the app opened (ui/server.py resolves it too), so a fact written by a tool is
+# visible to the app. Path resolves once: explicit arg → $ARGUS_DB → 'argus.db'.
+_STORE: "Store | None" = None
+_STORE_LOCK = threading.Lock()
+
+
+def get_store(path: str | None = None) -> "Store":
+    global _STORE
+    if _STORE is None:
+        with _STORE_LOCK:
+            if _STORE is None:
+                _STORE = Store(path or os.environ.get("ARGUS_DB", "argus.db"))
+    return _STORE
