@@ -60,7 +60,26 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state, updated_ts);
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(category, next_check_ts);
+
+-- Memory-candidate ledger (research-lane D5). Append-only. During real usage the
+-- agent flags moments that MIGHT be worth remembering — a dead-end query, a
+-- correction, a repeated lookup — with a short reason. This is NOT memory: no
+-- retrieval, no curation, no trust. It is the empirical dataset Task 3's write
+-- policy will be designed FROM, so we don't design curation in a vacuum. Kept
+-- deliberately dumb: collect now, decide what's worth keeping later.
+CREATE TABLE IF NOT EXISTS memory_candidates (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              REAL NOT NULL,
+    conversation_id TEXT,
+    kind            TEXT NOT NULL,      -- 'dead_end'|'correction'|'repeat_lookup'|'rule'|'other'
+    summary         TEXT NOT NULL,      -- one line: what happened
+    detail          TEXT,               -- optional fuller context
+    source          TEXT                -- where it came from, e.g. 'web_fetch:<url>' | 'user'
+);
+CREATE INDEX IF NOT EXISTS idx_memcand_ts ON memory_candidates(ts);
 """
+
+MEMORY_CANDIDATE_KINDS = ("dead_end", "correction", "repeat_lookup", "rule", "other")
 
 # Columns added after the table first shipped; ALTER-migrated onto live dbs in _migrate().
 _JOB_MIGRATIONS = {
@@ -109,6 +128,39 @@ class Store:
             mid = cur.lastrowid
         return {"id": mid, "conversation_id": conversation_id, "ts": ts,
                 "role": role, "model": model, "content": content}
+
+    def add_memory_candidate(self, kind: str, summary: str, *,
+                             conversation_id: str | None = None,
+                             detail: str | None = None,
+                             source: str | None = None) -> dict:
+        """Append a memory-worthy candidate (research-lane D5). Append-only; never
+        updated or trusted — just collected for Task 3's future write policy."""
+        if kind not in MEMORY_CANDIDATE_KINDS:
+            kind = "other"
+        ts = time.time()
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO memory_candidates (ts, conversation_id, kind, summary, "
+                "detail, source) VALUES (?, ?, ?, ?, ?, ?)",
+                (ts, conversation_id, kind, summary, detail, source),
+            )
+            self._conn.commit()
+            cid = cur.lastrowid
+        return {"id": cid, "ts": ts, "conversation_id": conversation_id,
+                "kind": kind, "summary": summary, "detail": detail, "source": source}
+
+    def list_memory_candidates(self, *, limit: int = 100, kind: str | None = None) -> list[dict]:
+        """Most-recent-first. Read-only view for triage — no scoring, no dedup."""
+        q = "SELECT * FROM memory_candidates"
+        args: tuple = ()
+        if kind:
+            q += " WHERE kind = ?"
+            args = (kind,)
+        q += " ORDER BY id DESC LIMIT ?"
+        args += (limit,)
+        with self._lock:
+            rows = self._conn.execute(q, args).fetchall()
+        return [dict(r) for r in rows]
 
     def delete_message(self, message_id: int) -> None:
         with self._lock:
