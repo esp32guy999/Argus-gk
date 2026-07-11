@@ -24,6 +24,27 @@ PRESETS = pathlib.Path(__file__).parent / "presets"
 MODEL_URL = os.environ.get("ARGUS_MODEL_URL", "http://localhost:8099/v1")
 DEFAULT_MODEL = os.environ.get("ARGUS_DEFAULT_MODEL", "qwen3-next-80b")
 
+# "Selected = default" — the effective default (chat fallback + background tasks)
+# follows the user's last-selected LOCAL model, so the hardcoded 80B stops getting
+# pulled in behind their back. Guarded by a capability floor: only models that can
+# actually drive tool lanes are eligible; a media / CPU-tiny / cloud pick falls back
+# to DEFAULT_MODEL so autonomous tasks don't faceplant on an unfit model.
+TASK_CAPABLE_MODELS = {
+    "qwen3-next-80b", "qwen3-coder-30b", "qwen3-coder-next",
+    "gemma4-26b", "gemma4-12b", "qwen3.6-35b-a3b",
+}
+
+def _default_model() -> str:
+    """Last-selected local model when it's tool-capable, else the env floor."""
+    try:
+        layout = json.loads((PRESETS / "current.json").read_text())
+        sel = layout.get("lastLocalModel") or layout.get("lastModel")
+        if sel in TASK_CAPABLE_MODELS:
+            return sel
+    except Exception:
+        pass
+    return DEFAULT_MODEL
+
 # Models NOT served by llama-swap — routed to their own OpenAI-compatible endpoint.
 # gemma4-cpu = Gemma 4 E2B on a CPU-only ollama (CUDA hidden) → runs on the 7800X3D and
 # never touches the 5080's VRAM (which the reasoner owns). Only ollama can load gemma4.
@@ -145,6 +166,7 @@ def _notify(title, message):
 
 
 task_mgr = tasks.configure(registry=registry, model_name=DEFAULT_MODEL,
+                           model_resolver=_default_model,
                            base_url=MODEL_URL, store=store, notifier=_notify)
 
 # Global state
@@ -267,7 +289,7 @@ async def sse_generator():
 @app.post("/argus/chat")
 async def chat(request: Request):
     body = await request.json()
-    model_name = body.get("model", DEFAULT_MODEL)
+    model_name = body.get("model") or _default_model()
     message = body.get("message", "")
     attachments = body.get("attachments") or []
     # Only forward images to vision-capable models — don't apply attachments generically.

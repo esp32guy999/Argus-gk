@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#0a0a0f">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=45">
+  <link rel="stylesheet" href="/static/styles.css?v=46">
   <title>Claude Desktop Next</title>
 </head>
 <body>
@@ -63,6 +63,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
     </button>
     <select id="model-select"><option>Loading…</option></select>
+    <button id="cc-toggle" class="cc-toggle" title="Swap to Claude (cloud) — keeps your dropdown model selected">CC</button>
     <span id="model-warm" class="model-warm" hidden></span>
     <span class="flex-spacer"></span>
     <!-- theme toggle moved to conv-drawer -->
@@ -305,6 +306,6 @@
   <script src="/static/widgets/permissions.js?v=1"></script>
   <!-- DISABLED 2026-05-25 — kills iOS Safari (black screen). See https://github.com/esp32guy999/claude-desktop-next   <script src="/static/widgets/ccpair.js?v=1"></script> -->
   <script src="/static/nec.js?v=2"></script>
-  <script src="/static/app.js?v=57"></script>
+  <script src="/static/app.js?v=58"></script>
 </body>
 </html>

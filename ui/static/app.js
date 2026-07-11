@@ -13,6 +13,7 @@ const state = {
   currentModel:   null,
   conversationId: null,
   conversations: [],
+  ccActive:       false,     // CC toggle: route sends to claude-code (cloud) over the dropdown model
   rtTo:           'both',    // Roundtable addressee: gemma | claude | both
   rtBubbles:      {},        // Roundtable: bubbleId -> {el, speaker, target} (parallel to pending path)
   currentView:    'chat',
@@ -69,6 +70,11 @@ function fmtDay(ts) {
     { weekday: 'long', month: 'short', day: 'numeric' });
 }
 // Friendly display name for a model id (falls back to the raw id).
+// The model a SEND actually routes to: Claude (cloud) when the CC toggle is on,
+// otherwise the dropdown selection. The dropdown keeps showing the local model
+// either way — CC is an overlay switch, not a dropdown entry.
+const CC_MODEL = 'claude-code';
+function activeModel() { return state.ccActive ? CC_MODEL : state.currentModel; }
 function modelLabel(id) {
   return (id && state.modelCfg && state.modelCfg[id] && state.modelCfg[id].display) || id || '';
 }
@@ -404,24 +410,48 @@ async function loadModels() {
     state.models = list.map(([id, cfg]) => ({ id, cfg, display: cfg.display || id }));
     state.modelCfg = Object.fromEntries(list);
 
-    // Restore preferred model from layout if present
-    let saved = null;
-    try { saved = (await fetchJson('/layout')).lastModel || null; } catch {}
-    state.currentModel = (saved && state.modelCfg[saved])
+    // Restore preferred model + CC-toggle state from layout.
+    let L = {};
+    try { L = await fetchJson('/layout') || {}; } catch {}
+    let saved = L.lastModel || null;
+    state.ccActive = !!L.ccActive;
+    // Migration: CC used to be a dropdown model. If it was the saved pick, treat
+    // that as "CC toggle on" and put a real local model in the dropdown.
+    if (saved === CC_MODEL) { state.ccActive = true; saved = L.lastLocalModel || null; }
+    const localModels = state.models.filter(m => m.id !== CC_MODEL);
+    state.currentModel = (saved && state.modelCfg[saved] && saved !== CC_MODEL)
       ? saved
-      : (state.models[0]?.id || null);
+      : (localModels[0]?.id || null);
 
-    applyModelAccent(state.currentModel);
+    applyModelAccent(activeModel());
     renderModelSelect();
     renderModelList();
+    updateCcToggle();
   } catch (e) {
     modelSelect.innerHTML = `<option>Brain unavailable</option>`;
     brainDot.classList.add('down');
   }
 }
 
+// Reflect CC-toggle state on the button (active = routing to Claude) + dim the
+// dropdown so it's clear the local model is on standby.
+function updateCcToggle() {
+  const btn = $('cc-toggle');
+  if (btn) {
+    btn.classList.toggle('active', state.ccActive);
+    btn.title = state.ccActive
+      ? 'Routing to Claude (cloud). Click to return to your dropdown model.'
+      : 'Swap to Claude (cloud) — keeps your dropdown model selected.';
+  }
+  if (typeof modelSelect !== 'undefined' && modelSelect) {
+    modelSelect.style.opacity = state.ccActive ? '0.5' : '';
+  }
+}
+
 function renderModelSelect() {
+  // CC is no longer a dropdown entry — it's the toggle button beside it.
   modelSelect.innerHTML = state.models
+    .filter(m => m.id !== CC_MODEL)
     .map(m => `<option value="${escHtml(m.id)}" ${m.id === state.currentModel ? 'selected' : ''}>${escHtml(m.display)}</option>`)
     .join('');
 }
@@ -1066,7 +1096,7 @@ document.getElementById('chat-input-area').addEventListener('drop', async (e) =>
 // ── Send ─────────────────────────────────────────────────────────────
 async function send() {
   const text = inputEl.value.trim();
-  if ((!text && !stagedFiles.length) || !state.currentModel) return;
+  if ((!text && !stagedFiles.length) || !activeModel()) return;
   inputEl.value = '';
   autosizeInput();
 
@@ -1122,7 +1152,7 @@ async function send() {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        model:    state.currentModel,
+        model:    activeModel(),
         message:  text,
         conversation_id: state.conversationId,
         attachments: attachments.length ? attachments : undefined,
@@ -1137,7 +1167,7 @@ async function send() {
     const { id: bubbleId } = await res.json();
     console.log('[DBG] chat sent, bubbleId:', bubbleId);
     state.pendingBubbleId = bubbleId;
-    state.pendingModel = state.currentModel;   // snapshot now — switching models mid-turn must not relabel/recolor this bubble
+    state.pendingModel = activeModel();   // snapshot now — switching models/CC mid-turn must not relabel/recolor this bubble
     typingEl.style.setProperty('--msg-accent', modelColor(state.pendingModel));  // colour the bar while it streams
     // Live status pill (timer + stall/crash detection) until the turn completes.
     state.statusPill = statusPill;
@@ -1145,7 +1175,7 @@ async function send() {
 
     // Safety timeout: if we somehow miss the done event, release the UI.
     // Media models (z-image-edit, z-klein, z-video) can take up to 10 minutes.
-    const _safetyMs = /^z-(image-edit|klein|video)/i.test(state.currentModel || '') ? 600_000 : 90_000;
+    const _safetyMs = /^z-(image-edit|klein|video)/i.test(activeModel() || '') ? 600_000 : 90_000;
     await new Promise(resolve => {
       const doneTimer = setTimeout(resolve, _safetyMs);
       const onDone = () => { clearTimeout(doneTimer); resolve(); };
@@ -1162,7 +1192,7 @@ async function send() {
       // For ANY model: if the bubble came out empty, fetch the authoritative reply from
       // the DB. (Media models additionally refetch when the [[IMAGE/VIDEO]] tag is missing.)
       // This is what made text replies need a manual refresh; now they self-heal.
-      const _isMedia = /^z-(image|klein|video)/i.test(state.currentModel || '');
+      const _isMedia = /^z-(image|klein|video)/i.test((state.pendingModel || activeModel()) || '');
       // Empty bubble, OR the reconciler healed a dead-socket turn (no bubble_done arrived,
       // so the streamed text may be partial) -> pull the authoritative reply from the DB.
       const _needsDb = !raw.trim() || state._healedByPoll || (_isMedia && !/\[\[(IMAGE|VIDEO):/.test(raw));
@@ -2110,7 +2140,9 @@ async function saveLayout() {
   saveTimer = setTimeout(async () => {
     const layout = {
       panels:    [...panels.values()],
-      lastModel: state.currentModel,
+      lastModel: state.currentModel,   // the dropdown (local) model
+      lastLocalModel: state.currentModel,
+      ccActive:  state.ccActive,       // CC toggle overlay state
       timestamp: new Date().toISOString(),
     };
     try {
@@ -2354,8 +2386,16 @@ function wireUI() {
   refreshSend();
   modelSelect.addEventListener('change', () => {
     state.currentModel = modelSelect.value;
-    applyModelAccent(state.currentModel);
-    maybeWarmModel(state.currentModel);
+    applyModelAccent(activeModel());
+    if (!state.ccActive) maybeWarmModel(state.currentModel);   // don't wake a local model while routing to CC
+    saveLayout();
+  });
+  // CC toggle — flip routing between the dropdown model and Claude (cloud).
+  $('cc-toggle')?.addEventListener('click', () => {
+    state.ccActive = !state.ccActive;
+    updateCcToggle();
+    applyModelAccent(activeModel());
+    // Turning CC off doesn't auto-wake the local model — it loads lazily on next send.
     saveLayout();
   });
   // Everything below is non-critical; wrap so any single failure can't kill the rest.

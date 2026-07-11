@@ -18,9 +18,13 @@ import uuid
 
 class TaskManager:
     def __init__(self, registry, model_name, base_url, *, store=None,
-                 notifier=None, conversation_id="background-tasks", turn_budget=12):
+                 notifier=None, conversation_id="background-tasks", turn_budget=12,
+                 model_resolver=None):
         self.registry = registry
         self.model_name = model_name
+        # Optional callable resolving the model to use PER RUN (so background tasks
+        # follow the user's current selection instead of a value frozen at startup).
+        self.model_resolver = model_resolver
         self.base_url = base_url
         self.store = store
         self.notifier = notifier            # notifier(title, message)
@@ -44,8 +48,15 @@ class TaskManager:
         from . import loop as agent_loop
         rec = self.tasks[tid]
         try:
+            mdl = self.model_name
+            if self.model_resolver:
+                try:
+                    mdl = self.model_resolver() or self.model_name
+                except Exception:
+                    mdl = self.model_name
+            rec["model"] = mdl
             out = await agent_loop.run_async(
-                self.registry, prompt, model_name=self.model_name,
+                self.registry, prompt, model_name=mdl,
                 base_url=self.base_url, turn_budget=self.turn_budget)
             rec["status"], rec["result"] = "done", out
         except Exception as e:
@@ -57,7 +68,7 @@ class TaskManager:
                 self.store.add_message(
                     self.cid, "assistant",
                     f"[background task {tid} — {rec['status']}]\n"
-                    f"Task: {prompt}\n\n{rec['result']}", self.model_name)
+                    f"Task: {prompt}\n\n{rec['result']}", rec.get("model", self.model_name))
             except Exception:
                 pass
         if self.notifier:
