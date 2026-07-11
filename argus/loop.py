@@ -92,14 +92,69 @@ def _load_soul_overlay(model_name: str) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
-def _system_prompt(model_name: str = "") -> str:
-    """Operating rules + the soul (voice) + any per-model overlay. The soul shapes
-    tone only; the rules win on behavior."""
+# Friendly labels for each tool lane — the model's "instrument panel" (Move 2).
+# provider -> (emoji+label, one-line what-it-does). A provider not listed still shows
+# under its raw name, so a newly-added lane is never silently hidden from the pilot.
+PROVIDER_BRIEF: dict[str, tuple[str, str]] = {
+    "web":         ("🔍 Web", "search the web & fetch pages"),
+    "weather":     ("🌤 Weather", "forecasts & conditions"),
+    "notes":       ("📝 Notes", "jot & recall notes"),
+    "native":      ("🧭 System", "GPU/disk/host stats & Home-Assistant state"),
+    "mcp":         ("🏠 Home / MCP", "Home Assistant + connected MCP servers"),
+    "navidrome":   ("🎵 Music", "the Navidrome music library"),
+    "audiobook":   ("📚 Audiobooks", "the audiobook library"),
+    "media_fs":    ("🎞 Media files", "browse/manage the media library"),
+    "arr_acquire": ("📥 Acquire", "download movies / TV / music / books"),
+    "openapi":     ("🔌 APIs", "registered HTTP APIs"),
+    "shell":       ("🛠 Shell", "run shell commands"),
+    "code_edit":   ("✏️ Code edit", "surgical source edits"),
+    "run_code":    ("🧪 Run code", "execute code in a sandbox"),
+    "fs":          ("📂 Filesystem", "read/write/edit files"),
+}
+
+
+def _cockpit_briefing(registry, model_name: str) -> str:
+    """A generated 'here are your instruments' panel: the lanes THIS model is cleared
+    for, plus which powerful lanes are locked behind a grant. Built from the live
+    registry + gates so it's always accurate and every model is oriented on load."""
+    if registry is None:
+        return ""
+    gates = effective_gates()
+    denied = any(d in (model_name or "") for d in LANE_MODEL_DENY)
+    have: set[str] = set()
+    locked: set[str] = set()
+    for t in registry.all():
+        prov = getattr(t, "provider", None) or "native"
+        if prov in gates:
+            allow = gates[prov]
+            if denied or not any(m in (model_name or "") for m in allow):
+                locked.add(prov)
+                continue
+        have.add(prov)
+    if not have and not locked:
+        return ""
+    lines = ["# Your cockpit — instruments you can reach",
+             "Call a tool to use its control; if you need one that isn't listed, say so."]
+    for prov in sorted(have):
+        label, desc = PROVIDER_BRIEF.get(prov, (prov, ""))
+        lines.append(f"- {label} — {desc}" if desc else f"- {label}")
+    if locked:
+        names = ", ".join(PROVIDER_BRIEF.get(p, (p, ""))[0] for p in sorted(locked))
+        lines.append(f"Locked (ask Shane to grant via the permissions widget): {names}")
+    return "\n".join(lines)
+
+
+def _system_prompt(model_name: str = "", registry=None) -> str:
+    """Operating rules + the soul (voice) + any per-model overlay + the cockpit
+    briefing. The soul shapes tone only; the rules win on behavior."""
     soul = _load_soul()
     out = SYSTEM_PROMPT + ("\n\n# Your voice\n" + soul if soul else "")
     overlay = _load_soul_overlay(model_name)
     if overlay:
         out += "\n\n# This model\n" + overlay
+    briefing = _cockpit_briefing(registry, model_name)
+    if briefing:
+        out += "\n\n" + briefing
     return out
 
 
@@ -178,14 +233,23 @@ def _load_lane_grants():
 
 
 def effective_gates() -> dict:
-    """LANE_MODEL_GATES seed overlaid with live grants for the toggleable lanes."""
+    """LANE_MODEL_GATES seed, overlaid with the widget's live grants for the toggleable
+    lanes, then unioned with any per-model `grant:` declared in the model manifest
+    (config/models.yaml) — so a model can be born cleared for a lane from its manifest
+    entry, keeping onboarding in one place. Manifest grants default empty → no-op."""
     grants = _load_lane_grants()
-    if grants is None:
-        return LANE_MODEL_GATES
     merged = dict(LANE_MODEL_GATES)
-    for lane in TOGGLEABLE_LANES:
-        if lane in grants:                 # file specifies it (even empty = revoke-all)
-            merged[lane] = grants[lane]     # else keep the seed for that lane
+    if grants is not None:
+        for lane in TOGGLEABLE_LANES:
+            if lane in grants:              # file specifies it (even empty = revoke-all)
+                merged[lane] = grants[lane]  # else keep the seed for that lane
+    try:
+        from . import model_config
+        for model_id, lanes in model_config.all_grants().items():
+            for lane in lanes:
+                merged[lane] = set(merged.get(lane, set())) | {model_id}
+    except Exception:
+        pass
     return merged
 
 
@@ -383,7 +447,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(model_name),
+        system_prompt=_system_prompt(model_name, registry),
         capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()
@@ -431,7 +495,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(model_name),
+        system_prompt=_system_prompt(model_name, registry),
         capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()
@@ -476,7 +540,7 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     agent = Agent(
         make_model(model_name, base_url),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(model_name),
+        system_prompt=_system_prompt(model_name, registry),
         capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()

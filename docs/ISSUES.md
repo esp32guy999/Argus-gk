@@ -172,3 +172,10 @@ fix candidates:    (1) Set BRAVE_API_KEY in ~/.config/argus/env — Shane has a 
                    retry/failure with a teaching message instead of silent empty.
                    (3) Consider a different keyless backend (SearXNG on the LAN).
 needs Shane:       The Brave key. Then the Task 3 research round can actually run.
+
+- **CPU Gemma (gemma4e2b) crashes with the full toolset** (2026-07-10, Low): a chat
+  turn to gemma4-cpu terminates its llama-server with
+  `GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS)` — the E2B backend can't handle
+  ~84 tool schemas at once. Deferred: give gemma4-cpu a reduced tool selection (tag-
+  or top-K-limited) before it's usable as an interactive tool-driver. GPU models are
+  unaffected. Surfaced during the model-manifest smoke test.

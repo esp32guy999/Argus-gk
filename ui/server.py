@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from argus.main import build_registry
-from argus import loop, metrics
+from argus import loop, metrics, model_config
 from argus.storage import get_store
 from prometheus_client import make_asgi_app
 import httpx
@@ -45,84 +45,38 @@ def _default_model() -> str:
         pass
     return DEFAULT_MODEL
 
-# Models NOT served by llama-swap — routed to their own OpenAI-compatible endpoint.
-# gemma4-cpu = Gemma 4 E2B on a CPU-only ollama (CUDA hidden) → runs on the 7800X3D and
-# never touches the 5080's VRAM (which the reasoner owns). Only ollama can load gemma4.
-# Friendly names for the picker (ids stay canonical everywhere else — lane gates,
-# CHAT_THINKING, soul.d matching all key on the real id).
-MODEL_DISPLAY = {
-    "ornith-35b-uncensored": "Loki",          # Shane's name for the uncensored 35B
-}
-
-EXTERNAL_MODELS = {
-    "gemma4-cpu": {"base_url": "http://localhost:11435/v1", "model_id": "gemma4e2b",
-                   "display": "Gemma 4 E2B (CPU)"},
-}
-
-# Vision capability is per-model — never forward images to a model that can't see
-# them (wastes tokens / errors). Gate on this set, not on backend or model name.
-# claude-code (Claude) is vision-capable; local llama-swap models here are not.
-VISION_MODELS = {"claude-code"}
-
-def _is_vision(model_name: str) -> bool:
-    return model_name in VISION_MODELS
-
-# Models slow to cold-load (the local 80B offloads MoE layers to CPU → ~1-2 min cold).
-# These get warmed on selection and announce readiness (phone buzz + UI pill) so the
-# first turn doesn't look like a dead box. Fast/cloud models aren't warmed.
-WARM_ON_SELECT = {"qwen3-next-80b", "ornith-35b-uncensored"}
+# Per-model config (display / vision / warm / thinking / context / external backend)
+# now lives in ONE manifest: config/models.yaml, read via argus.model_config. A model
+# absent from it resolves to safe defaults, so it's usable on first load. The helpers
+# below are thin adapters over the manifest so the rest of the server is unchanged.
 _warming: set = set()   # models with an in-flight warm-up (dedupe rapid selects)
 
+def _is_vision(model_name: str) -> bool:
+    # Never forward images to a model that can't see them (wastes tokens / errors).
+    return model_config.is_vision(model_name)
+
 def _warm_on_select(model_name: str) -> bool:
-    return model_name in WARM_ON_SELECT
+    # Slow-cold-loading models (e.g. the 80B) warm on select + announce readiness.
+    return model_config.warm_on_select(model_name)
 
-# Thinking-capable local models that should run with reasoning OFF on the interactive
-# chat path. Qwen3.6 reasons on everything, which makes chat sluggish and (on structured
-# turns) can run the token budget dry before answering; the 2026-06-24 bake-off showed the
-# reasoning is correct but ~50x slower for the same result. With thinking off it answers
-# ~0.5s and STILL calls tools correctly (verified). Maps model -> enable_thinking value
-# passed to loop.stream_run; absent -> None (server default, unchanged).
 def _thinking_for_turn(model_name: str, message: str):
-    """Per-TURN thinking policy. Chat default per CHAT_THINKING (off = snappy), but a
-    long prompt is a spec/brief, not chitchat — there thinking is what stops a small
-    model from pattern-completing history or emitting an RP gesture instead of work
-    (2026-07-03: Loki answered a 4.5k-char build spec with 'pong', then with
-    '*starts background task*'). ~1200 chars is well past any casual message."""
-    # 2026-07-03 v2 replay: thinking ON for a long spec was WORSE — ornith poured
-    # ~9k tokens into reasoning_content (invisible to the UI), then emitted a
-    # one-line preamble and stopped. Without --reasoning-budget in this llama.cpp
-    # build, unbounded thinking starves the visible answer. Keep chat thinking OFF;
-    # the soul rules carry the act-don't-narrate burden. Revisit after a llama.cpp
-    # upgrade adds --reasoning-budget (model card recommends 1024).
-    return CHAT_THINKING.get(model_name)
+    """Per-TURN thinking policy from the manifest (null → server default). Chat runs
+    reasoning OFF for models that otherwise burn the budget dry (qwen3.6, Loki) — off
+    is ~50x faster for the same result and tools still fire; the soul rules carry the
+    act-don't-narrate burden. Revisit once llama.cpp gains --reasoning-budget."""
+    return model_config.thinking(model_name)
 
-CHAT_THINKING = {"qwen3.6-35b-a3b": False,
-                 # ornith: same failure mode as qwen3.6 — unbounded think ran a 900-token
-                 # budget dry with EMPTY content (probe 2026-07-03). Off = 85 tok/s and
-                 # tool calls still work (verified round-trip).
-                 "ornith-35b-uncensored": False}
-
-# Per-model context window (tokens). The local 80B is served at -c 8192 and is
-# VRAM-bound there — history MUST be budgeted to fit or llama.cpp truncates the
-# prompt from the front (dropping the system prompt) or errors. Unknown local
-# models default conservatively; claude-code manages its own context (and isn't
-# even fed this history), so it's exempt.
-CONTEXT_WINDOW = {"qwen3-next-80b": 8192,
-                  # ornith arms serve -c 131072 (A3B KV is tiny: 131k costs +680MB VRAM, 13.7GB
-                  # total; 40k-token needle test passed @1667 tok/s prefill, 2026-07-03)
-                  "ornith-35b-uncensored": 131072}
-_DEFAULT_LOCAL_CTX = 8192
 # Tokens reserved within the window for the system prompt + selected tool schemas
 # + the live user prompt + room for the reply. The remainder is the history budget.
 HISTORY_RESERVE = 3500
 
 def _history_budget(model_name: str) -> int | None:
     """Max tokens of prior history to feed this model, or None to skip budgeting
-    (claude-code: history isn't sent to it and it self-manages context)."""
+    (claude-code: history isn't sent to it and it self-manages context). The 80B is
+    VRAM-bound at -c 8192, so history MUST fit or llama.cpp truncates from the front."""
     if model_name == "claude-code":
         return None
-    window = CONTEXT_WINDOW.get(model_name, _DEFAULT_LOCAL_CTX)
-    return max(512, window - HISTORY_RESERVE)
+    return max(512, model_config.context_window(model_name) - HISTORY_RESERVE)
 HA_URL = os.environ.get("HA_URL")
 HA_TOKEN = os.environ.get("HA_TOKEN")
 
@@ -220,7 +174,7 @@ async def _model_load_watcher(interval: float = 5.0):
             if not primed:
                 last, primed = cur, True                 # boot baseline — don't buzz
             elif cur and cur != last:
-                display = MODEL_DISPLAY.get(cur, cur)
+                display = model_config.display(cur) or cur
                 await asyncio.to_thread(_notify, "🧠 Model loaded in Forge",
                                         f"{display} is now resident on the GPU.")
                 publish("model_loaded", {"model": cur, "display": display})
@@ -325,7 +279,7 @@ async def chat(request: Request):
                 # it to VISION_MODELS and threading images into loop.stream_run.)
                 # External models (gemma4-cpu) -> their own endpoint + real model id;
                 # everything else -> llama-swap.
-                ext = EXTERNAL_MODELS.get(model_name)
+                ext = model_config.external(model_name)
                 source = loop.stream_run(
                     registry, message,
                     model_name=(ext["model_id"] if ext else model_name),
@@ -536,25 +490,25 @@ async def get_models():
     # among real local models), then always append the cloud claude-code option.
     # claude-code is a separate path — selecting it never hits llama-swap, so it
     # never evicts a resident local model (e.g. the 80B stays loaded).
+    def _cfg(mid, backend="argus"):
+        # cfg for the picker — display/vision/warm/accent all from the manifest, so a
+        # new model is described (and coloured) without touching server.py or app.js.
+        return {"display": model_config.display(mid) or mid, "backend": backend,
+                "vision": _is_vision(mid), "warm_on_select": _warm_on_select(mid),
+                "accent": model_config.accent(mid)}
     entries = []
     try:
         async with httpx.AsyncClient(timeout=2) as c:
             data = (await c.get(f"{_LOCAL_BASE}/v1/models")).json()
         for m in data.get("data", []):
-            mid = m["id"]
-            display = MODEL_DISPLAY.get(mid, "Argus (local 80B)" if mid == DEFAULT_MODEL else mid)
-            entries.append([mid, {"display": display, "backend": "argus",
-                                  "vision": _is_vision(mid), "warm_on_select": _warm_on_select(mid)}])
+            entries.append([m["id"], _cfg(m["id"])])
     except Exception:
         # llama-swap unreachable — still offer the default so the UI isn't empty.
-        entries.append([DEFAULT_MODEL, {"display": "Argus (local 80B)", "backend": "argus",
-                                        "vision": _is_vision(DEFAULT_MODEL), "warm_on_select": _warm_on_select(DEFAULT_MODEL)}])
+        entries.append([DEFAULT_MODEL, _cfg(DEFAULT_MODEL)])
     # external (non-llama-swap) models — e.g. the CPU Gemma running on its own ollama
-    for name, cfg in EXTERNAL_MODELS.items():
-        entries.append([name, {"display": cfg["display"], "backend": "argus",
-                               "vision": False, "warm_on_select": False}])
-    entries.append(["claude-code", {"display": "Claude Code", "backend": "claude",
-                                    "vision": _is_vision("claude-code"), "warm_on_select": False}])
+    for name in model_config.externals():
+        entries.append([name, _cfg(name)])
+    entries.append(["claude-code", _cfg("claude-code", backend="claude")])
     return JSONResponse(entries)
 
 
@@ -665,7 +619,7 @@ async def get_lane_grants():
             mid = m["id"]
             if any(d in mid for d in loop.LANE_MODEL_DENY):
                 continue  # Loki et al. — never listed, never grantable
-            models.append({"id": mid, "display": MODEL_DISPLAY.get(mid, mid)})
+            models.append({"id": mid, "display": model_config.display(mid) or mid})
     except Exception:
         pass
     models.sort(key=lambda x: x["display"].lower())

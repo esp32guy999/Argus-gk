@@ -1,0 +1,80 @@
+# ── Argus model manifest — the ONE place to onboard/tune a model ──────────────
+# Every per-model knob that used to live scattered across ui/server.py
+# (MODEL_DISPLAY, VISION_MODELS, WARM_ON_SELECT, CHAT_THINKING, CONTEXT_WINDOW,
+# EXTERNAL_MODELS) and ui/static/app.js (MODEL_ACCENT) now lives here.
+#
+# A model with NO entry gets `defaults` below → it shows up in the picker on first
+# load, gets every UNGATED lane immediately (web, weather, notes, native, HA/MCP,
+# arr acquire, navidrome, audiobooks, media read…), a conservative context window,
+# and NO dangerous lanes (shell/code_edit/run_code/fs stay behind the permissions
+# widget). So onboarding = add the llama-swap entry → it works → optionally add a
+# block here to tune or `grant:` a dangerous lane.
+#
+# Match is EXACT first, then substring (like the lane gates) — so a served id that
+# embeds a short key still resolves. Hot-reloaded (re-read when the file changes).
+#
+# Fields: display, accent (an ACCENTS palette name), vision (bool), thinking
+# (true/false/null=server default), context (tokens), warm (bool, pre-load on
+# select), external ({base_url, model_id} for non-llama-swap backends),
+# grant ([extra dangerous lanes this model is born cleared for]).
+
+defaults:
+  context: 8192
+
+models:
+  qwen3-next-80b:
+    display: "Argus (local 80B)"
+    accent: violet
+    context: 8192          # served at -c 8192, VRAM-bound → history must fit
+    warm: true             # slow cold-load (MoE offload) → warm on select
+    thinking: null
+
+  ornith-35b-uncensored:   # Loki
+    display: Loki
+    accent: emerald
+    context: 131072        # A3B KV is tiny; 131k costs little VRAM
+    warm: true
+    thinking: false        # unbounded think runs the budget dry with empty content
+
+  qwen3.6-35b-a3b:
+    accent: teal
+    thinking: false        # reasons on everything → sluggish chat; off = snappy
+
+  qwen3-coder-30b:
+    accent: gold           # bake-off champion
+
+  qwen3-coder-next:
+    {}                     # accent intentionally unmapped (falls back to grey)
+
+  gemma4-26b:
+    accent: pink
+
+  gemma4-12b:
+    accent: green
+
+  gpt-oss-20b:
+    accent: yellow
+
+  bonsai-8b:
+    accent: blue
+
+  lfm2.5-8b:
+    accent: red
+
+  # Cloud path — its own session, never touches llama-swap/VRAM.
+  claude-code:
+    display: "Claude Code"
+    accent: orange
+    vision: true
+
+  # Roundtable Claude via the stateless :8100 shim (distinct from claude-code).
+  claude:
+    display: "Claude (cloud)"
+    accent: blue
+
+  # External backend (not llama-swap): CPU Gemma on its own ollama, never on the GPU.
+  gemma4-cpu:
+    display: "Gemma 4 E2B (CPU)"
+    external:
+      base_url: "http://localhost:11435/v1"
+      model_id: "gemma4e2b"

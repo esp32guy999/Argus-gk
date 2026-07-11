@@ -79,8 +79,13 @@ function modelLabel(id) {
   return (id && state.modelCfg && state.modelCfg[id] && state.modelCfg[id].display) || id || '';
 }
 // The model's accent hex (for the bubble side-bars), grey fallback for unmapped/unknown.
+// Accent palette name for a model: prefer the manifest value from /models (so a new
+// model is coloured without editing app.js), fall back to the local MODEL_ACCENT map.
+function _accentName(id) {
+  return (state.modelCfg && state.modelCfg[id] && state.modelCfg[id].accent) || MODEL_ACCENT[id];
+}
 function modelColor(id) {
-  const a = ACCENTS[MODEL_ACCENT[id]];
+  const a = ACCENTS[_accentName(id)];
   return (a && a[0]) || '#888';
 }
 async function fetchJson(url, opts) {
@@ -369,7 +374,7 @@ const RT_CID = 'roundtable';
 const RT_SPEAKER = { 'gemma4-26b': 'Gemma', 'claude': 'Claude' };  // model id -> display name
 function isRoundtable() { return state.conversationId === RT_CID; }
 function applyModelAccent(id) {
-  const a = ACCENTS[MODEL_ACCENT[id]] || ACCENTS.orange;
+  const a = ACCENTS[_accentName(id)] || ACCENTS.orange;
   const s = document.documentElement.style;
   s.setProperty('--accent', a[0]);
   s.setProperty('--accent-glow', a[1]);
