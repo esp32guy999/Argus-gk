@@ -1,7 +1,7 @@
 {
-  "name": "Claude Desktop Next",
-  "short_name": "Claude Desktop",
-  "description": "Canvas-based AI chat desktop, rebuilt on FastAPI.",
+  "name": "Argus",
+  "short_name": "Argus",
+  "description": "Argus — homelab AI assistant and agent harness.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0a0a0f",
