@@ -82,3 +82,14 @@ but the hook reminds you, and CLAUDE.md tells new sessions to read the latest se
 (CLI one-shot). The UI server is `argus-ui.service` (anvil :8210); restart with
 `systemctl --user restart argus-ui`. Forge "Claude Code" model = a persistent `claude`
 session per conversation (`argus/claude_code.py`), bypassing llama-swap.
+
+## Tool & model permissions (the widget is the control surface)
+
+Every tool is toggleable per-model in the **Model Permissions widget**, which auto-lists
+`registry.all()` + every served model via `/argus/tool-grants`:
+
+- **New tool** → appears automatically (no widget edit). Follows its lane default until
+  toggled; per-tool overrides live in `config/tool_grants.json` (hot-reloaded by
+  `loop._gate_tools`). Give it a real `provider` (lane) for correct danger-grouping.
+- **New model** → appears automatically from `config/models.yaml` / llama-swap.
+- `LANE_MODEL_DENY` (Loki) still floors gated lanes regardless of any toggle.

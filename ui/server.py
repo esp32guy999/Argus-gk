@@ -648,6 +648,52 @@ async def set_lane_grants(request: Request):
     return JSONResponse({"ok": True, "grants": written})
 
 
+@app.get("/argus/tool-grants")
+async def get_tool_grants():
+    """Per-model, per-TOOL permissions for the widget. Auto-lists EVERY registry tool
+    and EVERY served model (Loki included — its gated-lane floor still applies at run
+    time), so new tools/models appear with no widget edit."""
+    models = []
+    try:
+        async with httpx.AsyncClient(timeout=2) as c:
+            data = (await c.get(f"{_LOCAL_BASE}/v1/models")).json()
+        models = [{"id": m["id"], "display": model_config.display(m["id"]) or m["id"]}
+                  for m in data.get("data", [])]
+    except Exception:
+        pass
+    models.sort(key=lambda x: x["display"].lower())
+    gates = loop.effective_gates()
+    denies = loop.LANE_MODEL_DENY
+    tools = sorted(registry.all(), key=lambda t: (getattr(t, "provider", ""), t.name))
+    tool_meta = [{"name": t.name, "provider": getattr(t, "provider", "native"),
+                  "description": (t.description or "")[:120]} for t in tools]
+
+    def eff(mid, t):
+        prov = getattr(t, "provider", None)
+        denied = any(d in mid for d in denies)
+        allowed = True
+        if prov in gates:
+            allowed = not denied and any(m in mid for m in gates[prov])
+        ov = loop._tool_override(mid, t.name)
+        if ov is not None:
+            allowed = ov
+        if denied and prov in gates:
+            allowed = False
+        return allowed
+
+    effective = {m["id"]: {t.name: eff(m["id"], t) for t in tools} for m in models}
+    return JSONResponse({"models": models, "tools": tool_meta,
+                         "effective": effective, "overrides": loop._load_tool_grants()})
+
+
+@app.post("/argus/tool-grants")
+async def set_tool_grants(request: Request):
+    """Persist per-tool overrides: {"grants": {model_id: {tool_name: bool}}}."""
+    body = await request.json()
+    written = await asyncio.to_thread(loop.save_tool_grants, body.get("grants", {}) or {})
+    return JSONResponse({"ok": True, "grants": written})
+
+
 @app.post("/argus/make")
 async def make_app_endpoint(request: Request):
     """/make slash command — export a code block to an installed desktop app on anvil

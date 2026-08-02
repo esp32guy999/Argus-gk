@@ -201,6 +201,25 @@ def start_background_task(task: str) -> dict:
             "note": "running in background; the user will be notified when it finishes"}
 
 
+def notify_phone(message: str, title: str = "Argus") -> dict:
+    """Send a push notification to Shane's phone (the S26, via Home Assistant's companion
+    app). Use to alert/notify the user — e.g. a task finished, something needs attention,
+    or a reminder. Keep the message short."""
+    import os, httpx
+    base = os.environ.get("HA_URL", "http://nyx:8123").rstrip("/")
+    token = os.environ.get("HA_TOKEN", "")
+    if not token:
+        raise ModelRetry("notify_phone: HA_TOKEN is not configured on this host.")
+    try:
+        r = httpx.post(f"{base}/api/services/notify/mobile_app_freya",
+                       headers={"Authorization": f"Bearer {token}"},
+                       json={"title": title, "message": message}, timeout=10)
+        r.raise_for_status()
+    except httpx.HTTPError as e:
+        raise ModelRetry(f"notify_phone failed to reach Home Assistant: {e}")
+    return {"sent": True, "to": "Shane's phone (S26)", "title": title, "message": message}
+
+
 def tools() -> list[Tool]:
     """Provider entry point: emit native tools in the uniform contract."""
     return [
@@ -266,5 +285,15 @@ def tools() -> list[Tool]:
             tags=["task", "background", "async", "delegate", "long", "job"],
             func=start_background_task,
             example={"task": "Research the best PETG settings for the P1S and save a note."},
+        ),
+        Tool(
+            name="notify_phone",
+            description=("Send a push notification to Shane's phone (the S26, via Home "
+                         "Assistant). Use to alert/notify/remind the user — e.g. a task "
+                         "finished, something needs attention. Keep the message short."),
+            tags=["notify", "notification", "phone", "push", "alert", "text", "buzz",
+                  "remind", "message", "ping", "tell", "home assistant"],
+            func=notify_phone,
+            example={"message": "The library scan finished."},
         ),
     ]

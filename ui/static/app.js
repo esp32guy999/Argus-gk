@@ -1841,26 +1841,6 @@ function stopGpuPolling() {
 }
 
 // ── Network view ─────────────────────────────────────────────────────
-async function loadPulse() {
-  const grid = $('machine-grid');
-  grid.textContent = 'Pinging…';
-  try {
-    const { machines } = await fetchJson('/pulse');
-    grid.innerHTML = machines.map(m => `
-      <div class="machine-card">
-        <div class="name">${escHtml(m.name)}</div>
-        <div class="role">${escHtml(m.role)}</div>
-        <div class="status">
-          <span class="dot ${m.online ? 'online' : 'offline'}"></span>
-          <span>${m.online ? 'Online' : 'Offline'}</span>
-        </div>
-        <div class="role" style="margin-top:4px">${escHtml(m.ip)}</div>
-      </div>`).join('');
-  } catch (e) {
-    grid.innerHTML = `<div class="briefing-err">Pulse failed: ${escHtml(e.message)}</div>`;
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════
 // CANVAS ENGINE — ported from claude-desktop app.js
 // ═══════════════════════════════════════════════════════════════════════
@@ -2365,7 +2345,6 @@ function switchView(id) {
   document.querySelectorAll('.nav-tab[data-view]').forEach(t => t.classList.toggle('active', t.dataset.view === id));
 
   if (id === 'gpu')     startGpuPolling(); else stopGpuPolling();
-  if (id === 'network') loadPulse();
   if (id === 'canvas')  onCanvasResize();
   if (id === 'briefing' && !$('briefing-body').textContent.trim()) loadBriefing();
 }
@@ -2502,7 +2481,13 @@ function _wireUI_rest() {
   // Refresh buttons
   $('briefing-refresh').addEventListener('click', loadBriefing);
   $('gpu-refresh').addEventListener('click', loadGpu);
-  $('pulse-refresh').addEventListener('click', loadPulse);
+  // SABnzbd nav tab → open the SAB dashboard PWA (same host, port 8215) in a new tab.
+  $('nav-sabnzb')?.addEventListener('click', () => {
+    window.open(`${location.protocol}//${location.hostname}:8215`, '_blank');
+    sideNav.classList.remove('open');
+    const bd = document.getElementById('nav-backdrop');
+    if (bd) bd.classList.remove('visible');
+  });
 
   // Add widget
   addWidgetBtn.addEventListener('click', openWidgetPicker);

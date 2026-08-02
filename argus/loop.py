@@ -268,6 +268,49 @@ def save_lane_grants(per_lane: dict) -> dict:
     return clean
 
 
+# ── Per-TOOL permissions (config/tool_grants.json, driven by the widget) ──────
+# Finer than lanes: an explicit per-model, per-tool on/off override. Absent entry →
+# the tool follows its lane default (ungated → on; gated → per effective_gates()).
+# LANE_MODEL_DENY still wins on gated lanes (a per-tool grant can't arm Loki's shell).
+# CONVENTION: every tool auto-appears in the permissions widget (it lists registry.all()),
+# so new tools are toggleable with no widget edit; a tool with no override keeps its lane
+# default. New models likewise appear from the manifest — nothing to hand-add.
+_TOOL_GRANTS_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "config", "tool_grants.json")
+_tool_grants_cache: tuple[float, dict] = (0.0, {})
+
+
+def _load_tool_grants() -> dict:
+    """{model_substr: {tool_name: bool}} of explicit overrides; {} if no file."""
+    global _tool_grants_cache
+    try:
+        mtime = os.path.getmtime(_TOOL_GRANTS_PATH)
+    except OSError:
+        return {}
+    if mtime != _tool_grants_cache[0]:
+        try:
+            _tool_grants_cache = (mtime, json.load(open(_TOOL_GRANTS_PATH, encoding="utf-8")))
+        except Exception as e:
+            print(f"[tool_grants] read failed: {e}")
+    return _tool_grants_cache[1]
+
+
+def _tool_override(model_name: str, tool_name: str):
+    """Explicit on/off for this model+tool, or None if unset."""
+    for key, tools in _load_tool_grants().items():
+        if key in (model_name or "") and tool_name in tools:
+            return bool(tools[tool_name])
+    return None
+
+
+def save_tool_grants(grants: dict) -> dict:
+    """Persist {model: {tool: bool}} from the widget (hot-reloaded next turn)."""
+    os.makedirs(os.path.dirname(_TOOL_GRANTS_PATH), exist_ok=True)
+    with open(_TOOL_GRANTS_PATH, "w", encoding="utf-8") as f:
+        json.dump(grants, f, indent=2)
+    _load_tool_grants()
+    return grants
+
+
 # ── research-lane isolation (2026-07-09) ────────────────────────────────
 # The bubble wrap is around the CONSEQUENCES, not the content: a prompt-injected web
 # page can only ever produce a wrong summary if it has no actionable tool to reach for.
@@ -339,11 +382,17 @@ def _gate_tools(selected, model_name: str, history=None):
     kept = []
     for t in selected:
         prov = getattr(t, "provider", None)
-        if prov in gates:
+        allowed = True
+        if prov in gates:                       # lane default
             allow = gates[prov]
-            if denied or not any(m in (model_name or "") for m in allow):
-                continue
-        kept.append(t)
+            allowed = not denied and any(m in (model_name or "") for m in allow)
+        ov = _tool_override(model_name, t.name)  # widget per-tool override wins…
+        if ov is not None:
+            allowed = ov
+        if denied and prov in gates:            # …except Loki's gated-lane floor
+            allowed = False
+        if allowed:
+            kept.append(t)
     return _apply_research_isolation(kept, model_name, history)
 
 
