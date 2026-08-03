@@ -195,12 +195,22 @@ def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
             task.last_progress_ts = now
 
     if ev.type == "EvidenceAdded":
-        e = Evidence.from_dict(ev.data if ev.data.get("criterion") else {
-            "criterion": ev.detail or "",
-            "kind": ev.data.get("kind") or "other",
-            "summary": ev.data.get("summary") or ev.detail or "",
-            "payload": ev.data.get("payload"),
-        })
+        raw = dict(ev.data or {})
+        if not raw.get("criterion"):
+            raw = {
+                "criterion": ev.detail or "",
+                "kind": raw.get("kind") or "other",
+                "summary": raw.get("summary") or ev.detail or "",
+                "payload": raw.get("payload"),
+                "source": raw.get("source"),
+                "command": raw.get("command"),
+                "trust": raw.get("trust"),
+            }
+        e = Evidence.from_dict(raw)
+        # Prefer tool provenance: untrusted worker claims get lower trust
+        if not e.source:
+            e.source = "worker:claim"
+            e.trust = min(e.trust, 0.5)
         task.evidence.append(e)
         task.last_progress_ts = now
 
@@ -391,12 +401,21 @@ def _evidence_proves_criterion(criterion: str, summary: str, payload: str | None
 
 
 def _evidence_quality_issues(task: SeeTask) -> list[str]:
-    """VERIFY: reject hollow claims and evidence that does not prove its criterion."""
+    """VERIFY: reject hollow claims and evidence that does not prove its criterion.
+
+    Tool-sourced evidence (source tool:*) ranks above worker:claim text.
+    """
     issues = []
     for e in task.evidence:
         issues.extend(_evidence_proves_criterion(
             e.criterion, e.summary, e.payload, e.kind or "other",
         ))
+        if (e.source or "").startswith("worker:") and e.trust < 0.7:
+            if (e.kind or "other") in ("other", "") and not e.command:
+                issues.append(
+                    f"evidence for {e.criterion!r} is worker-authored "
+                    f"(source={e.source!r}); prefer tool: provenance with command/result"
+                )
     return issues
 
 

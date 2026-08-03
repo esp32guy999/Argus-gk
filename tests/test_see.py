@@ -202,25 +202,34 @@ def main() -> int:
     )
     print("PASS: unrelated jellyfin evidence → VERIFY_FAILED + protocol schema")
 
-    # 12. Protocol: worker rejects unknown actions
-    from argus.see.models import SupervisorDecision, ACTIONS
-    try:
-        SupervisorDecision.from_dict({"action": "TRY_AGAIN", "code": "X", "state": "EXECUTING"})
-        # synonym maps to RETRY
-        d = SupervisorDecision.from_dict({"action": "TRY_AGAIN", "code": "X", "state": "EXECUTING"})
-        assert d.action == "RETRY", d.action
-    except Exception:
-        pass
+    # 12. STP protocol: version, frozen vocab, reject violations
+    from argus.see.models import SupervisorDecision, ACTIONS, PROTOCOL_ID, decide
     d_syn = SupervisorDecision.from_dict(
         {"action": "TRY_AGAIN", "code": "TEMPORARY_FAILURE", "state": "EXECUTING", "blocking": []})
     assert d_syn.action == "RETRY"
+    assert decide("COMPLETE", "ALL_CRITERIA_MET", "COMPLETED").to_dict()["protocol"] == PROTOCOL_ID
     try:
-        SupervisorDecision.from_dict({"action": "MAGIC", "code": "X", "state": "EXECUTING"})
+        SupervisorDecision.from_dict(
+            {"action": "MAGIC", "code": "EVENT_APPLIED", "state": "EXECUTING"})
         print("FAIL: accepted MAGIC"); return 1
     except ValueError:
         print("PASS: protocol rejects unknown action MAGIC")
+    try:
+        SupervisorDecision.from_dict(
+            {"protocol": "STP-1.0", "action": "CONTINUE", "code": "NOT_A_REAL_CODE",
+             "state": "EXECUTING"})
+        print("FAIL: accepted unknown code"); return 1
+    except ValueError:
+        print("PASS: protocol rejects unknown code")
+    try:
+        SupervisorDecision.from_dict(
+            {"protocol": "STP-2.0", "action": "CONTINUE", "code": "EVENT_APPLIED",
+             "state": "EXECUTING"})
+        print("FAIL: accepted STP-2.0"); return 1
+    except ValueError:
+        print("PASS: protocol rejects incompatible version")
     assert len(ACTIONS) == 8
-    print("PASS: action vocabulary size 8")
+    print("PASS: STP-1.0 action vocabulary size 8 + protocol field")
 
     print("\nALL SEE TESTS PASSED ✅")
     return 0

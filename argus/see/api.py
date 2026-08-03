@@ -158,10 +158,25 @@ def checkpoint(task_id: str, label: str, *, checklist_item: str | None = None,
 
 
 def add_evidence(task_id: str, criterion: str, summary: str, *,
-                 kind: str = "other", payload: str | None = None) -> SupervisorDecision:
+                 kind: str = "other", payload: str | None = None,
+                 source: str | None = None, command: str | None = None,
+                 trust: float | None = None) -> SupervisorDecision:
+    """Attach evidence with provenance. Prefer source='tool:<name>' over worker claims."""
+    data = {
+        "criterion": criterion,
+        "kind": kind,
+        "summary": summary,
+        "payload": payload,
+        "source": source or ("tool:see_add_evidence" if kind in (
+            "http", "docker", "command", "file", "test") else "worker:claim"),
+        "command": command,
+    }
+    if trust is not None:
+        data["trust"] = trust
+    elif (data["source"] or "").startswith("tool:"):
+        data["trust"] = 0.95
     return on_event(task_id, SeeEvent(
-        type="EvidenceAdded", detail=criterion,
-        data={"criterion": criterion, "kind": kind, "summary": summary, "payload": payload},
+        type="EvidenceAdded", detail=criterion, data=data,
     ))
 
 

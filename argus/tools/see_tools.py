@@ -68,16 +68,25 @@ def see_add_evidence(
     summary: str,
     kind: str = "other",
     payload: str = "",
+    command: str = "",
+    source: str = "",
 ) -> dict:
     """Attach observable evidence for a success criterion (command output, HTTP status,
-    file path, etc.). Required before verification can COMPLETE."""
+    file path, etc.). Prefer tool outputs (kind=http|docker|command|file) with the
+    actual command/result in summary/payload. Worker-only claims are weak. Required
+    before verification can COMPLETE."""
     if not task_id or not criterion or not summary:
         raise ModelRetry("see_add_evidence: task_id, criterion, and summary required.")
     from argus.see import api
+    src = (source or "").strip() or None
+    if not src and kind in ("http", "docker", "command", "file", "test"):
+        src = f"tool:{kind}"
     dec = api.add_evidence(
         task_id, criterion, summary,
         kind=kind or "other",
         payload=payload or None,
+        source=src,
+        command=command or None,
     )
     out = dec.to_dict()
     out["ok"] = dec.ok

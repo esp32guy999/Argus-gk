@@ -5,6 +5,7 @@ JSON-serializable plain data; no I/O.
 """
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -34,21 +35,26 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     "ABORTED":   frozenset(),
 }
 
-# ── Supervisor Decision Protocol v1 (immutable within protocol version) ──
-# The Worker MUST accept only these values. Synonyms are NOT allowed.
+# ── Supervisory Task Protocol (STP) ──────────────────────────────────────
+# Versioned network protocol (not merely Python classes). Changing ACTIONS or
+# CODES is a protocol revision: update specs/see-protocol.md + tests + workers.
+PROTOCOL_ID = "STP-1.0"
+PROTOCOL_MAJOR = 1  # workers reject major != 1
+
+# Frozen action vocabulary (STP § Recommendation 2). No synonyms as actions.
 ACTIONS = (
-    "CONTINUE",       # healthy progress
-    "RETRY",          # repeat current step; plan still valid
-    "REPLAN",         # plan invalid → PLANNING
-    "VERIFY_FAILED",  # verification denied → EXECUTING
-    "ASK_USER",       # need human → STALLED
-    "STALL",          # no progress / loop → STALLED
-    "ABORT",          # unrecoverable → ABORTED
-    "COMPLETE",       # verified success → COMPLETED
+    "CONTINUE",
+    "RETRY",
+    "REPLAN",
+    "VERIFY_FAILED",
+    "ASK_USER",
+    "STALL",
+    "ABORT",
+    "COMPLETE",
 )
 ACTIONS_SET = frozenset(ACTIONS)
 
-# Legacy / informal synonyms → canonical action (workers/orchestrators may map)
+# Human/CLI layer only — never emitted as action by the Supervisor.
 ACTION_SYNONYMS = {
     "WAIT": "ASK_USER",
     "WAITING": "ASK_USER",
@@ -60,46 +66,54 @@ ACTION_SYNONYMS = {
     "FAIL": "VERIFY_FAILED",
     "FAILED": "VERIFY_FAILED",
     "STOP": "ABORT",
-    "RESUME": "CONTINUE",   # resume is CONTINUE after STALLED→EXECUTING
-    "VERIFY": "CONTINUE",   # worker requests verify; supervisor answers COMPLETE/VERIFY_FAILED
+    "RESUME": "CONTINUE",
+    "VERIFY": "CONTINUE",
 }
 
-# Common reason codes (not exhaustive; free-form codes allowed if action is valid)
+# Frozen code registry (STP § Recommendation 3). Unknown codes rejected.
 CODES = (
+    # Progress / continue
     "PROGRESS_DETECTED",
     "CHECKPOINT_ACCEPTED",
     "WORKER_ACTIVE",
+    "PLAN_ACCEPTED",
+    "EVENT_APPLIED",
+    "RESUMED",
+    # Verification
     "MISSING_EVIDENCE",
-    "UNRELATED_EVIDENCE",
     "WEAK_EVIDENCE",
-    "COMMAND_FAILED",
-    "TEMPORARY_FAILURE",
+    "UNRELATED_EVIDENCE",
+    "CRITERION_NOT_MET",
+    "VERIFICATION_FAILED",
+    "ALL_CRITERIA_MET",
     "VALIDATION_FAILED",
+    # Planning
     "PLAN_INVALID",
     "RESOURCE_MISSING",
     "PRECONDITION_FAILED",
     "NEW_INFORMATION",
-    "CRITERION_NOT_MET",
-    "VERIFICATION_FAILED",
+    # Execution
+    "COMMAND_FAILED",
+    "TEMPORARY_FAILURE",
+    "TIMEOUT",
+    "LOOP_DETECTED",
+    "NO_PROGRESS",
+    "WAITING_FOREVER",
+    # User
     "MISSING_INFORMATION",
     "AMBIGUOUS_REQUEST",
     "PERMISSION_REQUIRED",
     "CONFIGURATION_UNKNOWN",
-    "NO_PROGRESS",
-    "TIMEOUT",
-    "LOOP_DETECTED",
-    "WAITING_FOREVER",
+    # Terminal / control
     "UNRECOVERABLE_ERROR",
     "MAX_RETRIES",
     "SECURITY_POLICY",
     "USER_CANCELLED",
-    "ALL_CRITERIA_MET",
     "UNKNOWN_TASK",
     "ILLEGAL_STATE",
-    "RESUMED",
-    "PLAN_ACCEPTED",
-    "EVENT_APPLIED",
+    "PROTOCOL_ERROR",
 )
+CODES_SET = frozenset(CODES)
 
 # Event types (worker/tools/supervisor emit these)
 EVENT_TYPES = (
@@ -126,25 +140,42 @@ EVENT_TYPES = (
 
 @dataclass
 class Evidence:
-    """Observable proof for a success criterion (not a model claim)."""
+    """Observable proof for a success criterion (not a model claim).
+
+    Provenance (STP rec 6): tool-produced evidence should rank above worker text.
+    """
     criterion: str           # which success_criteria item this supports
     kind: str                # http|command|file|test|docker|other
     summary: str             # short human line
     payload: str | None = None  # raw snippet / url / path (capped by store)
     ts: float = field(default_factory=time.time)
+    source: str | None = None     # e.g. tool:curl, worker:claim, see:path
+    command: str | None = None    # originating command if any
+    trust: float = 0.5            # 0..1 telemetry; tool evidence default higher
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Evidence":
+        src = d.get("source")
+        trust = d.get("trust")
+        if trust is None:
+            trust = 0.9 if (src or "").startswith("tool:") else 0.5
         return cls(
             criterion=d.get("criterion") or "",
             kind=d.get("kind") or "other",
             summary=d.get("summary") or "",
             payload=d.get("payload"),
             ts=float(d.get("ts") or time.time()),
+            source=src,
+            command=d.get("command"),
+            trust=float(trust),
         )
+
+    @property
+    def is_tool_sourced(self) -> bool:
+        return (self.source or "").startswith("tool:")
 
 
 @dataclass
@@ -182,14 +213,32 @@ class SeeEvent:
         )
 
 
+def _parse_protocol(value: str | None) -> str:
+    """Return canonical protocol id or raise PROTOCOL_ERROR."""
+    if not value:
+        return PROTOCOL_ID  # emitters may omit; workers should require it
+    v = str(value).strip().upper().replace("_", "-")
+    if v in ("STP-1.0", "STP-1", "STP1.0", "STP1"):
+        return PROTOCOL_ID
+    # major version check
+    m = re.match(r"STP-?(\d+)", v)
+    if m and int(m.group(1)) != PROTOCOL_MAJOR:
+        raise ValueError(
+            f"incompatible STP protocol {value!r}; this runtime speaks {PROTOCOL_ID}"
+        )
+    if v != "STP-1.0":
+        raise ValueError(f"unknown STP protocol {value!r}; expected {PROTOCOL_ID}")
+    return PROTOCOL_ID
+
+
 @dataclass
 class SupervisorDecision:
-    """Supervisor Decision Protocol v1 — structured decision for the Worker.
+    """STP decision object — structured, versioned, machine-readable.
 
-    Schema:
-      action, code, state, blocking, details, confidence?
-    Legacy aliases kept for older call sites: reason→code, new_state→state,
-    feedback→blocking joined, ok→action not ABORT/VERIFY_FAILED.
+    Public schema:
+      protocol, action, code, state, blocking, details, confidence?
+
+    confidence is telemetry only and MUST NOT affect execution (STP rec 7).
     """
     action: str
     code: str
@@ -197,23 +246,41 @@ class SupervisorDecision:
     blocking: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)
     confidence: float | None = None
+    protocol: str = PROTOCOL_ID
 
     def __post_init__(self) -> None:
+        self.protocol = _parse_protocol(self.protocol)
         act = (self.action or "").upper().strip()
-        if act in ACTION_SYNONYMS:
-            act = ACTION_SYNONYMS[act]
+        # Supervisor emitters must use canonical actions; synonyms only at human edge.
         if act not in ACTIONS_SET:
-            raise ValueError(
-                f"invalid Supervisor action {self.action!r}; "
-                f"allowed: {', '.join(ACTIONS)}"
-            )
+            # allow synonym only when constructing via from_dict(normalize=True)
+            if act in ACTION_SYNONYMS:
+                act = ACTION_SYNONYMS[act]
+            else:
+                raise ValueError(
+                    f"invalid Supervisor action {self.action!r}; "
+                    f"allowed: {', '.join(ACTIONS)}"
+                )
         self.action = act
-        self.code = (self.code or "EVENT_APPLIED").upper()
+        code = (self.code or "EVENT_APPLIED").upper().strip()
+        if code not in CODES_SET:
+            raise ValueError(
+                f"invalid Supervisor code {self.code!r}; "
+                f"not in STP code registry"
+            )
+        self.code = code
         self.state = (self.state or "").upper() or "EXECUTING"
+        if self.state not in STATES and self.state not in TERMINAL:
+            # allow only known states
+            if self.state not in STATES:
+                raise ValueError(f"invalid state {self.state!r}")
         if self.blocking is None:
             self.blocking = []
         if self.details is None:
             self.details = {}
+        # confidence must not be used for control — clamp if present
+        if self.confidence is not None:
+            self.confidence = max(0.0, min(1.0, float(self.confidence)))
 
     # ── legacy property aliases (tests / older UI) ──────────────────────
     @property
@@ -232,12 +299,12 @@ class SupervisorDecision:
 
     @property
     def ok(self) -> bool:
-        # Terminal fail / verify deny are not "ok" for the worker happy path.
         return self.action not in ("ABORT", "VERIFY_FAILED")
 
     def to_dict(self) -> dict:
-        """Public protocol payload — workers must only depend on these fields."""
+        """Public STP payload. Workers must depend only on these fields."""
         d = {
+            "protocol": self.protocol,
             "action": self.action,
             "code": self.code,
             "state": self.state,
@@ -249,19 +316,35 @@ class SupervisorDecision:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SupervisorDecision":
-        """Parse a decision; reject unknown actions (Worker requirement)."""
+    def from_dict(cls, d: dict, *, allow_synonyms: bool = True) -> "SupervisorDecision":
+        """Parse a decision. Rejects unknown protocol, action, code, or state.
+
+        allow_synonyms: human/CLI edge may pass TRY_AGAIN → RETRY; Supervisor
+        emitters should pass allow_synonyms=False.
+        """
         if not isinstance(d, dict):
             raise ValueError("decision must be an object")
-        action = (d.get("action") or "").upper().strip()
-        if action in ACTION_SYNONYMS:
+        # Required fields (STP fail-fast)
+        for req in ("action", "code", "state"):
+            if req not in d or d[req] in (None, ""):
+                raise ValueError(f"malformed STP decision: missing required field {req!r}")
+        proto = _parse_protocol(d.get("protocol"))
+        action = str(d.get("action") or "").upper().strip()
+        if allow_synonyms and action in ACTION_SYNONYMS:
             action = ACTION_SYNONYMS[action]
         if action not in ACTIONS_SET:
             raise ValueError(f"unknown Supervisor action {d.get('action')!r} — rejected")
+        code = str(d.get("code") or "").upper().strip()
+        if code not in CODES_SET:
+            raise ValueError(f"unknown Supervisor code {d.get('code')!r} — rejected")
+        state = str(d.get("state") or "").upper().strip()
+        if state not in STATES:
+            raise ValueError(f"unknown state {d.get('state')!r} — rejected")
         return cls(
+            protocol=proto,
             action=action,
-            code=str(d.get("code") or "EVENT_APPLIED"),
-            state=str(d.get("state") or "EXECUTING"),
+            code=code,
+            state=state,
             blocking=list(d.get("blocking") or []),
             details=dict(d.get("details") or {}),
             confidence=d.get("confidence"),
@@ -277,8 +360,9 @@ def decide(
     details: dict | None = None,
     confidence: float | None = None,
 ) -> SupervisorDecision:
-    """Factory for protocol decisions."""
+    """Factory for STP decisions (always PROTOCOL_ID)."""
     return SupervisorDecision(
+        protocol=PROTOCOL_ID,
         action=action,
         code=code,
         state=state,
