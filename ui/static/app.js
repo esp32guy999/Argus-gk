@@ -1141,6 +1141,11 @@ async function send() {
     return handleMake(text);
   }
 
+  // /task → Supervisory Execution Engine (SEE) planner + control
+  if (/^\/task\b/i.test(text)) {
+    return handleTask(text);
+  }
+
   // Roundtable room → three-way orchestration (Shane · Gemma · Claude).
   // Attachments are NOT supported here (no vision path to either peer) — refuse
   // visibly instead of the old silent drop (specs/vision_lane.md).
@@ -1400,6 +1405,43 @@ launcher → <code>~/Desktop/&lt;name&gt;.desktop</code> (clickable, marked trus
 <code>import random; print("You rolled", random.randint(1,6))</code><br>
 <code>input("Enter to close…")</code><br>
 <code>\`\`\`</code>`;
+
+// /task — SEE supervised work (specs/see.md S3)
+async function handleTask(text) {
+  appendMessage('user', text);
+  const el = appendMessage('assistant typing', '');
+  scrollBottom();
+  try {
+    const res = await fetch('/argus/see/task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        conversation_id: state.conversationId,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    el.classList.remove('typing');
+    if (!res.ok || data.ok === false) {
+      el.textContent = '⚠️ /task: ' + (data.error || res.statusText || 'failed');
+      return;
+    }
+    // Prefer markdown-ish text; simple renderer already strips tags — use plain with newlines
+    const md = data.markdown || data.brief || JSON.stringify(data, null, 2);
+    el.textContent = md;
+    // Light structure: bold markers already use ** in markdown — show as plain
+    if (typeof _renderInlineHtml === 'function') {
+      try { _renderInlineHtml(el, md); } catch {}
+    }
+    if (data.task_id) {
+      el.dataset.seeTaskId = data.task_id;
+    }
+  } catch (e) {
+    el.classList.remove('typing');
+    el.textContent = '⚠️ /task error: ' + (e.message || e);
+  }
+  scrollBottom();
+}
 
 // /make <Name> [:: description] [flags] + a fenced ```code``` block → build a desktop app.
 async function handleMake(text) {

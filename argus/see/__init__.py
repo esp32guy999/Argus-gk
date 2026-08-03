@@ -8,6 +8,6 @@ Public surface:
   api.add_evidence(task.id, criterion, summary, kind="http")
   api.request_verify(task.id)
 """
-from . import api, engine, models
+from . import api, engine, models, planner, slash
 
-__all__ = ["api", "engine", "models"]
+__all__ = ["api", "engine", "models", "planner", "slash"]

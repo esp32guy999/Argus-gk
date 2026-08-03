@@ -754,6 +754,43 @@ async def set_tool_grants(request: Request):
     return JSONResponse({"ok": True, "grants": written})
 
 
+@app.post("/argus/see/task")
+async def see_task_slash(request: Request):
+    """/task slash command — SEE planner + task control (specs/see.md S3)."""
+    body = await request.json()
+    text = body.get("text") or body.get("message") or ""
+    conversation_id = _cid(body.get("conversation_id"))
+    from argus.see import slash as see_slash
+    try:
+        result = await asyncio.to_thread(
+            see_slash.handle_task_command, text, conversation_id=conversation_id)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status)
+
+
+@app.get("/argus/see/tasks")
+async def see_list_tasks(conversation_id: str | None = None, limit: int = 20):
+    """List SEE tasks (optional conversation filter)."""
+    from argus.storage import get_store
+    cid = _cid(conversation_id) if conversation_id else None
+    tasks = await asyncio.to_thread(
+        get_store().list_see_tasks,
+        conversation_id=cid, include_terminal=True, limit=min(limit, 50),
+    )
+    return JSONResponse({"tasks": tasks})
+
+
+@app.get("/argus/see/task/{task_id}")
+async def see_get_task(task_id: str):
+    from argus.see import api as see_api
+    task = await asyncio.to_thread(see_api.get, task_id)
+    if not task:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({"task": task.to_dict(), "brief": see_api.worker_brief(task_id)})
+
+
 @app.post("/argus/make")
 async def make_app_endpoint(request: Request):
     """/make slash command — export a code block to an installed desktop app on anvil

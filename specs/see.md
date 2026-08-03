@@ -289,20 +289,26 @@ Every transition append-only in task event log (replayable).
 | **S0** | Spec + map to watchdog/jobs | **done** (`specs/see.md`) |
 | **S1** | `see_tasks` / `see_events` + pure engine + tests | **done** (`argus/see/`, `tests/test_see.py`) |
 | **S2** | Loop tool events → SEE; worker tools; brief inject | **done** (light): `loop` sink + `see_*` tools |
-| **S3** | Planner structured task JSON; slash `/task` UI | pending |
+| **S3** | Planner structured task JSON; slash `/task` UI | **done** |
 | **S4** | Richer VERIFY policies; multi-turn GK host | pending |
 | **S5** | HA on complete/ask; polish memory_policy from evidence | partial (COMPLETED → candidates) |
 
-### Code map (S1–S2)
+### Code map (S1–S3)
 
 | Path | Role |
 |------|------|
 | `argus/see/models.py` | Task, Evidence, Event, states |
 | `argus/see/engine.py` | Pure state machine, stall/loop/verify |
 | `argus/see/api.py` | Persist + public API |
+| `argus/see/planner.py` | Intent → structured TaskPlan (JSON) |
+| `argus/see/slash.py` | `/task` command parser + handlers |
 | `argus/tools/see_tools.py` | Worker tools: start / checkpoint / evidence / verify / status |
 | `argus/storage.py` | `see_tasks`, `see_events` tables |
 | `argus/loop.py` | Tool events → active SEE task; worker brief prefix |
+| `ui/server.py` | `POST /argus/see/task`, GET tasks |
+| `ui/static/app.js` | `/task` slash → handleTask |
+
+**`/task` usage:** `/task <goal>`, sectioned criteria/checklist, JSON plan, `status|list|verify|abort|resume|replan|brief|-help`.
 
 Env: `ARGUS_SEE_IDLE_SEC` (default 120), `ARGUS_SEE_LOOP_REPEAT` (3), `ARGUS_SEE_MEMORY` (1).
 

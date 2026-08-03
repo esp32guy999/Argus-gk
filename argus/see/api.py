@@ -38,6 +38,11 @@ def _save(task: SeeTask, *, event: SeeEvent | None = None) -> SeeTask:
     return task
 
 
+def save(task: SeeTask) -> SeeTask:
+    """Persist a mutated task (e.g. after planner replan)."""
+    return _save(task)
+
+
 def create(
     goal: str,
     *,
