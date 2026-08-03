@@ -485,7 +485,8 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
                      base_url: str = "http://localhost:4000/v1", api_key: str = "none",
                      turn_budget: int = 8,
                      message_history=None, on_event=None,
-                     enable_thinking: bool | None = None, anti_stall: bool = True):
+                     enable_thinking: bool | None = None, anti_stall: bool = True,
+                     conversation_id: str | None = None):
     """Async generator yielding CUMULATIVE assistant text as it streams.
 
     Same setup as run() (tool selection + watchdog + turn budget) but uses Pydantic
@@ -494,6 +495,8 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     `message_history` (prior turns) is what gives the model memory across turns.
     Anti-stall: an announce-without-acting reply gets one corrective second pass,
     streamed as a continuation of the same bubble.
+    After a successful turn, orchestrator memory_policy.after_turn may append
+    high-importance cold candidates (never auto-confirms facts).
     """
     selected = _gate_tools(registry.select(prompt), model_name, message_history)
     metrics.TOOLS_SELECTED.observe(len(selected))
@@ -525,8 +528,20 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
                 usage_limits=limits, model_settings=settings,
             ) as result2:
                 async for text in result2.stream_text():
-                    yield f"{final}\n\n{text}"
+                    final = f"{final}\n\n{text}"
+                    yield final
         metrics.AGENT_TURNS.labels("ok").inc()
+        # F1: orchestrator memory policy (cold candidates only)
+        try:
+            from . import memory_policy as mp
+            mp.after_turn(
+                user_message=prompt if isinstance(prompt, str) else str(prompt),
+                assistant_text=final or "",
+                tools_called=called,
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            pass
     except UsageLimitExceeded:
         metrics.AGENT_TURNS.labels("exhausted").inc()
         metrics.NO_PROGRESS.inc()

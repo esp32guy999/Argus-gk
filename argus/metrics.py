@@ -34,6 +34,17 @@ MEMORY_FALSE_CONFIRMATIONS = Counter(
 MEMORY_FALSE_INVALIDATIONS = Counter(
     "argus_memory_false_invalidations_total",
     "Facts wrongly invalidated then restored (tune invalidation criteria)")
+# Flywheel F0–F1: cold-ledger capture quality (importance gate + orchestrator policy)
+MEMORY_CANDIDATES = Counter(
+    "argus_memory_candidates_total",
+    "Cold memory_candidates ledger writes / rejects",
+    ["outcome"],  # accepted | rejected | auto_accepted | auto_skipped
+)
+MEMORY_IMPORTANCE = Histogram(
+    "argus_memory_candidate_importance",
+    "Importance scores (0-100) for accepted cold candidates",
+    buckets=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100),
+)
 LOOP_DETECTED = Counter("argus_agent_loop_detected_total", "Repeated-call interventions")
 NO_PROGRESS = Counter("argus_agent_no_progress_total", "No-progress give-ups")
 ANNOUNCE_NUDGES = Counter(

@@ -56,18 +56,40 @@ def save_note(note: str) -> dict:
 
 def flag_memory_candidate(summary: str, kind: str = "other", detail: str | None = None) -> dict:
     """Flag a moment that MIGHT be worth remembering later — a dead end, a correction, a
-    repeated lookup, or a stated rule/preference. This is a LOW-STAKES note-to-self: it
-    records a candidate for later review. It does NOT create a durable memory or fact and
-    has NO effect on what you recall — so use it freely whenever something seems notable;
-    curation happens later. `kind` is one of: dead_end, correction, repeat_lookup, rule,
-    other (anything else becomes 'other'). `summary` is one line; `detail` is optional."""
+    repeated lookup, a stated rule/preference, or a homelab/config fact. LOW-STAKES: it
+    records a cold candidate for later review (D5 ledger). It does NOT create a confirmed
+    fact and does NOT affect recall until consolidation. Prefer high-value personal /
+    homelab / config facts over generic world knowledge (capitals, weather, news).
+    `kind` ∈ dead_end|correction|repeat_lookup|rule|config|personal|document|research|event|other.
+    Orchestrator importance scoring may reject low-value flags (returns rejected=true)."""
     if not summary or not summary.strip():
         raise ModelRetry("flag_memory_candidate: empty summary. Provide one line describing "
                          "what's worth remembering.")
-    from ..storage import get_store
-    row = get_store().add_memory_candidate(
-        kind, summary.strip(), detail=detail, source="flag_memory_candidate")
-    return {"flagged": True, "id": row["id"], "kind": row["kind"]}
+    from .. import memory_policy as mp
+    res = mp.accept_candidate(
+        summary.strip(),
+        kind=kind,
+        detail=detail,
+        source="flag_memory_candidate",
+        policy="tool",
+    )
+    if res.get("rejected"):
+        return {
+            "flagged": False,
+            "rejected": True,
+            "importance": res.get("importance"),
+            "reasons": res.get("reasons"),
+            "hint": (
+                "Too low importance for the cold ledger (generic/world knowledge?). "
+                "Prefer homelab config, personal preferences, or user-stated rules."
+            ),
+        }
+    return {
+        "flagged": True,
+        "id": res["id"],
+        "kind": res["kind"],
+        "importance": res.get("importance"),
+    }
 
 
 def tools() -> list[Tool]:
@@ -83,14 +105,14 @@ def tools() -> list[Tool]:
         ),
         Tool(
             name="flag_memory_candidate",
-            description=("Flag a moment that might be worth remembering later (a dead end, "
-                         "a correction, a repeated lookup, a stated rule/preference). "
-                         "LOW-STAKES: records a candidate for later review — does NOT create "
-                         "a durable memory and does not affect recall. Use it freely. kind ∈ "
-                         "{dead_end, correction, repeat_lookup, rule, other}."),
+            description=("Flag a high-value moment for later memory curation (homelab config, "
+                         "personal preference, correction, dead end, document fact). "
+                         "LOW-STAKES cold ledger — NOT confirmed recall. Skip generic trivia "
+                         "(capitals, weather, news). kind ∈ {config, personal, document, "
+                         "research, rule, dead_end, correction, repeat_lookup, event, other}."),
             tags=["memory", "flag", "candidate", "remember", "note-to-self", "interesting",
-                  "worth", "dead-end", "correction"],
+                  "worth", "dead-end", "correction", "config", "homelab"],
             func=flag_memory_candidate,
-            example={"summary": "User prefers metric units in all answers", "kind": "rule"},
+            example={"summary": "glassgarden Sonarr listens on port 8989", "kind": "config"},
         ),
     ]

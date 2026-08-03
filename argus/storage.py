@@ -74,12 +74,15 @@ CREATE TABLE IF NOT EXISTS memory_candidates (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     ts              REAL NOT NULL,
     conversation_id TEXT,
-    kind            TEXT NOT NULL,      -- 'dead_end'|'correction'|'repeat_lookup'|'rule'|'other'
+    kind            TEXT NOT NULL,      -- config|personal|document|research|rule|… (see memory_policy)
     summary         TEXT NOT NULL,      -- one line: what happened
     detail          TEXT,               -- optional fuller context
-    source          TEXT                -- where it came from, e.g. 'web_fetch:<url>' | 'user'
+    source          TEXT,               -- where it came from, e.g. 'web_fetch:<url>' | 'user'
+    importance      INTEGER NOT NULL DEFAULT 50,  -- 0–100 future-Shane value (policy)
+    policy          TEXT                -- 'tool'|'orchestrator'|'user' — who decided to flag
 );
 CREATE INDEX IF NOT EXISTS idx_memcand_ts ON memory_candidates(ts);
+-- idx_memcand_importance created in _migrate after ALTER adds columns on old DBs
 
 -- Long-term memory facts with an explicit LIFECYCLE state machine (Task 3, per
 -- specs/memory_system.md §6a). A fact is never destructively deleted: superseded and
@@ -116,7 +119,11 @@ CREATE TABLE IF NOT EXISTS consolidation_log (
 CREATE INDEX IF NOT EXISTS idx_conslog_fact ON consolidation_log(fact_id, id);
 """
 
-MEMORY_CANDIDATE_KINDS = ("dead_end", "correction", "repeat_lookup", "rule", "other")
+# Keep in sync with argus.memory_policy.MEMORY_KINDS (legacy + flywheel kinds).
+MEMORY_CANDIDATE_KINDS = (
+    "dead_end", "correction", "repeat_lookup", "rule", "other",
+    "config", "personal", "document", "research", "event",
+)
 
 # ── Memory fact lifecycle (state machine) ───────────────────────────────
 FACT_STATES = ("proposed", "observed", "confirmed", "superseded", "invalidated")
@@ -139,6 +146,10 @@ _JOB_MIGRATIONS = {
     "category": "ALTER TABLE jobs ADD COLUMN category TEXT NOT NULL DEFAULT 'external'",
     "next_check_ts": "ALTER TABLE jobs ADD COLUMN next_check_ts REAL",
 }
+_MEMCAND_MIGRATIONS = {
+    "importance": "ALTER TABLE memory_candidates ADD COLUMN importance INTEGER NOT NULL DEFAULT 50",
+    "policy": "ALTER TABLE memory_candidates ADD COLUMN policy TEXT",
+}
 
 # Job lifecycle. Terminal states are skipped by the reconciler.
 JOB_STATES = ("proposed", "queued", "active", "blocked", "done", "failed", "cancelled")
@@ -160,12 +171,22 @@ class Store:
         self._conn.commit()
 
     def _migrate(self) -> None:
-        """Additively bring an existing `jobs` table up to the current schema —
+        """Additively bring existing tables up to the current schema —
         SQLite CREATE TABLE IF NOT EXISTS never adds columns to an existing table."""
         have = {r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")}
         for col, ddl in _JOB_MIGRATIONS.items():
             if col not in have:
                 self._conn.execute(ddl)
+        have_mc = {r[1] for r in self._conn.execute("PRAGMA table_info(memory_candidates)")}
+        for col, ddl in _MEMCAND_MIGRATIONS.items():
+            if col not in have_mc:
+                self._conn.execute(ddl)
+        # Index on importance only after the column exists (old DBs: after ALTER).
+        have_mc = {r[1] for r in self._conn.execute("PRAGMA table_info(memory_candidates)")}
+        if "importance" in have_mc:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memcand_importance "
+                "ON memory_candidates(importance, ts)")
 
     # --- writes -----------------------------------------------------------
     def add_message(self, conversation_id: str, role: str, content: str,
@@ -185,22 +206,31 @@ class Store:
     def add_memory_candidate(self, kind: str, summary: str, *,
                              conversation_id: str | None = None,
                              detail: str | None = None,
-                             source: str | None = None) -> dict:
+                             source: str | None = None,
+                             importance: int = 50,
+                             policy: str | None = None) -> dict:
         """Append a memory-worthy candidate (research-lane D5). Append-only; never
-        updated or trusted — just collected for Task 3's future write policy."""
+        updated or trusted — just collected for Task 3's future write policy.
+        Prefer argus.memory_policy.accept_candidate() so importance is scored."""
         if kind not in MEMORY_CANDIDATE_KINDS:
             kind = "other"
+        try:
+            importance = int(importance)
+        except (TypeError, ValueError):
+            importance = 50
+        importance = max(0, min(100, importance))
         ts = time.time()
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO memory_candidates (ts, conversation_id, kind, summary, "
-                "detail, source) VALUES (?, ?, ?, ?, ?, ?)",
-                (ts, conversation_id, kind, summary, detail, source),
+                "detail, source, importance, policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, conversation_id, kind, summary, detail, source, importance, policy),
             )
             self._conn.commit()
             cid = cur.lastrowid
         return {"id": cid, "ts": ts, "conversation_id": conversation_id,
-                "kind": kind, "summary": summary, "detail": detail, "source": source}
+                "kind": kind, "summary": summary, "detail": detail, "source": source,
+                "importance": importance, "policy": policy}
 
     def list_memory_candidates(self, *, limit: int = 100, kind: str | None = None) -> list[dict]:
         """Most-recent-first. Read-only view for triage — no scoring, no dedup."""

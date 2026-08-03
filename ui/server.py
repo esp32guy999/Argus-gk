@@ -286,6 +286,7 @@ async def chat(request: Request):
 
     async def run_chat():
         final = ""
+        tools_for_policy: list[str] = []
         try:
             if model_name == "claude-code":
                 # Persistent per-conversation CC session keeps its own context, so we
@@ -308,24 +309,33 @@ async def chat(request: Request):
                 source = grok_code.send(conversation_id, message, attachments=mats or None)
             else:
                 # Local / external: enriched text (OCR + paths) already in model_message.
+                # stream_run runs memory_policy.after_turn itself (F1).
                 ext = model_config.external(model_name)
                 if ext and ext.get("api_key_env") and not model_config.external_api_key(model_name):
                     raise RuntimeError(
                         f"{model_name}: missing {ext['api_key_env']} "
                         f"(add it to ~/.config/secrets/credentials.env and restart argus-ui)")
+                def on_event_local(phase, detail, step):
+                    if phase == "tool" and detail:
+                        tools_for_policy.append(detail)
+                    on_event(phase, detail, step)
                 source = loop.stream_run(
                     registry, model_message,
                     model_name=(ext["model_id"] if ext else model_name),
                     base_url=(ext["base_url"] if ext else MODEL_URL),
                     api_key=(model_config.external_api_key(model_name) if ext else "none"),
-                    turn_budget=8, message_history=history, on_event=on_event,
-                    enable_thinking=_thinking_for_turn(model_name, model_message))
+                    turn_budget=8, message_history=history, on_event=on_event_local,
+                    enable_thinking=_thinking_for_turn(model_name, model_message),
+                    conversation_id=conversation_id)
             async for content in source:
                 if isinstance(content, tuple) and content[0] == "__event__":
                     ev = content[1]
                     # Keep the always-on status pill driven on tool use (as before)...
                     if ev.get("kind") == "tool_use":
-                        on_event("tool", ev.get("name", "tool"), 0)
+                        name = ev.get("name", "tool")
+                        on_event("tool", name, 0)
+                        if model_name in ("claude-code", "grok"):
+                            tools_for_policy.append(name)
                     elif ev.get("kind") == "done":   # OAuth-agent metric: turn wall-clock
                         if ev.get("duration_ms"):
                             metrics.CC_DURATION.observe(ev["duration_ms"] / 1000)
@@ -338,6 +348,18 @@ async def chat(request: Request):
                 publish("bubble_update", {"id": bubble_id, "content": content})
             if model_name in ("claude-code", "grok"):
                 metrics.CC_TURNS.labels("ok").inc()
+                # F1: cold-candidate policy for agent paths (loop.stream_run does local)
+                try:
+                    from argus import memory_policy as mp
+                    await asyncio.to_thread(
+                        mp.after_turn,
+                        user_message=store_text or message,
+                        assistant_text=final or "",
+                        tools_called=tools_for_policy,
+                        conversation_id=conversation_id,
+                    )
+                except Exception:
+                    pass
             row = await asyncio.to_thread(
                 store.add_message, conversation_id, "assistant", final, model_name)
             publish("bubble_done", {"id": bubble_id, "db_id": row["id"],

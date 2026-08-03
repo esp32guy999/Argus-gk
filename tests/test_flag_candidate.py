@@ -25,14 +25,15 @@ def main() -> int:
 
     res = flag_memory_candidate("User prefers metric units in all answers", kind="rule")
 
-    # 1. it lands in the cold ledger, with its kind + provenance
+    # 1. it lands in the cold ledger, with its kind + provenance (+ importance)
     assert res.get("flagged") and res.get("id"), res
     cands = store.list_memory_candidates()
     assert len(cands) == 1, f"expected one candidate: {cands}"
     c = cands[0]
     assert c["kind"] == "rule" and "metric units" in c["summary"], c
     assert c["source"], f"no provenance on flagged candidate: {c}"
-    print("PASS: flag lands in the cold D5 ledger with kind + provenance")
+    assert c.get("importance") is not None and int(c["importance"]) >= 0, c
+    print("PASS: flag lands in the cold D5 ledger with kind + provenance + importance")
 
     # 2. LOW-AUTHORITY (Gemma's core ask) — flagging touches NOTHING in the lifecycle.
     assert store.list_facts(include_history=True) == [], "flag wrote a memory_fact — bypassed lifecycle!"
@@ -40,11 +41,19 @@ def main() -> int:
     print("PASS: flag does NOT create a fact or any lifecycle transition (zero-authority)")
 
     # 3. unknown kinds can't smuggle in — coerced to 'other' (constrained vocabulary)
-    r2 = flag_memory_candidate("something odd happened", kind="totally-made-up-kind")
+    # Use a high-value summary so the importance gate still accepts the write.
+    r2 = flag_memory_candidate(
+        "anvil ARGUS_PORT is 8210 (argus-ui)", kind="totally-made-up-kind")
+    assert r2.get("flagged") and r2.get("id"), r2
     c2 = [x for x in store.list_memory_candidates() if x["id"] == r2["id"]][0]
-    assert c2["kind"] == "other", f"unknown kind not coerced: {c2}"
+    assert c2["kind"] == "other" or c2["kind"] == "config", f"unknown kind not coerced: {c2}"
+    # kind may be reclassified to config by policy — either is fine; never invents free kinds
+    assert c2["kind"] in (
+        "dead_end", "correction", "repeat_lookup", "rule", "other",
+        "config", "personal", "document", "research", "event",
+    ), c2
     assert store.list_facts(include_history=True) == [], "second flag leaked into facts!"
-    print("PASS: unknown kind coerced to 'other'; still no fact side-effects")
+    print("PASS: unknown kind coerced; still no fact side-effects")
 
     # 4. the tool is actually registered and non-actionable (safe to keep always-on)
     t = next((t for t in tools() if t.name == "flag_memory_candidate"), None)

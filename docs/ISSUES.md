@@ -8,6 +8,19 @@ Expected Value.
 
 ## Open
 
+### Memory flywheel F0–F2 landed (2026-08-03) — follow-ups
+```
+status:            partial (F0–F2 mechanism live; F3+ deferred)
+done:              importance scoring + reject gate on flag_memory_candidate;
+                   orchestrator memory_policy.after_turn on local + GK/CC paths;
+                   importance/policy columns on memory_candidates; metrics.
+still open:        HA notify on high-importance only (F3); nightly consolidation
+                   promote job (F4); hybrid retrieval + decay (F5).
+```
+
+## Open (other)
+
+
 ### Watchdog loop-nudges can crash the whole run via tool max_retries
 ```
 found:             2026-07-05, ornith eval (restraint-danger task)
