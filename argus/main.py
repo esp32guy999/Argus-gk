@@ -56,6 +56,9 @@ def build_registry() -> Registry:
         from .tools import arr_acquire
         if arr_acquire.has_any():                          # *arr acquisition (write side)
             lanes.append(("arr-acquire", "config/openapi.yaml", arr_acquire.tools))
+        from .tools import media_remonitor
+        if media_remonitor.has_any():                      # library hygiene remonitor
+            lanes.append(("media-remonitor", "config/openapi.yaml", media_remonitor.tools))
 
     for name, path, load in lanes:
         try:

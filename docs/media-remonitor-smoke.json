@@ -1,0 +1,27 @@
+{
+  "ts": "2026-08-03",
+  "lane": "media_remonitor",
+  "tools": ["media_remonitor_scan", "media_remonitor_apply"],
+  "live_scan": {
+    "unmonitored_missing": {
+      "count": 2,
+      "candidates": [
+        {"service": "radarr", "id": 22, "title": "National Lampoon's Vacation", "year": 1983},
+        {"service": "radarr", "id": 20, "title": "TRON: Ares", "year": 2025}
+      ]
+    },
+    "missing": {
+      "count": 10,
+      "note": "includes monitored series/movies with file gaps (Dexter, Wayne, etc.)"
+    }
+  },
+  "dry_run_apply": {
+    "mode": "unmonitored_missing",
+    "planned": 2,
+    "applied_ok": 2,
+    "searching": 2,
+    "wrote_changes": false
+  },
+  "registry": "media-remonitor: +2 tools from config/openapi.yaml",
+  "tests": "tests/test_media_remonitor.py ALL PASSED"
+}
