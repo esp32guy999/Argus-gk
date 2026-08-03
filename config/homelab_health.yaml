@@ -1,0 +1,137 @@
+# Homelab health probe pack — HTTP surface checks (no secrets).
+# Used by scripts/homelab_health.py. "Up" means TCP+HTTP responds with an
+# accepted status (service process is alive), not authenticated API success.
+#
+# Accept codes default: 200, 301, 302, 401 (login/API challenge = alive).
+
+timeout_s: 4
+connect_timeout_s: 2
+accept_statuses: [200, 301, 302, 401]
+
+# Profiles: pick with --profile core|media|full
+profiles:
+  core:
+    - argus_ui
+    - searxng
+    - home_assistant
+    - llama_swap
+    - embeddings
+  media:
+    - sonarr
+    - radarr
+    - lidarr
+    - prowlarr
+    - qbittorrent
+    - jellyfin
+    - navidrome
+    - audiobookshelf
+  full:
+    - argus_ui
+    - searxng
+    - home_assistant
+    - llama_swap
+    - embeddings
+    - sonarr
+    - radarr
+    - lidarr
+    - prowlarr
+    - qbittorrent
+    - jellyfin
+    - navidrome
+    - audiobookshelf
+    - prometheus
+    - grafana
+
+services:
+  # --- anvil (Argus host) ---
+  argus_ui:
+    url: http://127.0.0.1:8210/
+    host: anvil
+    role: orchestrator
+    criterion: "Argus UI responds HTTP (port 8210)"
+
+  llama_swap:
+    url: http://127.0.0.1:9090/
+    host: anvil
+    role: models
+    criterion: "llama-swap model server responds (port 9090)"
+
+  embeddings:
+    url: http://127.0.0.1:8091/health
+    host: anvil
+    role: models
+    criterion: "embeddings service health OK (port 8091)"
+
+  # --- glassgarden (Unraid media + search) ---
+  searxng:
+    url: http://glassgarden:8089/
+    host: glassgarden
+    role: search
+    criterion: "SearXNG responds HTTP (glassgarden:8089)"
+
+  sonarr:
+    url: http://glassgarden:8989/
+    host: glassgarden
+    role: media
+    criterion: "Sonarr responds HTTP (glassgarden:8989)"
+
+  radarr:
+    url: http://glassgarden:7878/
+    host: glassgarden
+    role: media
+    criterion: "Radarr responds HTTP (glassgarden:7878)"
+
+  lidarr:
+    url: http://glassgarden:8686/
+    host: glassgarden
+    role: media
+    criterion: "Lidarr responds HTTP (glassgarden:8686)"
+
+  prowlarr:
+    url: http://glassgarden:9696/
+    host: glassgarden
+    role: media
+    criterion: "Prowlarr responds HTTP (glassgarden:9696)"
+
+  qbittorrent:
+    url: http://glassgarden:8090/
+    host: glassgarden
+    role: download
+    criterion: "qBittorrent responds HTTP (glassgarden:8090)"
+
+  jellyfin:
+    url: http://glassgarden:8096/
+    host: glassgarden
+    role: serve
+    criterion: "Jellyfin responds HTTP (glassgarden:8096)"
+
+  navidrome:
+    url: http://glassgarden:4533/
+    host: glassgarden
+    role: serve
+    criterion: "Navidrome responds HTTP (glassgarden:4533)"
+
+  audiobookshelf:
+    url: http://glassgarden:13378/
+    host: glassgarden
+    role: serve
+    criterion: "Audiobookshelf responds HTTP (glassgarden:13378)"
+
+  prometheus:
+    url: http://glassgarden:9091/-/healthy
+    host: glassgarden
+    role: observability
+    criterion: "Prometheus healthy (glassgarden:9091)"
+
+  grafana:
+    url: http://glassgarden:3000/api/health
+    host: glassgarden
+    role: observability
+    criterion: "Grafana health API OK (glassgarden:3000)"
+
+  # --- nyx ---
+  home_assistant:
+    url: http://nyx:8123/
+    host: nyx
+    role: home
+    criterion: "Home Assistant responds HTTP (nyx:8123)"

@@ -1,0 +1,42 @@
+{
+  "task_id": "see-d133a99996b1",
+  "goal": "Homelab health smoke: Argus UI, Sonarr, and SearXNG must respond HTTP 200",
+  "final_state": "COMPLETED",
+  "decision": {
+    "protocol": "STP-1.0",
+    "action": "COMPLETE",
+    "code": "ALL_CRITERIA_MET",
+    "state": "COMPLETED",
+    "blocking": [],
+    "details": {
+      "verified_criteria": 3,
+      "evidence_items": 3,
+      "checkpoints": 4
+    },
+    "confidence": 0.98
+  },
+  "probes": [
+    {
+      "id": "argus_ui",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "id": "sonarr",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "id": "searxng",
+      "status": 200,
+      "ok": true
+    }
+  ],
+  "event_count": 25,
+  "ts": 1785800904.358217,
+  "follow_up": {
+    "script": "scripts/homelab_health.py",
+    "config": "config/homelab_health.yaml",
+    "note": "Reusable pack; SEE media/core runs COMPLETED as see-a775984ef4e2 / see-2e8c11063587"
+  }
+}
