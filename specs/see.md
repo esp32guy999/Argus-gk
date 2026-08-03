@@ -282,16 +282,29 @@ Every transition append-only in task event log (replayable).
 
 ---
 
-## Implementation phases (proposed)
+## Implementation phases
 
-| Phase | Deliverable |
-|-------|-------------|
-| **S0** | This spec + schema sketch + map to watchdog/jobs (done here) |
-| **S1** | `see_tasks` / `see_events` tables + pure Python state machine + unit tests |
-| **S2** | Wire loop tool events → SEE; stall/loop actions → CONTINUE/ABORT feedback into worker |
-| **S3** | Planner structured task JSON; checklist UI or slash `/task` |
-| **S4** | VERIFY + evidence store; block COMPLETED without evidence |
-| **S5** | Checkpoint resume; HA on complete/ask; memory_policy from evidence |
+| Phase | Deliverable | Status |
+|-------|-------------|--------|
+| **S0** | Spec + map to watchdog/jobs | **done** (`specs/see.md`) |
+| **S1** | `see_tasks` / `see_events` + pure engine + tests | **done** (`argus/see/`, `tests/test_see.py`) |
+| **S2** | Loop tool events → SEE; worker tools; brief inject | **done** (light): `loop` sink + `see_*` tools |
+| **S3** | Planner structured task JSON; slash `/task` UI | pending |
+| **S4** | Richer VERIFY policies; multi-turn GK host | pending |
+| **S5** | HA on complete/ask; polish memory_policy from evidence | partial (COMPLETED → candidates) |
+
+### Code map (S1–S2)
+
+| Path | Role |
+|------|------|
+| `argus/see/models.py` | Task, Evidence, Event, states |
+| `argus/see/engine.py` | Pure state machine, stall/loop/verify |
+| `argus/see/api.py` | Persist + public API |
+| `argus/tools/see_tools.py` | Worker tools: start / checkpoint / evidence / verify / status |
+| `argus/storage.py` | `see_tasks`, `see_events` tables |
+| `argus/loop.py` | Tool events → active SEE task; worker brief prefix |
+
+Env: `ARGUS_SEE_IDLE_SEC` (default 120), `ARGUS_SEE_LOOP_REPEAT` (3), `ARGUS_SEE_MEMORY` (1).
 
 ---
 

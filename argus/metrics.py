@@ -60,6 +60,13 @@ TOOLS_SELECTED = Histogram(
 CC_TURNS = Counter("argus_claude_code_turns_total", "Claude Code turns", ["outcome"])
 CC_DURATION = Histogram("argus_claude_code_turn_seconds", "Claude Code turn wall-clock seconds")
 
+# --- Supervisory Execution Engine (SEE) ---
+SEE_CREATED = Counter("argus_see_tasks_created_total", "SEE tasks created")
+SEE_COMPLETED = Counter("argus_see_tasks_completed_total", "SEE tasks verified complete")
+SEE_STALLS = Counter("argus_see_stalls_total", "SEE stall/loop detections")
+SEE_EVENTS = Counter("argus_see_events_total", "SEE events ingested", ["type"])
+SEE_TASKS = Counter("argus_see_task_state_saves_total", "SEE task saves by state", ["state"])
+
 
 def serve(port: int = 9101) -> None:
     """Start the harness metrics endpoint (separate from LiteLLM's /metrics)."""

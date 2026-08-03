@@ -437,12 +437,32 @@ def _budget_summary(turn_budget: int, called: list[str]) -> str:
     )
 
 
-def _make_sink(called: list[str], on_event=None):
+def _make_sink(called: list[str], on_event=None, *, conversation_id: str | None = None):
     """Wrap the caller's on_event so the driver also records which tools ran
-    (fuel for the nudge check and the budget summary)."""
+    (fuel for the nudge check and the budget summary). Forwards tool events to
+    an active SEE task for the conversation when present."""
     def _sink(phase, detail, step):
         if phase == "tool":
             called.append(detail)
+            if conversation_id and detail and not str(detail).startswith("see_"):
+                try:
+                    from argus.see import api as see_api
+                    task = see_api.active_for_conversation(conversation_id)
+                    if task:
+                        see_api.on_tool(task.id, str(detail), phase="call")
+                except Exception:
+                    pass
+        if phase == "loop" and conversation_id:
+            try:
+                from argus.see import api as see_api
+                from argus.see.models import SeeEvent
+                task = see_api.active_for_conversation(conversation_id)
+                if task:
+                    see_api.on_event(task.id, SeeEvent(
+                        type="LoopDetected", detail=str(detail or "tool"),
+                    ))
+            except Exception:
+                pass
         if on_event:
             try:
                 on_event(phase, detail, step)
@@ -501,7 +521,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     selected = _gate_tools(registry.select(prompt), model_name, message_history)
     metrics.TOOLS_SELECTED.observe(len(selected))
     called: list[str] = []
-    sink = _make_sink(called, on_event)
+    sink = _make_sink(called, on_event, conversation_id=conversation_id)
     agent = Agent(
         make_model(model_name, base_url, api_key=api_key),
         tools=[t.as_pydantic_tool() for t in selected],
@@ -512,9 +532,21 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     limits = UsageLimits(request_limit=turn_budget)
     settings = _thinking_settings(enable_thinking)
     final = ""
+    # If this conversation has an active SEE task, prepend worker brief once.
+    see_prefix = ""
+    if conversation_id:
+        try:
+            from argus.see import api as see_api
+            t = see_api.active_for_conversation(conversation_id)
+            if t:
+                see_api.tick(t.id)
+                see_prefix = see_api.worker_brief(t.id) + "\n\n"
+        except Exception:
+            pass
     try:
         async with agent.run_stream(
-            prompt, message_history=message_history,
+            (see_prefix + prompt) if see_prefix else prompt,
+            message_history=message_history,
             usage_limits=limits, model_settings=settings,
         ) as result:
             async for text in result.stream_text():   # cumulative text-so-far

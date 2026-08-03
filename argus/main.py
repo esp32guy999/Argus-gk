@@ -15,10 +15,11 @@ def build_registry() -> Registry:
     import os
     reg = Registry()
     reg.add_provider(native.tools())                       # lane 4 — always on
-    from .tools import web, notes, weather                  # web + notes + weather — always on
+    from .tools import web, notes, weather, see_tools       # web + notes + weather + SEE
     reg.add_provider(web.tools())
     reg.add_provider(notes.tools())
     reg.add_provider(weather.tools())                       # Open-Meteo (keyless)
+    reg.add_provider(see_tools.tools())                     # Supervisory Execution Engine
     from .tools import audiobook                             # ABB direct (needs VPN + config)
     if audiobook.has_config():
         try:

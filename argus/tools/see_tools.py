@@ -1,0 +1,161 @@
+"""Worker-facing SEE tools — request checkpoints, evidence, verification.
+
+The worker never declares final success; it requests VERIFY via see_request_verify.
+"""
+from __future__ import annotations
+
+from pydantic_ai.exceptions import ModelRetry
+
+from ..registry import Tool
+
+
+def see_start_task(
+    goal: str,
+    success_criteria: str,
+    checklist: str = "",
+    importance: int = 60,
+) -> dict:
+    """Start a supervised task (SEE). success_criteria and checklist are newline- or
+    semicolon-separated measurable items. Returns task_id and worker brief. Use for
+    multi-step work that must not silently stall or fake completion."""
+    if not (goal or "").strip():
+        raise ModelRetry("see_start_task: provide a non-empty goal.")
+    crit = [x.strip() for x in (success_criteria or "").replace(";", "\n").splitlines() if x.strip()]
+    if not crit:
+        raise ModelRetry("see_start_task: provide at least one success criterion line.")
+    checks = [x.strip() for x in (checklist or success_criteria).replace(";", "\n").splitlines() if x.strip()]
+    from argus.see import api
+    task = api.create(
+        goal.strip(),
+        success_criteria=crit,
+        checklist=checks or crit,
+        required_evidence=crit,
+        importance=int(importance),
+        start=True,
+    )
+    return {
+        "task_id": task.id,
+        "state": task.current_state,
+        "brief": api.worker_brief(task.id),
+    }
+
+
+def see_checkpoint(task_id: str, label: str, checklist_item: str = "") -> dict:
+    """Record meaningful progress (checkpoint) on a SEE task. Optionally mark a
+    checklist item complete."""
+    if not task_id or not label:
+        raise ModelRetry("see_checkpoint: task_id and label required.")
+    from argus.see import api
+    dec = api.checkpoint(
+        task_id, label,
+        checklist_item=checklist_item or None,
+    )
+    return {"ok": dec.ok, "action": dec.action, "state": dec.new_state, "feedback": dec.feedback}
+
+
+def see_add_evidence(
+    task_id: str,
+    criterion: str,
+    summary: str,
+    kind: str = "other",
+    payload: str = "",
+) -> dict:
+    """Attach observable evidence for a success criterion (command output, HTTP status,
+    file path, etc.). Required before verification can COMPLETE."""
+    if not task_id or not criterion or not summary:
+        raise ModelRetry("see_add_evidence: task_id, criterion, and summary required.")
+    from argus.see import api
+    dec = api.add_evidence(
+        task_id, criterion, summary,
+        kind=kind or "other",
+        payload=payload or None,
+    )
+    return {"ok": dec.ok, "action": dec.action, "state": dec.new_state}
+
+
+def see_request_verify(task_id: str) -> dict:
+    """Ask the supervisor to VERIFY the task. Do NOT claim success yourself — only
+    the supervisor can COMPLETE after checking evidence vs success criteria."""
+    if not task_id:
+        raise ModelRetry("see_request_verify: task_id required.")
+    from argus.see import api
+    dec = api.request_verify(task_id)
+    return {
+        "ok": dec.ok,
+        "action": dec.action,
+        "state": dec.new_state,
+        "feedback": dec.feedback,
+        "completed": dec.action == "COMPLETE",
+    }
+
+
+def see_status(task_id: str = "") -> dict:
+    """Get SEE task state and worker brief. If task_id empty, returns hint only."""
+    from argus.see import api
+    if not task_id:
+        return {"hint": "Pass task_id from see_start_task."}
+    task = api.get(task_id)
+    if not task:
+        raise ModelRetry(f"see_status: unknown task {task_id!r}")
+    return {
+        "task_id": task.id,
+        "state": task.current_state,
+        "goal": task.goal,
+        "completed_items": task.completed_items,
+        "missing_evidence": task.missing_evidence(),
+        "brief": api.worker_brief(task_id),
+        "feedback": task.worker_feedback,
+    }
+
+
+def tools() -> list[Tool]:
+    return [
+        Tool(
+            name="see_start_task",
+            description=("Start a supervised multi-step task (SEE). Provide goal, "
+                         "newline-separated measurable success_criteria, optional checklist. "
+                         "Returns task_id. Use for long work that needs stall detection and "
+                         "evidence-gated completion."),
+            tags=["see", "task", "supervisor", "plan", "checklist", "autonomous"],
+            func=see_start_task,
+            example={
+                "goal": "Confirm Sonarr is healthy on glassgarden",
+                "success_criteria": "container running\nport 8989 responds",
+            },
+        ),
+        Tool(
+            name="see_checkpoint",
+            description="Record SEE progress checkpoint; optionally complete a checklist item.",
+            tags=["see", "checkpoint", "progress"],
+            func=see_checkpoint,
+            example={"task_id": "see-abc", "label": "compose updated", "checklist_item": "edit compose"},
+        ),
+        Tool(
+            name="see_add_evidence",
+            description=("Add observable evidence for a SEE success criterion "
+                         "(HTTP code, command output, path). Required before verify."),
+            tags=["see", "evidence", "verify", "proof"],
+            func=see_add_evidence,
+            example={
+                "task_id": "see-abc",
+                "criterion": "port 8989 responds",
+                "summary": "HTTP 200 from :8989/ping",
+                "kind": "http",
+            },
+        ),
+        Tool(
+            name="see_request_verify",
+            description=("Request SEE verification. Supervisor COMPLETE only if all "
+                         "criteria have evidence. Never self-declare success."),
+            tags=["see", "verify", "complete", "done"],
+            func=see_request_verify,
+            example={"task_id": "see-abc"},
+        ),
+        Tool(
+            name="see_status",
+            description="SEE task status, missing evidence, and supervisor feedback.",
+            tags=["see", "status", "progress"],
+            func=see_status,
+            example={"task_id": "see-abc"},
+        ),
+    ]

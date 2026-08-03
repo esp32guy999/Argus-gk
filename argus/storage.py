@@ -64,6 +64,33 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state, updated_ts);
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(category, next_check_ts);
 
+-- Supervisory Execution Engine (SEE) — durable task objects (specs/see.md).
+-- Full JSON blob is source of truth; state columns support listing/filters.
+CREATE TABLE IF NOT EXISTS see_tasks (
+    id              TEXT PRIMARY KEY,
+    goal            TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    importance      INTEGER NOT NULL DEFAULT 50,
+    conversation_id TEXT,
+    job_id          TEXT,
+    payload         TEXT NOT NULL,       -- full SeeTask JSON
+    created_ts      REAL NOT NULL,
+    updated_ts      REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_see_tasks_state ON see_tasks(state, updated_ts);
+CREATE INDEX IF NOT EXISTS idx_see_tasks_conv ON see_tasks(conversation_id, updated_ts);
+
+CREATE TABLE IF NOT EXISTS see_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         TEXT NOT NULL,
+    ts              REAL NOT NULL,
+    type            TEXT NOT NULL,
+    detail          TEXT,
+    data            TEXT,               -- JSON
+    FOREIGN KEY (task_id) REFERENCES see_tasks(id)
+);
+CREATE INDEX IF NOT EXISTS idx_see_events_task ON see_events(task_id, id);
+
 -- Memory-candidate ledger (research-lane D5). Append-only. During real usage the
 -- agent flags moments that MIGHT be worth remembering — a dead-end query, a
 -- correction, a repeated lookup — with a short reason. This is NOT memory: no
@@ -551,6 +578,94 @@ class Store:
                 (category,),
             ).fetchone()
         return r["m"] if r and r["m"] is not None else None
+
+
+    # ── SEE tasks (Supervisory Execution Engine) ───────────────────────────
+    def save_see_task(self, task_dict: dict) -> dict:
+        """Upsert a full SeeTask JSON blob + denormalized state columns."""
+        tid = task_dict["id"]
+        now = time.time()
+        payload = json.dumps(task_dict)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO see_tasks (id, goal, state, importance, conversation_id, "
+                "job_id, payload, created_ts, updated_ts) VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET goal=excluded.goal, state=excluded.state, "
+                "importance=excluded.importance, conversation_id=excluded.conversation_id, "
+                "job_id=excluded.job_id, payload=excluded.payload, "
+                "updated_ts=excluded.updated_ts",
+                (tid, task_dict.get("goal") or "", task_dict.get("current_state") or "NEW",
+                 int(task_dict.get("importance") or 50),
+                 task_dict.get("conversation_id"), task_dict.get("job_id"),
+                 payload,
+                 float(task_dict.get("created_ts") or now),
+                 float(task_dict.get("updated_ts") or now)),
+            )
+            self._conn.commit()
+        return task_dict
+
+    def get_see_task(self, task_id: str) -> dict | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT payload FROM see_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+        if not r:
+            return None
+        try:
+            return json.loads(r["payload"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+    def list_see_tasks(self, *, conversation_id: str | None = None,
+                       include_terminal: bool = True, limit: int = 100) -> list[dict]:
+        q = "SELECT payload, state FROM see_tasks WHERE 1=1"
+        args: list = []
+        if conversation_id is not None:
+            q += " AND conversation_id=?"
+            args.append(conversation_id)
+        if not include_terminal:
+            q += " AND state NOT IN ('COMPLETED','ABORTED')"
+        q += " ORDER BY updated_ts DESC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            rows = self._conn.execute(q, args).fetchall()
+        out = []
+        for r in rows:
+            try:
+                out.append(json.loads(r["payload"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+        return out
+
+    def append_see_event(self, task_id: str, event: dict) -> None:
+        """Append-only event row for replay (also kept inside task payload)."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO see_events (task_id, ts, type, detail, data) VALUES (?,?,?,?,?)",
+                (task_id, float(event.get("ts") or time.time()),
+                 event.get("type") or "ToolCalled",
+                 event.get("detail"),
+                 json.dumps(event.get("data") or {})),
+            )
+            self._conn.commit()
+
+    def list_see_events(self, task_id: str, *, limit: int = 500) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ts, type, detail, data FROM see_events WHERE task_id=? "
+                "ORDER BY id ASC LIMIT ?",
+                (task_id, limit),
+            ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                data = json.loads(r["data"] or "{}")
+            except json.JSONDecodeError:
+                data = {}
+            out.append({
+                "ts": r["ts"], "type": r["type"], "detail": r["detail"], "data": data,
+            })
+        return out
 
 
 # ── Process-wide Store singleton ──────────────────────────────────────────
