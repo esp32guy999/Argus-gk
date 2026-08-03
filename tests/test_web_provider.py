@@ -85,6 +85,23 @@ def main() -> int:
         assert hits[0]["snippet"] == "snip one", hits[0]  # html stripped from snippet
         print("PASS: _parse_brave shapes hits + strips html")
 
+        # 5b. SearXNG JSON parsing (pure) — primary backend when SEARXNG_URL is set
+        sx = {"results": [
+            {"title": "S1", "url": "https://sx1", "content": "hello <em>world</em>"},
+            {"title": "S2", "url": "https://sx2", "snippet": "alt field"},
+            {"title": "no-url", "url": "", "content": "skip me"},
+        ]}
+        hits = web._parse_searxng(sx)
+        assert len(hits) == 2 and hits[0]["url"] == "https://sx1", hits
+        assert hits[0]["snippet"] == "hello world", hits[0]
+        assert hits[1]["snippet"] == "alt field", hits[1]
+        print("PASS: _parse_searxng shapes hits + strips html + drops empty urls")
+
+        # 5c. _searxng returns None when unset
+        os.environ.pop("SEARXNG_URL", None)
+        assert web._searxng("anything") is None
+        print("PASS: _searxng is None without SEARXNG_URL")
+
         # 6. tools registered with web tags
         by = {t.name: t for t in web.tools()}
         assert set(by) == {"web_search", "web_fetch"}, list(by)

@@ -77,15 +77,14 @@ notes:             z-engineer is an image-manipulation model, not a chat model, 
                    and avoids brittle id-regex matching. Prefer (b).
 ```
 
-### Image attach: follow-ups after the claude-code wiring
-- [ ] Attachments aren't persisted to the conversation store — only the message text is
-      saved (server.py add_message). On reload the user bubble loses its image thumbnail and
-      the model can't re-see it. Observation — ui/server.py + store (from: image-attach, 2026-06-23)
-- [ ] Non-image files (PDF, etc.) are staged + POSTed but not forwarded — `_image_block`
-      only handles images. PDFs could go as Anthropic `document` blocks if CC stream-json
-      accepts them. Observation — argus/claude_code.py (from: image-attach, 2026-06-23)
-- [ ] Local-model path doesn't forward images (vision varies; 80B path separately broken).
-      Folds into the local-80B fix below. Observation — ui/server.py (from: image-attach, 2026-06-23)
+### Image attach: follow-ups after the claude-code wiring — largely SUPERSEDED (2026-08-03)
+Paperclip pipeline rewritten: `argus/attachments.py` materialises all uploads; GK gets
+`--prompt-json` images; local models get OCR + paths; roundtable refuses visibly.
+Residual observations only:
+- [ ] History UI still does not re-show image thumbnails on reload (store keeps
+      `[attached: name]` text, not the bytes). Low — path remains on disk under
+      `~/.cache/argus/uploads/<cid>/`.
+- [ ] Local VLM for messy photos when tesseract fails — deferred (vision_lane V4).
 
 ### Argus local-80B serving path — RESOLVED (was: broken)
 ```
@@ -155,23 +154,23 @@ notes:             No periodic checkpoint; WAL only truncates on last-connection
                    in Store. Not urgent at current sizes.
 ```
 
-## web_search backend down — DDG 202, no Brave key (2026-07-10)
+## web_search backend down — DDG 202, no Brave key (2026-07-10) — RESOLVED (2026-08-03)
+
+```
+status:            resolved (2026-08-03)
+resolution:        Self-hosted SearXNG on glassgarden via Unraid Community Apps
+                   (Kilrah template → my-SearXNG.xml, host :8089). Argus web_search
+                   prefers SEARXNG_URL; Brave optional; DDG last resort with teaching
+                   errors on HTTP 202. systemd: argus-ui.service.d/searxng.conf.
+```
 
 blast radius:      Medium — the research lane (Task 1) is hardened but its SEARCH
-                   is effectively non-functional; blocks Task 3's SOTA research round.
+                   was non-functional; blocked Task 3's SOTA research round.
 found:             Running the Task 3 research round via argus web_search — every
                    query returned "no results".
-root cause:        html.duckduckgo.com now answers the scrape path with HTTP 202
-                   (anti-bot challenge, not 200) so _ddg() parses zero hits. The
-                   Brave fallback needs BRAVE_API_KEY, which is NOT set in the argus
-                   env (~/.config/argus/env) nor the shell. So both search paths are
-                   dead: DDG blocked, Brave unconfigured. web_fetch is unaffected.
-fix candidates:    (1) Set BRAVE_API_KEY in ~/.config/argus/env — Shane has a Brave
-                   key from the old modular-brain build (BRAVE_API_KEY in ~/.bashrc
-                   historically, 999/mo cap). (2) Harden _ddg() to treat 202 as a
-                   retry/failure with a teaching message instead of silent empty.
-                   (3) Consider a different keyless backend (SearXNG on the LAN).
-needs Shane:       The Brave key. Then the Task 3 research round can actually run.
+root cause:        html.duckduckgo.com answered the scrape path with HTTP 202
+                   (anti-bot); Brave wanted a card for API signup. Both paths dead.
+fix applied:      SearXNG on Unraid (not orphan: CA user template + Icon/WebUI).
 
 - **CPU Gemma (gemma4e2b) crashes with the full toolset** (2026-07-10, Low): a chat
   turn to gemma4-cpu terminates its llama-server with

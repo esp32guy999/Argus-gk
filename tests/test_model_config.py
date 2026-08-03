@@ -53,7 +53,7 @@ check("cpu gemma in externals()", "gemma4-cpu" in mc.externals(), True)
 check("grok not external", mc.external("grok"), None)
 check("grok not in externals()", "grok" not in mc.externals(), True)
 check("grok display", mc.display("grok"), "Grok")
-check("grok vision off (v1)", mc.is_vision("grok"), False)
+check("grok vision on (prompt-json)", mc.is_vision("grok"), True)
 check("cpu gemma api_key default", mc.external_api_key("gemma4-cpu"), "none")
 
 print("accent:")

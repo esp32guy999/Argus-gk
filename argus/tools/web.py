@@ -1,15 +1,16 @@
 """Web lane — give the agent the public internet: search + a text-only page reader.
 
-- web_search(query): Brave Search API (BRAVE_API_KEY) with a DuckDuckGo HTML
-  fallback when no key is set / Brave errors. Returns concise {title, url, snippet}.
+- web_search(query): prefers self-hosted SearXNG (`SEARXNG_URL`, glassgarden CA
+  install), then Brave (`BRAVE_API_KEY`) if set, then DuckDuckGo HTML as last
+  resort. Returns concise {title, url, snippet}.
 - web_fetch(url): fetch a page and return its readable text — a "text browser".
   script/style/nav stripped, tags removed, whitespace collapsed, truncated to fit
   the model's context (ARGUS_WEB_FETCH_CHARS, default 6000).
 
 Native-style tools, one required param each. Errors become teaching ModelRetry msgs.
 Zero extra deps (stdlib HTMLParser); a readability lib (trafilatura) would improve
-extraction quality later. No SSRF guard — the shell lane already grants full network
-access, so web_fetch adds no new exposure on this single-user box.
+extraction quality later. web_fetch has an SSRF guard (private/CGNAT blocked);
+web_search hits a configured search backend only (not arbitrary user URLs).
 """
 from __future__ import annotations
 
@@ -182,13 +183,60 @@ def _parse_brave(data: dict) -> list[dict]:
     return out
 
 
+def _parse_searxng(data: dict) -> list[dict]:
+    """Map SearXNG JSON (`/search?format=json`) → {title, url, snippet}."""
+    results = data.get("results") or []
+    out = []
+    for x in results[:_SEARCH_N]:
+        snip = x.get("content") or x.get("snippet") or ""
+        out.append({
+            "title": x.get("title", "") or "",
+            "url": x.get("url", "") or "",
+            "snippet": re.sub(r"<[^>]+>", "", snip),
+        })
+    return [h for h in out if h["url"]]
+
+
+def _searxng(query: str) -> list[dict] | None:
+    """Query self-hosted SearXNG. None = not configured / unreachable; [] = empty."""
+    base = (os.environ.get("SEARXNG_URL") or "").strip().rstrip("/")
+    if not base:
+        return None
+    try:
+        r = httpx.get(
+            f"{base}/search",
+            params={"q": query, "format": "json"},
+            headers={"User-Agent": _UA, "Accept": "application/json"},
+            timeout=25,
+        )
+    except httpx.RequestError:
+        return None
+    if r.status_code >= 400:
+        return None
+    try:
+        return _parse_searxng(r.json())
+    except Exception:
+        return None
+
+
 def _ddg(query: str) -> list[dict]:
-    """Keyless fallback: scrape DuckDuckGo's HTML endpoint (best-effort)."""
+    """Keyless last resort: scrape DuckDuckGo's HTML endpoint (best-effort).
+
+    html.duckduckgo.com often returns HTTP 202 anti-bot challenges now — empty
+    results then raise a teaching ModelRetry so the agent does not pretend success.
+    Prefer SEARXNG_URL (homelab) over this path.
+    """
     try:
         r = httpx.get("https://html.duckduckgo.com/html/", params={"q": query},
                       headers={"User-Agent": _UA}, timeout=15, follow_redirects=True)
     except httpx.RequestError as e:
-        raise ModelRetry(f"web_search failed (no Brave key, DuckDuckGo unreachable): {e}")
+        raise ModelRetry(
+            f"web_search failed: no SearXNG/Brave hits and DuckDuckGo unreachable ({e}). "
+            f"Set SEARXNG_URL to the glassgarden instance (e.g. http://192.168.4.206:8089).")
+    if r.status_code == 202:
+        raise ModelRetry(
+            "web_search: DuckDuckGo returned HTTP 202 (anti-bot). "
+            "Configure SEARXNG_URL (homelab SearXNG on glassgarden) as the search backend.")
     hits, html = [], r.text
     for m in re.finditer(r'result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.S):
         href, title = m.group(1), re.sub(r"<[^>]+>", "", m.group(2)).strip()
@@ -198,7 +246,9 @@ def _ddg(query: str) -> list[dict]:
         if len(hits) >= _SEARCH_N:
             break
     if not hits:
-        raise ModelRetry("web_search returned no results. Try rephrasing the query.")
+        raise ModelRetry(
+            "web_search returned no results from any backend. Try rephrasing, or check "
+            "that SearXNG on glassgarden is up (SEARXNG_URL).")
     return hits
 
 
@@ -206,6 +256,11 @@ def web_search(query: str) -> list:
     """Search the public internet and return the top results (title, url, snippet).
     Use this to look things up online (docs, settings, current info) that aren't in
     the homelab knowledge base. To read a result in full, pass its url to web_fetch."""
+    # 1) Homelab SearXNG (no third-party API key / card)
+    sx = _searxng(query)
+    if sx:  # non-empty list
+        return sx
+    # 2) Brave if a key is present (optional cloud)
     key = os.environ.get("BRAVE_API_KEY")
     if key:
         try:
@@ -218,7 +273,8 @@ def web_search(query: str) -> list:
                 if hits:
                     return hits
         except httpx.RequestError:
-            pass  # fall back to DuckDuckGo
+            pass
+    # 3) DDG HTML last resort (often blocked; teaching errors if so)
     return _ddg(query)
 
 

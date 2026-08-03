@@ -44,3 +44,21 @@ Notes:
 - Enable the beets **`web`** plugin in `/config/config.yaml` so `:8337` serves the UI.
 - Import a decade comp: `docker exec -it beets beet import /downloads/<comp>`
   (set `va_name`/compilation handling so "Hits of the 70s" tags as Various Artists).
+
+## Example — SearXNG (Argus web_search backend)
+
+Installed from **Community Apps** (Kilrah's Repository template:
+`https://raw.githubusercontent.com/kilrah/unraid-docker-templates/main/templates/searxng.xml`).
+User template on glassgarden: `/boot/config/plugins/dockerMan/templates-user/my-SearXNG.xml`.
+
+| | |
+|--|--|
+| Image | `searxng/searxng` |
+| Host port | **8089** → container 8080 (8080 is sabnzbd on this box) |
+| Appdata | `/mnt/user/appdata/searxng` (`settings.yml` enables `json` format, `limiter: false`) |
+| WebUI | `http://glassgarden:8089` / `http://192.168.4.206:8089` |
+| Argus env | `SEARXNG_URL=http://192.168.4.206:8089` (LAN; set on `argus-ui` systemd) |
+
+JSON smoke: `curl 'http://192.168.4.206:8089/search?q=test&format=json'`.
+Do **not** install with a bare `docker run` and no user template — that shows as an
+orphan on the Docker tab.

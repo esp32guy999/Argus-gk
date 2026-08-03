@@ -829,9 +829,10 @@ function scrollBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-// ── File staging (paperclip/paste/drop) — images for Z-Edit + vision models;
-// any file type for claude-code or models that read [File: /path] markers.
-const stagedFiles = []; // [{filename, path, isImage, dataUrl?}]
+// ── File staging (paperclip / paste / drop)
+// Client keeps base64 dataUrls for the turn; server materialises to disk
+// (argus.attachments) and routes: GK/CC = native vision, local = OCR + paths.
+const stagedFiles = []; // [{filename, isImage, dataUrl?}]
 
 function _fileIcon(name) {
   const ext = (name.split('.').pop() || '').toLowerCase();
@@ -881,8 +882,8 @@ function _renderStaging() {
     const x = document.createElement('span');
     x.textContent = '×';
     x.style.cssText = 'position:absolute;top:-6px;right:-6px;background:#333;color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;font-size:13px;line-height:18px;cursor:pointer;border:1px solid #555;';
-    x.onclick = async () => {
-      try { await fetch(`${BRAIN}/uploads/${encodeURIComponent(s.filename)}`, {method: 'DELETE'}); } catch {}
+    x.onclick = () => {
+      // Staging is client-side only until send(); nothing to DELETE on the server.
       stagedFiles.splice(i, 1);
       _renderStaging();
     };
@@ -932,6 +933,24 @@ async function _stageBlob(blob, filename) {
 // Paperclip → native file picker via <label> wrapping (no programmatic .click() — iOS PWA safe)
 const attachBtn   = document.getElementById('chat-attach');
 const attachInput = document.getElementById('chat-attach-input');
+
+/** Disable paperclip in Roundtable (no vision peer); keep enabled everywhere else —
+ *  local models get OCR + paths; GK/claude-code get native images. */
+function updateAttachAffordances() {
+  const btn = attachBtn || document.getElementById('chat-attach');
+  const input = attachInput || document.getElementById('chat-attach-input');
+  if (!btn || !input) return;
+  const blocked = typeof isRoundtable === 'function' && isRoundtable();
+  btn.classList.toggle('attach-disabled', blocked);
+  btn.title = blocked
+    ? 'Attachments not supported in Roundtable — switch to normal chat or GK'
+    : 'Attach files or photos (or paste / drag). GK sees images natively; local models get OCR + file paths.';
+  input.disabled = !!blocked;
+  if (blocked && stagedFiles.length) {
+    // Don't wipe silently — user may switch rooms; just leave staged and block send via send().
+  }
+}
+
 if (attachBtn && attachInput) {
   console.log('[Forge] attach wired: label-wrapped input');
 
@@ -1123,14 +1142,31 @@ async function send() {
   }
 
   // Roundtable room → three-way orchestration (Shane · Gemma · Claude).
+  // Attachments are NOT supported here (no vision path to either peer) — refuse
+  // visibly instead of the old silent drop (specs/vision_lane.md).
   if (isRoundtable()) {
+    if (stagedFiles.length) {
+      appendMessage('assistant',
+        '📎 Attachments are not supported in the Roundtable yet (Gemma/Claude peers have no vision path). '
+        + 'Switch to a normal chat (or turn on **GK**) to send files and photos.');
+      scrollBottom();
+      return;
+    }
     return sendRoundtable(text);
   }
 
-  // Build attachments array with base64 data for staged files
+  // Build attachments array with base64 data for staged files.
+  // Server materialises every item to disk — never silently strips
+  // (vision agents get native images; local models get OCR + paths).
   const attachments = stagedFiles
     .filter(s => s.dataUrl)
     .map(s => ({ filename: s.filename, isImage: s.isImage, dataUrl: s.dataUrl }));
+  if (stagedFiles.some(s => !s.dataUrl)) {
+    appendMessage('assistant',
+      '📎 One or more staged files failed to load into memory (empty data). Re-attach and try again.');
+    scrollBottom();
+    return;
+  }
   // Snapshot for the user bubble; then clear staging.
   const sentFiles = stagedFiles.slice();
   stagedFiles.length = 0;
@@ -1171,8 +1207,22 @@ async function send() {
       signal: state.abortCtl.signal,
     });
     if (!res.ok) {
-      typingEl.textContent = `[Error ${res.status}]`;
+      let detail = '';
+      try {
+        const errBody = await res.json();
+        detail = errBody.detail || errBody.error || JSON.stringify(errBody);
+      } catch {
+        try { detail = await res.text(); } catch { detail = ''; }
+      }
+      typingEl.textContent = detail
+        ? `[Error ${res.status}] ${detail}`
+        : `[Error ${res.status}]`;
       typingEl.classList.remove('typing');
+      // Put files back so the user can retry after fixing (e.g. size limit).
+      if (sentFiles.length && !stagedFiles.length) {
+        sentFiles.forEach(s => stagedFiles.push(s));
+        _renderStaging();
+      }
       return;
     }
     const { id: bubbleId } = await res.json();
@@ -1312,6 +1362,7 @@ function updateRtBar() {
   bar.classList.toggle('hidden', !isRoundtable());
   bar.querySelectorAll('.rt-to').forEach(b =>
     b.classList.toggle('active', b.dataset.to === state.rtTo));
+  updateAttachAffordances();
 }
 
 function addMeta(el, text) {
@@ -1464,9 +1515,7 @@ function renderImageTags(bubble, text) {
   if (!bubble) return;
   const re = /\[\[IMAGE:([^\]]+)\]\]/g;
   let m;
-  const hasTag = re.test(text);
-  re.lastIndex = 0;  // reset after test
-  console.log('[z-edit-debug] renderImageTags called', {hasTag, textLen: text?.length, textTail: text?.slice(-80)});
+  re.lastIndex = 0;
   while ((m = re.exec(text)) !== null) {
     const raw = m[1].trim();
     const src = raw.startsWith('http') ? raw
@@ -1543,7 +1592,6 @@ function connectEvents() {
           state.pendingMsgEl.classList.remove('typing');
           state.pendingMsgEl.classList.add('streaming');
         }
-        if (/\[\[IMAGE:/.test(content)) console.log('[z-edit-debug] bubble_update has IMAGE tag', content.slice(-80));
         state.pendingMsgEl.textContent = content;
         scrollBottom();
       } catch {}
@@ -1609,7 +1657,6 @@ function connectEvents() {
       }
       if(window._dbgLog) window._dbgLog('DONE: id=' + data.id + ' pending=' + state.pendingBubbleId + ' err=' + (data.error || ''));
       if (data.id !== state.pendingBubbleId) return;
-      console.log('[z-edit-debug] bubble_done received', {id: data.id, db_id: data.db_id, error: data.error, hasResolve: !!state.pendingResolve});
       // If the backend signaled an error and no content streamed, surface it in the bubble.
       if (data.error && state.pendingMsgEl && !state.pendingMsgEl.textContent.trim()) {
         state.pendingMsgEl.textContent = `[Error: ${data.error}]`;

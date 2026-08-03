@@ -159,7 +159,7 @@ def _system_prompt(model_name: str = "", registry=None) -> str:
 
 
 # Per-model lane gates — the "configure the harness for each model" edict applied to
-# TOOL LANES (cf. VISION_MODELS / CHAT_THINKING in ui/server.py). A powerful lane is
+# TOOL LANES (cf. vision/thinking in config/models.yaml via model_config). A powerful lane is
 # offered ONLY to models cleared for it; an uncleared model simply doesn't receive that
 # lane's tools this turn (the lane stays available to cleared models). A provider absent
 # from this map is open to ALL models. Match is by substring, so a served model id that

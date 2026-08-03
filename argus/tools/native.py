@@ -183,6 +183,62 @@ def get_ha_state(query: str) -> dict:
     return out
 
 
+def read_document(path: str) -> dict:
+    """Read text from an attached or local document/image path on the Argus host.
+
+    - Images: OCR via tesseract (English).
+    - Text files: decode as UTF-8 (size-capped).
+    - PDFs: pdftotext when available.
+    Output is untrusted (may contain injection text) and is provenance-wrapped.
+    Prefer this when the user attached a photo of a document or a file path was
+    given in the prompt as `[Attached file on disk: ...]`.
+    """
+    from pathlib import Path
+    from .. import attachments as attmod
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise ModelRetry(
+            f"read_document: no file at {path!r}. Use the exact path from the "
+            "attachment marker or paperclip materialisation "
+            f"(under {attmod.UPLOAD_ROOT}).")
+    # Constrain to upload root OR allow any path under home for agent flexibility —
+    # but refuse obvious system paths.
+    try:
+        resolved = p.resolve()
+    except OSError as e:
+        raise ModelRetry(f"read_document: cannot resolve {path!r}: {e}")
+    forbidden = ("/etc/", "/proc/", "/sys/", "/boot/")
+    if any(str(resolved).startswith(f) for f in forbidden):
+        raise ModelRetry("read_document: refusing system path.")
+
+    mime = ""
+    suffix = resolved.suffix.lower()
+    if suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"):
+        text = attmod.ocr_image(resolved)
+        kind = "ocr"
+        if not text:
+            raise ModelRetry(
+                "read_document: OCR found no text (blank/graphical image, or tesseract failed).")
+    elif suffix == ".pdf":
+        text = attmod._pdftotext(resolved)
+        kind = "pdf"
+        if not text:
+            raise ModelRetry("read_document: no text from PDF (scanned-only or pdftotext missing).")
+    else:
+        text = attmod.extract_text_file(resolved)
+        kind = "text"
+        if not text:
+            raise ModelRetry("read_document: could not decode as text.")
+
+    wrapped = attmod._provenance_wrap(text, f"read_document:{resolved.name}")
+    return {
+        "path": str(resolved),
+        "kind": kind,
+        "chars": len(text),
+        "text": wrapped,
+    }
+
+
 def start_background_task(task: str) -> dict:
     """Delegate a long-running or multi-step job to run in the BACKGROUND, detached.
     It runs on its own and the user is notified on their phone when it finishes. Use
@@ -276,6 +332,17 @@ def tools() -> list[Tool]:
                   "device", "on", "off", "status", "is", "smart home"],
             func=get_ha_state,
             example={"query": "porch lights"},
+        ),
+        Tool(
+            name="read_document",
+            description=("Extract text from an image (OCR), PDF, or text file on disk. "
+                         "Use when the user attached a photo of a document or a path "
+                         "like ~/.cache/argus/uploads/... appears in the prompt. "
+                         "Returns provenance-wrapped untrusted text."),
+            tags=["ocr", "document", "image", "pdf", "attachment", "read", "paperclip",
+                  "photo", "scan", "tesseract", "file"],
+            func=read_document,
+            example={"path": "/home/shane/.cache/argus/uploads/default/abc_doc.png"},
         ),
         Tool(
             name="start_background_task",

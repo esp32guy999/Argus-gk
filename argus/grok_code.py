@@ -159,15 +159,21 @@ class GrokSession:
         self._lock = asyncio.Lock()
         self.last_used = time.monotonic()
 
-    def _cmd(self, prompt: str) -> list[str]:
-        args = [
-            GROK, "-p", prompt,
+    def _cmd(self, *, prompt: str | None = None, prompt_json: str | None = None) -> list[str]:
+        """Build `grok -p` or `grok --prompt-json` argv (mutually exclusive prompt modes)."""
+        args = [GROK]
+        if prompt_json is not None:
+            # Multimodal / structured content blocks (images + text) — see attachments.vision_content_blocks
+            args.extend(["--prompt-json", prompt_json])
+        else:
+            args.extend(["-p", prompt if prompt is not None else "(empty message)"])
+        args.extend([
             "--output-format", "streaming-messages-json",
             "--include-partial-messages",
             "--permission-mode", "bypassPermissions",
             "--max-turns", str(MAX_TURNS),
             "--cwd", WORKDIR,
-        ]
+        ])
         if self.session_id:
             args.extend(["--resume", self.session_id])
         else:
@@ -179,7 +185,13 @@ class GrokSession:
         return args
 
     async def send(self, text: str, attachments=None):
-        """Yield cumulative assistant text + ('__event__', ...) like claude_code."""
+        """Yield cumulative assistant text + ('__event__', ...) like claude_code.
+
+        `attachments` may be:
+          - raw UI list [{filename, isImage, dataUrl}] (materialised here), or
+          - already-materialised list of argus.attachments.Attachment
+        Images go through --prompt-json as Anthropic-style content blocks.
+        """
         if not oauth_ready():
             raise RuntimeError(
                 "Grok SuperGrok OAuth not signed in. On this host run: "
@@ -191,10 +203,24 @@ class GrokSession:
         async with self._lock:
             self.last_used = time.monotonic()
             Path(WORKDIR).mkdir(parents=True, exist_ok=True)
-            # attachments: not yet mapped through --prompt-json; text-only for v1
+
+            from argus import attachments as attmod
+            mats = attachments or []
+            if mats and not hasattr(mats[0], "path"):
+                # raw UI dicts
+                mats = attmod.materialize(mats, conversation_id=self.cid)
+
+            prompt_json = None
             prompt = text or "(empty message)"
+            if mats:
+                blocks = attmod.vision_content_blocks(text or "", mats)
+                prompt_json = json.dumps(blocks)
+                cmd = self._cmd(prompt_json=prompt_json)
+            else:
+                cmd = self._cmd(prompt=prompt)
+
             proc = await asyncio.create_subprocess_exec(
-                *self._cmd(prompt),
+                *cmd,
                 cwd=WORKDIR, env=_clean_env(),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,

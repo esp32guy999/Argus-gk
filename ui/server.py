@@ -246,19 +246,37 @@ async def chat(request: Request):
     body = await request.json()
     model_name = body.get("model") or _default_model()
     message = body.get("message", "")
-    attachments = body.get("attachments") or []
-    # Only forward images to vision-capable models — don't apply attachments generically.
-    if attachments and not _is_vision(model_name):
-        attachments = []
+    raw_attachments = body.get("attachments") or []
     conversation_id = _cid(body.get("conversation_id"))
     bubble_id = uuid.uuid4().hex
+
+    # Materialise every attachment to disk — never silently drop. Hard failures
+    # (size / decode) return 400 so the UI can show them; soft paths always leave
+    # a path + OCR/text extract for non-vision models (argus.attachments).
+    from argus import attachments as attmod
+    try:
+        mats = await asyncio.to_thread(
+            attmod.materialize, raw_attachments, conversation_id) if raw_attachments else []
+    except attmod.AttachmentError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"attachment failed: {e}")
+
+    store_text = attmod.user_message_for_store(message, mats)
+    # Model-facing prompt: native vision agents get raw message + Attachment objs;
+    # everyone else gets OCR / inline text / path enrichment (no black hole).
+    if mats and not attmod.supports_native_vision(model_name):
+        model_message = await asyncio.to_thread(attmod.enrich_prompt, message, mats)
+    else:
+        model_message = message
+
     _turn_begin(conversation_id, bubble_id)
 
     # Load prior turns (memory) BEFORE persisting this one, then record the user msg.
     history = await asyncio.to_thread(store.model_history, conversation_id, HISTORY_TURNS,
                                       _history_budget(model_name))
     user_row = await asyncio.to_thread(
-        store.add_message, conversation_id, "user", message, None)
+        store.add_message, conversation_id, "user", store_text, None)
 
     def on_event(phase, detail, step):
         # Live progress for the UI status pill (tool calls, loop caught).
@@ -273,28 +291,35 @@ async def chat(request: Request):
                 # Persistent per-conversation CC session keeps its own context, so we
                 # send only the new message (not the full history).
                 from argus import claude_code
-                source = claude_code.send(conversation_id, message, attachments=attachments)
+                cc_atts = attmod.to_claude_ui_attachments(mats) if mats else None
+                # Non-image files: append path markers to text for CC tools.
+                cc_text = model_message
+                if mats:
+                    non_img = [a for a in mats if not a.is_image]
+                    if non_img:
+                        extra = "\n".join(
+                            f"[Attached file on disk: {a.path} ({a.filename})]"
+                            for a in non_img)
+                        cc_text = (cc_text + "\n" + extra).strip() if cc_text else extra
+                source = claude_code.send(conversation_id, cc_text, attachments=cc_atts)
             elif model_name == "grok":
-                # SuperGrok OAuth via Grok Build CLI — same bubble contract as CC.
-                # Session resume owns history; never hits llama-swap or api.x.ai credits.
+                # SuperGrok OAuth via Grok Build CLI — multimodal via --prompt-json.
                 from argus import grok_code
-                source = grok_code.send(conversation_id, message, attachments=attachments)
+                source = grok_code.send(conversation_id, message, attachments=mats or None)
             else:
-                # Local models: not vision, so attachments were already dropped above.
-                # External models (gemma4-cpu) -> their own endpoint + real model id
-                # (+ api key when api_key_env is set); everything else -> llama-swap.
+                # Local / external: enriched text (OCR + paths) already in model_message.
                 ext = model_config.external(model_name)
                 if ext and ext.get("api_key_env") and not model_config.external_api_key(model_name):
                     raise RuntimeError(
                         f"{model_name}: missing {ext['api_key_env']} "
                         f"(add it to ~/.config/secrets/credentials.env and restart argus-ui)")
                 source = loop.stream_run(
-                    registry, message,
+                    registry, model_message,
                     model_name=(ext["model_id"] if ext else model_name),
                     base_url=(ext["base_url"] if ext else MODEL_URL),
                     api_key=(model_config.external_api_key(model_name) if ext else "none"),
                     turn_budget=8, message_history=history, on_event=on_event,
-                    enable_thinking=_thinking_for_turn(model_name, message))
+                    enable_thinking=_thinking_for_turn(model_name, model_message))
             async for content in source:
                 if isinstance(content, tuple) and content[0] == "__event__":
                     ev = content[1]

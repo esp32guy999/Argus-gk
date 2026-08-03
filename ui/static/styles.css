@@ -589,6 +589,11 @@ body {
 #chat-send:disabled { opacity: 0.4; cursor: default; }
 #chat-send.is-stop { background: var(--red); border-radius: 8px; }
 
+#chat-attach.attach-disabled {
+  opacity: 0.35;
+  pointer-events: none;
+  cursor: not-allowed;
+}
 #chat-attach {
   width: 36px;
   height: 36px;

@@ -63,13 +63,14 @@ models:
   lfm2.5-8b:
     accent: red
 
-  # SuperGrok OAuth via Grok Build CLI (`grok -p`) — the GK toggle path.
+  # SuperGrok OAuth via Grok Build CLI (`grok -p` / --prompt-json) — the GK toggle path.
   # Uses ~/.grok/auth.json (run `grok login`); does NOT use XAI_API_KEY /
   # console.x.ai credits. Never touches llama-swap/VRAM. See argus/grok_code.py.
+  # Vision: paperclip images go through --prompt-json content blocks (argus/attachments.py).
   grok:
     display: "Grok"
     accent: blue
-    vision: false   # attachments not yet mapped through --prompt-json
+    vision: true
 
   # Legacy Claude Code path (still routable in chat() for old threads; not
   # offered in the picker after the CC→GK swap). Keep vision metadata for

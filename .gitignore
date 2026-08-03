@@ -23,6 +23,11 @@ ui/*.service
 .cc_sessions.json
 .grok_sessions.json
 
+# Paperclip uploads (materialised attachments — may contain private photos/docs)
+.uploads/
+# Also default cache path used by argus.attachments
+# (system-wide ~/.cache/argus/uploads is outside the repo)
+
 # Argus runtime auto-notes (not source)
 notes/
 
