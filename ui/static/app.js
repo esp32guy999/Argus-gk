@@ -13,7 +13,7 @@ const state = {
   currentModel:   null,
   conversationId: null,
   conversations: [],
-  ccActive:       false,     // CC toggle: route sends to claude-code (cloud) over the dropdown model
+  gkActive:       false,     // GK toggle: route sends to grok (SuperGrok OAuth) over the dropdown model
   rtTo:           'both',    // Roundtable addressee: gemma | claude | both
   rtBubbles:      {},        // Roundtable: bubbleId -> {el, speaker, target} (parallel to pending path)
   currentView:    'chat',
@@ -70,11 +70,11 @@ function fmtDay(ts) {
     { weekday: 'long', month: 'short', day: 'numeric' });
 }
 // Friendly display name for a model id (falls back to the raw id).
-// The model a SEND actually routes to: Claude (cloud) when the CC toggle is on,
+// The model a SEND actually routes to: Grok (SuperGrok) when the GK toggle is on,
 // otherwise the dropdown selection. The dropdown keeps showing the local model
-// either way — CC is an overlay switch, not a dropdown entry.
-const CC_MODEL = 'claude-code';
-function activeModel() { return state.ccActive ? CC_MODEL : state.currentModel; }
+// either way — GK is an overlay switch, not a dropdown entry.
+const GK_MODEL = 'grok';
+function activeModel() { return state.gkActive ? GK_MODEL : state.currentModel; }
 function modelLabel(id) {
   return (id && state.modelCfg && state.modelCfg[id] && state.modelCfg[id].display) || id || '';
 }
@@ -364,6 +364,7 @@ const MODEL_ACCENT = {
   'lfm2.5-8b':      'red',
   'ornith-35b-uncensored': 'emerald',  // Loki — uncensored daily driver (docs/model-ornith.md)
   'claude':           'blue',    // Claude at the Roundtable (via the :8100 shim; distinct from claude-code's orange)
+  'grok':             'blue',    // Grok (xAI cloud) — accent also set in config/models.yaml
   // z-engineer intentionally unmapped (media model, tracked in docs/ISSUES.md) → falls back
 };
 // ── Roundtable ─────────────────────────────────────────────────────────────
@@ -415,48 +416,52 @@ async function loadModels() {
     state.models = list.map(([id, cfg]) => ({ id, cfg, display: cfg.display || id }));
     state.modelCfg = Object.fromEntries(list);
 
-    // Restore preferred model + CC-toggle state from layout.
+    // Restore preferred model + GK-toggle state from layout.
     let L = {};
     try { L = await fetchJson('/layout') || {}; } catch {}
     let saved = L.lastModel || null;
-    state.ccActive = !!L.ccActive;
-    // Migration: CC used to be a dropdown model. If it was the saved pick, treat
-    // that as "CC toggle on" and put a real local model in the dropdown.
-    if (saved === CC_MODEL) { state.ccActive = true; saved = L.lastLocalModel || null; }
-    const localModels = state.models.filter(m => m.id !== CC_MODEL);
-    state.currentModel = (saved && state.modelCfg[saved] && saved !== CC_MODEL)
+    // Prefer gkActive; migrate old ccActive layout key → off (different product).
+    state.gkActive = !!L.gkActive;
+    // Migration: if Grok was saved as the dropdown pick, treat as "GK on".
+    if (saved === GK_MODEL) { state.gkActive = true; saved = L.lastLocalModel || null; }
+    // Also migrate legacy claude-code saved pick → local model (CC button is gone).
+    if (saved === 'claude-code') { saved = L.lastLocalModel || null; }
+    // OAuth agents (GK toggle + legacy claude-code) are not dropdown locals.
+    const isLocal = id => id && id !== GK_MODEL && id !== 'claude-code';
+    const localModels = state.models.filter(m => isLocal(m.id));
+    state.currentModel = (saved && state.modelCfg[saved] && isLocal(saved))
       ? saved
       : (localModels[0]?.id || null);
 
     applyModelAccent(activeModel());
     renderModelSelect();
     renderModelList();
-    updateCcToggle();
+    updateGkToggle();
   } catch (e) {
     modelSelect.innerHTML = `<option>Brain unavailable</option>`;
     brainDot.classList.add('down');
   }
 }
 
-// Reflect CC-toggle state on the button (active = routing to Claude) + dim the
+// Reflect GK-toggle state on the button (active = routing to Grok) + dim the
 // dropdown so it's clear the local model is on standby.
-function updateCcToggle() {
-  const btn = $('cc-toggle');
+function updateGkToggle() {
+  const btn = $('gk-toggle');
   if (btn) {
-    btn.classList.toggle('active', state.ccActive);
-    btn.title = state.ccActive
-      ? 'Routing to Claude (cloud). Click to return to your dropdown model.'
-      : 'Swap to Claude (cloud) — keeps your dropdown model selected.';
+    btn.classList.toggle('active', state.gkActive);
+    btn.title = state.gkActive
+      ? 'Routing to Grok (SuperGrok). Click to return to your dropdown model.'
+      : 'Swap to Grok (SuperGrok) — keeps your dropdown model selected.';
   }
   if (typeof modelSelect !== 'undefined' && modelSelect) {
-    modelSelect.style.opacity = state.ccActive ? '0.5' : '';
+    modelSelect.style.opacity = state.gkActive ? '0.5' : '';
   }
 }
 
 function renderModelSelect() {
-  // CC is no longer a dropdown entry — it's the toggle button beside it.
+  // OAuth agents are not dropdown entries — Grok is the GK toggle beside it.
   modelSelect.innerHTML = state.models
-    .filter(m => m.id !== CC_MODEL)
+    .filter(m => m.id !== GK_MODEL && m.id !== 'claude-code')
     .map(m => `<option value="${escHtml(m.id)}" ${m.id === state.currentModel ? 'selected' : ''}>${escHtml(m.display)}</option>`)
     .join('');
 }
@@ -468,7 +473,8 @@ function renderModelList() {
   el.innerHTML = state.models.map(m => {
     const cfg = m.cfg;
     const sub = cfg.backend === 'anthropic' ? 'Claude API'
-              : cfg.backend === 'claude-code' ? 'Claude Code CLI'
+              : cfg.backend === 'claude-code' || cfg.backend === 'claude' ? 'Claude Code CLI'
+              : cfg.backend === 'grok' ? 'Grok Build (SuperGrok OAuth)'
               : cfg.backend === 'ollama' ? `ollama · ${cfg.model || m.id}`
               : cfg.backend === 'vllm' ? `vLLM · ${cfg.model || m.id}`
               : String(cfg.backend || m.id);
@@ -1172,7 +1178,7 @@ async function send() {
     const { id: bubbleId } = await res.json();
     console.log('[DBG] chat sent, bubbleId:', bubbleId);
     state.pendingBubbleId = bubbleId;
-    state.pendingModel = activeModel();   // snapshot now — switching models/CC mid-turn must not relabel/recolor this bubble
+    state.pendingModel = activeModel();   // snapshot now — switching models/GK mid-turn must not relabel/recolor this bubble
     typingEl.style.setProperty('--msg-accent', modelColor(state.pendingModel));  // colour the bar while it streams
     // Live status pill (timer + stall/crash detection) until the turn completes.
     state.statusPill = statusPill;
@@ -2127,7 +2133,7 @@ async function saveLayout() {
       panels:    [...panels.values()],
       lastModel: state.currentModel,   // the dropdown (local) model
       lastLocalModel: state.currentModel,
-      ccActive:  state.ccActive,       // CC toggle overlay state
+      gkActive:  state.gkActive,       // GK toggle overlay state (SuperGrok)
       timestamp: new Date().toISOString(),
     };
     try {
@@ -2371,15 +2377,15 @@ function wireUI() {
   modelSelect.addEventListener('change', () => {
     state.currentModel = modelSelect.value;
     applyModelAccent(activeModel());
-    if (!state.ccActive) maybeWarmModel(state.currentModel);   // don't wake a local model while routing to CC
+    if (!state.gkActive) maybeWarmModel(state.currentModel);   // don't wake a local model while routing to GK
     saveLayout();
   });
-  // CC toggle — flip routing between the dropdown model and Claude (cloud).
-  $('cc-toggle')?.addEventListener('click', () => {
-    state.ccActive = !state.ccActive;
-    updateCcToggle();
+  // GK toggle — flip routing between the dropdown model and Grok (SuperGrok OAuth).
+  $('gk-toggle')?.addEventListener('click', () => {
+    state.gkActive = !state.gkActive;
+    updateGkToggle();
     applyModelAccent(activeModel());
-    // Turning CC off doesn't auto-wake the local model — it loads lazily on next send.
+    // Turning GK off doesn't auto-wake the local model — it loads lazily on next send.
     saveLayout();
   });
   // Everything below is non-critical; wrap so any single failure can't kill the rest.

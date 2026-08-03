@@ -496,8 +496,8 @@ body {
   letter-spacing: 0.08em;
 }
 
-/* CC toggle — swap routing to Claude (cloud) while keeping a local model in the dropdown. */
-.cc-toggle {
+/* GK toggle — swap routing to Grok (SuperGrok OAuth) while keeping a local model in the dropdown. */
+.gk-toggle {
   padding: 4px 9px;
   margin-left: 4px;
   border-radius: 6px;
@@ -510,10 +510,10 @@ body {
   cursor: pointer;
   transition: background .12s, color .12s, border-color .12s;
 }
-.cc-toggle.active {
-  background: rgba(249,115,22,.18);   /* Claude orange */
-  border-color: #f97316;
-  color: #f97316;
+.gk-toggle.active {
+  background: rgba(59,130,246,.18);   /* Grok blue */
+  border-color: #3b82f6;
+  color: #3b82f6;
 }
 
 /* Roundtable "To:" addressee bar — sits just above the input in the Roundtable room. */
@@ -1390,7 +1390,7 @@ body {
 .message.typing:empty { display: none; }
 @media (prefers-reduced-motion: reduce) { .status-pill .sp-dot { animation: none; } }
 
-/* ── Tap-to-expand activity stream (claude-code path only) ── */
+/* ── Tap-to-expand activity stream (OAuth agent paths: grok / legacy claude-code) ── */
 .status-pill-wrap { display: flex; flex-direction: column; align-self: flex-start; width: fit-content; max-width: 92%; }
 .status-pill .sp-dur   { opacity: .6; font-variant-numeric: tabular-nums; }
 .status-pill .sp-caret { opacity: .45; font-size: 9px; transition: transform .15s ease; }

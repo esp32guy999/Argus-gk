@@ -49,6 +49,12 @@ check("cpu gemma external", mc.external("gemma4-cpu"),
       {"base_url": "http://localhost:11435/v1", "model_id": "gemma4e2b"})
 check("80B not external", mc.external("qwen3-next-80b"), None)
 check("cpu gemma in externals()", "gemma4-cpu" in mc.externals(), True)
+# Grok is SuperGrok OAuth (grok_code), NOT an external OpenAI-compat backend.
+check("grok not external", mc.external("grok"), None)
+check("grok not in externals()", "grok" not in mc.externals(), True)
+check("grok display", mc.display("grok"), "Grok")
+check("grok vision off (v1)", mc.is_vision("grok"), False)
+check("cpu gemma api_key default", mc.external_api_key("gemma4-cpu"), "none")
 
 print("accent:")
 check("80B violet", mc.accent("qwen3-next-80b"), "violet")

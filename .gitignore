@@ -21,6 +21,7 @@ ui/*.service
 .cchome/
 .ccwork/
 .cc_sessions.json
+.grok_sessions.json
 
 # Argus runtime auto-notes (not source)
 notes/

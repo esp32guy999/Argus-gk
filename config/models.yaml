@@ -15,8 +15,10 @@
 #
 # Fields: display, accent (an ACCENTS palette name), vision (bool), thinking
 # (true/false/null=server default), context (tokens), warm (bool, pre-load on
-# select), external ({base_url, model_id} for non-llama-swap backends),
-# grant ([extra dangerous lanes this model is born cleared for]).
+# select), external ({base_url, model_id, api_key_env?} for non-llama-swap
+# backends — api_key_env names an env var resolved at request time, never a
+# secret in this file), grant ([extra dangerous lanes this model is born
+# cleared for]).
 
 defaults:
   context: 8192
@@ -61,7 +63,17 @@ models:
   lfm2.5-8b:
     accent: red
 
-  # Cloud path — its own session, never touches llama-swap/VRAM.
+  # SuperGrok OAuth via Grok Build CLI (`grok -p`) — the GK toggle path.
+  # Uses ~/.grok/auth.json (run `grok login`); does NOT use XAI_API_KEY /
+  # console.x.ai credits. Never touches llama-swap/VRAM. See argus/grok_code.py.
+  grok:
+    display: "Grok"
+    accent: blue
+    vision: false   # attachments not yet mapped through --prompt-json
+
+  # Legacy Claude Code path (still routable in chat() for old threads; not
+  # offered in the picker after the CC→GK swap). Keep vision metadata for
+  # any residual /argus/chat?model=claude-code callers.
   claude-code:
     display: "Claude Code"
     accent: orange

@@ -452,10 +452,15 @@ def _make_sink(called: list[str], on_event=None):
 
 
 def make_model(model_name: str = "local",
-               base_url: str = "http://localhost:4000/v1") -> OpenAIChatModel:
-    """Point the engine at the LiteLLM proxy. Model-agnostic via model_name."""
+               base_url: str = "http://localhost:4000/v1",
+               api_key: str = "none") -> OpenAIChatModel:
+    """Point the engine at any OpenAI-compat endpoint. Model-agnostic via model_name.
+
+    `api_key` defaults to \"none\" for local servers (llama-swap/ollama) that ignore
+    auth; cloud externals (e.g. xAI Grok) pass a real key from model_config.
+    """
     return OpenAIChatModel(
-        model_name, provider=OpenAIProvider(base_url=base_url, api_key="none")
+        model_name, provider=OpenAIProvider(base_url=base_url, api_key=api_key or "none")
     )
 
 
@@ -477,7 +482,8 @@ def _thinking_settings(enable_thinking: bool | None):
 
 
 async def stream_run(registry: Registry, prompt: str, *, model_name: str = "local",
-                     base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
+                     base_url: str = "http://localhost:4000/v1", api_key: str = "none",
+                     turn_budget: int = 8,
                      message_history=None, on_event=None,
                      enable_thinking: bool | None = None, anti_stall: bool = True):
     """Async generator yielding CUMULATIVE assistant text as it streams.
@@ -494,7 +500,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     called: list[str] = []
     sink = _make_sink(called, on_event)
     agent = Agent(
-        make_model(model_name, base_url),
+        make_model(model_name, base_url, api_key=api_key),
         tools=[t.as_pydantic_tool() for t in selected],
         system_prompt=_system_prompt(model_name, registry),
         capabilities=[watchdog.make_capability(on_event=sink)],
@@ -534,7 +540,8 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
 
 
 def run(registry: Registry, prompt: str, *, model_name: str = "local",
-        base_url: str = "http://localhost:4000/v1", turn_budget: int = 8,
+        base_url: str = "http://localhost:4000/v1", api_key: str = "none",
+        turn_budget: int = 8,
         message_history=None, enable_thinking: bool | None = None,
         on_event=None, anti_stall: bool = True) -> str:
     selected = _gate_tools(registry.select(prompt), model_name, message_history)
@@ -542,7 +549,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
     called: list[str] = []
     sink = _make_sink(called, on_event)
     agent = Agent(
-        make_model(model_name, base_url),
+        make_model(model_name, base_url, api_key=api_key),
         tools=[t.as_pydantic_tool() for t in selected],
         system_prompt=_system_prompt(model_name, registry),
         capabilities=[watchdog.make_capability(on_event=sink)],
@@ -576,7 +583,8 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
 
 
 async def run_async(registry: Registry, prompt: str, *, model_name: str = "local",
-                    base_url: str = "http://localhost:4000/v1", turn_budget: int = 12,
+                    base_url: str = "http://localhost:4000/v1", api_key: str = "none",
+                    turn_budget: int = 12,
                     message_history=None, on_event=None,
                     enable_thinking: bool | None = None, anti_stall: bool = True) -> str:
     """Non-streaming async run — for the background task runner. Same tool selection
@@ -587,7 +595,7 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     called: list[str] = []
     sink = _make_sink(called, on_event)
     agent = Agent(
-        make_model(model_name, base_url),
+        make_model(model_name, base_url, api_key=api_key),
         tools=[t.as_pydantic_tool() for t in selected],
         system_prompt=_system_prompt(model_name, registry),
         capabilities=[watchdog.make_capability(on_event=sink)],

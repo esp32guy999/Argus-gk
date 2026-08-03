@@ -93,8 +93,25 @@ def warm_on_select(model_id: str) -> bool:
 
 
 def external(model_id: str) -> dict | None:
-    """{base_url, model_id} for a non-llama-swap backend, or None."""
+    """{base_url, model_id, api_key_env?} for a non-llama-swap backend, or None."""
     return _resolve(model_id)["external"]
+
+
+def external_api_key(model_id: str) -> str:
+    """Resolve the API key for an external model at request time.
+
+    Prefer `api_key_env` (env var name) so secrets never live in models.yaml.
+    Falls back to `"none"` for local OpenAI-compat servers that ignore auth
+    (llama-swap, ollama). Empty string if the env var is set but blank.
+    """
+    ext = external(model_id)
+    if not ext:
+        return "none"
+    env_name = ext.get("api_key_env")
+    if env_name:
+        val = os.environ.get(env_name)
+        return val if val is not None else ""
+    return ext.get("api_key") or "none"
 
 
 def grants(model_id: str) -> list[str]:
@@ -103,7 +120,7 @@ def grants(model_id: str) -> list[str]:
 
 
 def externals() -> dict:
-    """All models declaring an `external` backend → {id: {base_url, model_id, display}}."""
+    """All models declaring an `external` backend → {id: {base_url, model_id, display, ...}}."""
     data = _load()
     out = {}
     for mid, spec in (data.get("models") or {}).items():

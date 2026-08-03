@@ -72,9 +72,10 @@ HISTORY_RESERVE = 3500
 
 def _history_budget(model_name: str) -> int | None:
     """Max tokens of prior history to feed this model, or None to skip budgeting
-    (claude-code: history isn't sent to it and it self-manages context). The 80B is
-    VRAM-bound at -c 8192, so history MUST fit or llama.cpp truncates from the front."""
-    if model_name == "claude-code":
+    (claude-code / grok: history isn't sent — the OAuth CLI self-manages context).
+    The 80B is VRAM-bound at -c 8192, so history MUST fit or llama.cpp truncates
+    from the front."""
+    if model_name in ("claude-code", "grok"):
         return None
     return max(512, model_config.context_window(model_name) - HISTORY_RESERVE)
 HA_URL = os.environ.get("HA_URL")
@@ -91,8 +92,8 @@ store = get_store(DB_PATH)   # canonical process-wide store; tools reach the sam
 
 # Local-model serving goes through llama-swap (MODEL_URL → :9090), which loads the
 # requested model on demand and keeps one resident at a time. No launcher lives here:
-# the 80B is just another llama-swap entry now. claude-code stays on its own cloud
-# path (see chat()), so selecting it never touches llama-swap or evicts the 80B.
+# the 80B is just another llama-swap entry now. `grok` (SuperGrok OAuth) stays on its
+# own cloud path (see chat()), so selecting it never touches llama-swap or evicts the 80B.
 _LOCAL_BASE = MODEL_URL.rsplit("/v1", 1)[0]
 
 
@@ -217,9 +218,9 @@ def publish(event_name: str, data: Any):
         except asyncio.QueueFull:
             subscribers.discard(queue)
 
-# Claude Code as a selectable model — routes to a PERSISTENT per-conversation `claude`
-# session (argus/claude_code.py). Bypasses the harness + llama-swap, so NO GPU model
-# is loaded/unloaded; each Forge thread keeps native CC context across turns.
+# OAuth agent paths (Grok via grok_code; legacy claude-code still routable):
+# persistent per-conversation CLI sessions. Bypasses harness + llama-swap — no GPU
+# load/unload; each Forge thread keeps native agent context across turns.
 
 
 async def sse_generator():
@@ -273,17 +274,25 @@ async def chat(request: Request):
                 # send only the new message (not the full history).
                 from argus import claude_code
                 source = claude_code.send(conversation_id, message, attachments=attachments)
+            elif model_name == "grok":
+                # SuperGrok OAuth via Grok Build CLI — same bubble contract as CC.
+                # Session resume owns history; never hits llama-swap or api.x.ai credits.
+                from argus import grok_code
+                source = grok_code.send(conversation_id, message, attachments=attachments)
             else:
-                # Local models: not in VISION_MODELS, so attachments were already
-                # dropped above. (Wiring a vision-capable local model would mean adding
-                # it to VISION_MODELS and threading images into loop.stream_run.)
-                # External models (gemma4-cpu) -> their own endpoint + real model id;
-                # everything else -> llama-swap.
+                # Local models: not vision, so attachments were already dropped above.
+                # External models (gemma4-cpu) -> their own endpoint + real model id
+                # (+ api key when api_key_env is set); everything else -> llama-swap.
                 ext = model_config.external(model_name)
+                if ext and ext.get("api_key_env") and not model_config.external_api_key(model_name):
+                    raise RuntimeError(
+                        f"{model_name}: missing {ext['api_key_env']} "
+                        f"(add it to ~/.config/secrets/credentials.env and restart argus-ui)")
                 source = loop.stream_run(
                     registry, message,
                     model_name=(ext["model_id"] if ext else model_name),
                     base_url=(ext["base_url"] if ext else MODEL_URL),
+                    api_key=(model_config.external_api_key(model_name) if ext else "none"),
                     turn_budget=8, message_history=history, on_event=on_event,
                     enable_thinking=_thinking_for_turn(model_name, message))
             async for content in source:
@@ -292,17 +301,17 @@ async def chat(request: Request):
                     # Keep the always-on status pill driven on tool use (as before)...
                     if ev.get("kind") == "tool_use":
                         on_event("tool", ev.get("name", "tool"), 0)
-                    elif ev.get("kind") == "done":   # CC metric: turn wall-clock time
+                    elif ev.get("kind") == "done":   # OAuth-agent metric: turn wall-clock
                         if ev.get("duration_ms"):
                             metrics.CC_DURATION.observe(ev["duration_ms"] / 1000)
                     # ...and forward the rich activity to the tap-to-expand panel
-                    # (claude-code path only; the 80B path never yields __event__).
+                    # (claude-code / grok paths; the 80B path never yields __event__).
                     publish("bubble_activity", {"id": bubble_id, "event": ev})
                     continue
                 final = content
                 _turn_touch(conversation_id, "writing", "")
                 publish("bubble_update", {"id": bubble_id, "content": content})
-            if model_name == "claude-code":
+            if model_name in ("claude-code", "grok"):
                 metrics.CC_TURNS.labels("ok").inc()
             row = await asyncio.to_thread(
                 store.add_message, conversation_id, "assistant", final, model_name)
@@ -314,7 +323,7 @@ async def chat(request: Request):
                     store.add_message, conversation_id, "assistant", final, model_name)
             publish("bubble_done", {"id": bubble_id, "cancelled": True})
         except Exception as e:
-            if model_name == "claude-code":
+            if model_name in ("claude-code", "grok"):
                 metrics.CC_TURNS.labels("error").inc()
             publish("bubble_done", {"id": bubble_id, "error": str(e)})
         finally:
@@ -487,9 +496,10 @@ async def cancel(bubble_id: str):
 async def get_models():
     # Forge expects [[id, cfg], ...] where cfg has display/backend.
     # Dynamic: list whatever llama-swap currently serves (so the selector swaps
-    # among real local models), then always append the cloud claude-code option.
-    # claude-code is a separate path — selecting it never hits llama-swap, so it
-    # never evicts a resident local model (e.g. the 80B stays loaded).
+    # among real local models), then append the SuperGrok OAuth agent path.
+    # `grok` is a separate path — selecting it never hits llama-swap, so it
+    # never evicts a resident local model (e.g. the 80B stays loaded). The UI
+    # exposes it as the GK toggle overlay, not a dropdown entry.
     def _cfg(mid, backend="argus"):
         # cfg for the picker — display/vision/warm/accent all from the manifest, so a
         # new model is described (and coloured) without touching server.py or app.js.
@@ -508,7 +518,10 @@ async def get_models():
     # external (non-llama-swap) models — e.g. the CPU Gemma running on its own ollama
     for name in model_config.externals():
         entries.append([name, _cfg(name)])
-    entries.append(["claude-code", _cfg("claude-code", backend="claude")])
+    # SuperGrok OAuth agent (subscription via Grok Build CLI — not llama-swap /
+    # not console API credits). claude-code remains routable in chat() for old
+    # threads but is no longer offered in the picker (swapped for GK).
+    entries.append(["grok", _cfg("grok", backend="grok")])
     return JSONResponse(entries)
 
 
