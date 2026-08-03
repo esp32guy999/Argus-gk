@@ -162,6 +162,39 @@ def main() -> int:
         e["type"] == "CheckpointReached" for e in rep["events"])
     print("PASS: resume + event replay")
 
+    # 11. Unrelated evidence must not COMPLETE (jellyfin file ≠ sonarr criterion)
+    t11 = engine.create_task(
+        "Ensure Sonarr is running",
+        success_criteria=["sonarr container running", "sonarr port responds"],
+        checklist=["start sonarr", "check port"],
+    )
+    engine.accept_plan(t11)
+    for item in t11.checklist:
+        engine.apply_event(t11, SeeEvent(
+            type="CheckpointReached", detail=item,
+            data={"checklist_item": item},
+        ))
+    bogus = {
+        "path": "/etc/jellyfin/config.xml",
+        "contents": "service running",
+    }
+    for crit in t11.success_criteria:
+        engine.apply_event(t11, SeeEvent(
+            type="EvidenceAdded", detail=crit,
+            data={
+                "criterion": crit,
+                "kind": "file",
+                "summary": f"path={bogus['path']} contents={bogus['contents']}",
+                "payload": str(bogus),
+            },
+        ))
+    d11 = engine.request_verify(t11)
+    assert d11.action != "COMPLETE", d11
+    assert t11.current_state == "EXECUTING", t11.current_state
+    assert "does not prove" in (d11.feedback or "").lower() or "jellyfin" in (d11.feedback or "").lower() \
+        or "unrelated" in (d11.feedback or "").lower() or "sonarr" in (d11.feedback or "").lower(), d11.feedback
+    print("PASS: unrelated jellyfin evidence rejected for sonarr criteria")
+
     print("\nALL SEE TESTS PASSED ✅")
     return 0
 

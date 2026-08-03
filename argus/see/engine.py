@@ -242,34 +242,137 @@ def tick(task: SeeTask, *, now: float | None = None) -> SupervisorDecision:
 _WEAK_EVIDENCE = frozenset({
     "ok", "done", "yes", "yep", "passed", "pass", "success", "fine", "good",
     "works", "working", "complete", "completed", "true", "1", "✓", "✅",
+    "service running", "it works", "all good",
+})
+
+# Generic words that do not prove a specific criterion by themselves.
+_EVIDENCE_STOP = frozenset({
+    "the", "a", "an", "is", "to", "for", "of", "and", "or", "with", "on", "in",
+    "at", "be", "must", "should", "that", "this", "file", "path", "contains",
+    "exists", "check", "verify", "contents", "content", "size", "test", "true",
+    "false", "status", "show", "shows", "from", "via", "using", "returned",
+    "exact", "exactly", "match", "matched", "output", "result", "results",
+    "service", "running", "up", "active", "ok", "done", "pass", "passed",
+    "config", "configuration", "xml", "json", "yml", "yaml", "etc", "tmp",
+    "home", "usr", "var", "opt", "mnt", "data", "log", "logs",
+})
+
+# Known homelab/service names — mismatch between criterion and evidence is a fail.
+_KNOWN_SERVICES = frozenset({
+    "sonarr", "radarr", "lidarr", "prowlarr", "readarr", "jellyfin", "plex",
+    "emby", "navidrome", "qbittorrent", "transmission", "sabnzbd", "nginx",
+    "caddy", "traefik", "grafana", "prometheus", "homeassistant", "hass",
+    "pihole", "unbound", "wireguard", "openvpn", "gluetun", "postgres",
+    "mariadb", "redis", "argus", "immich", "syncthing", "n8n",
 })
 
 
+_WEAK_VERBS = frozenset({
+    "responds", "respond", "running", "started", "exists", "contains",
+    "listening", "working", "healthy", "available", "reachable", "created",
+    "modified", "updated", "installed", "deployed", "verified", "checked",
+    "container", "port",  # structural words — subject is the service/name/number
+})
+
+
+def _significant_tokens(text: str) -> set[str]:
+    """Subject tokens evidence must address (services, ports, filenames)."""
+    out: set[str] = set()
+    text = text or ""
+    out |= set(re.findall(r"\b(\d{2,5})\b", text))
+    for m in re.findall(r"[\w.-]+\.(?:txt|xml|yml|yaml|json|conf|cfg|md|log)", text, re.I):
+        out.add(m.lower())
+    for svc in _KNOWN_SERVICES:
+        if re.search(rf"\b{re.escape(svc)}\b", text, re.I):
+            out.add(svc)
+    for t in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower()):
+        if t in _EVIDENCE_STOP or t in _WEAK_VERBS or t in _KNOWN_SERVICES:
+            continue
+        if len(t) >= 5:
+            out.add(t)
+    return out
+
+
+def _evidence_proves_criterion(criterion: str, summary: str, payload: str | None,
+                               kind: str) -> list[str]:
+    """Return issue strings if evidence does not prove this criterion."""
+    issues = []
+    blob = f"{summary or ''}\n{payload or ''}"
+    crit = criterion or ""
+    blob_l = blob.lower()
+
+    summary_s = (summary or "").strip()
+    if len(summary_s) < 12:
+        issues.append(f"evidence too thin for {crit!r}: {summary_s!r}")
+        return issues
+    if summary_s.lower() in _WEAK_EVIDENCE:
+        issues.append(
+            f"evidence for {crit!r} is a bare claim ({summary_s!r}); "
+            f"need observable detail (command output, HTTP status, path, …)"
+        )
+
+    if kind == "http" and not re.search(
+        r"\b([1-5]\d{2}|http|https|curl|status|respond)\b", blob, re.I
+    ):
+        issues.append(
+            f"http evidence for {crit!r} should mention status/URL/response"
+        )
+    if kind == "docker" and not re.search(
+        r"\b(docker|container|up|running|compose|health)\b", blob, re.I
+    ):
+        issues.append(
+            f"docker evidence for {crit!r} should mention container/state"
+        )
+
+    for q in re.findall(r"[\"']([^\"']{2,})[\"']", crit):
+        if q.lower() not in blob_l:
+            issues.append(
+                f"evidence does not prove {crit!r}: missing quoted content {q!r}"
+            )
+
+    sig = _significant_tokens(crit)
+    ports = {t for t in sig if t.isdigit()}
+    names = sig - ports
+    if ports and not any(p in blob_l for p in ports):
+        if not re.search(r"\b(port|curl|http|listen|:)\b", blob_l, re.I):
+            issues.append(
+                f"evidence does not prove {crit!r}: required port(s) "
+                f"{sorted(ports)} not present in evidence"
+            )
+    if names and not any(n in blob_l for n in names):
+        issues.append(
+            f"evidence does not prove {crit!r}: none of the key terms "
+            f"{sorted(names)} appear in the evidence (unrelated artifact?)"
+        )
+
+    crit_svc = {s for s in _KNOWN_SERVICES if re.search(rf"\b{re.escape(s)}\b", crit, re.I)}
+    evid_svc = set()
+    for svc in _KNOWN_SERVICES:
+        if re.search(rf"(?:^|[/_\s.-]){re.escape(svc)}(?:[/_\s.-]|$)", blob_l):
+            evid_svc.add(svc)
+    if crit_svc and evid_svc and not (crit_svc & evid_svc):
+        issues.append(
+            f"evidence does not prove {crit!r}: evidence refers to "
+            f"{sorted(evid_svc)} but criterion is about {sorted(crit_svc)}"
+        )
+
+    if re.search(r"\bservice\s+running\b", blob_l) and crit_svc:
+        if not any(s in blob_l for s in crit_svc):
+            issues.append(
+                f"evidence does not prove {crit!r}: generic "
+                f"'service running' does not identify {sorted(crit_svc)}"
+            )
+
+    return issues
+
+
 def _evidence_quality_issues(task: SeeTask) -> list[str]:
-    """Richer VERIFY (S4): reject hollow claims that aren't observable evidence."""
+    """VERIFY: reject hollow claims and evidence that does not prove its criterion."""
     issues = []
     for e in task.evidence:
-        summary = (e.summary or "").strip()
-        if len(summary) < 12:
-            issues.append(f"evidence too thin for {e.criterion!r}: {summary!r}")
-            continue
-        if summary.lower() in _WEAK_EVIDENCE:
-            issues.append(
-                f"evidence for {e.criterion!r} is a bare claim ({summary!r}); "
-                f"need observable detail (command output, HTTP status, path, …)"
-            )
-        if e.kind == "http" and not re.search(
-            r"\b([1-5]\d{2}|http|https|curl|status|respond)\b", summary, re.I
-        ):
-            issues.append(
-                f"http evidence for {e.criterion!r} should mention status/URL/response"
-            )
-        if e.kind == "docker" and not re.search(
-            r"\b(docker|container|up|running|compose|health)\b", summary, re.I
-        ):
-            issues.append(
-                f"docker evidence for {e.criterion!r} should mention container/state"
-            )
+        issues.extend(_evidence_proves_criterion(
+            e.criterion, e.summary, e.payload, e.kind or "other",
+        ))
     return issues
 
 
@@ -317,7 +420,7 @@ def request_verify(task: SeeTask) -> SupervisorDecision:
         _append_event(task, _transition(task, "EXECUTING", "verify_failed"))
         return SupervisorDecision(
             action="RETRY",
-            reason="evidence incomplete or weak",
+            reason="evidence incomplete, weak, or unrelated to success criteria",
             new_state="EXECUTING",
             feedback=feedback,
             ok=False,
