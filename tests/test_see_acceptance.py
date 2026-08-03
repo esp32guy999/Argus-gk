@@ -144,14 +144,14 @@ def test_02_idle(r: TestResult):
     dec = engine.tick(t, now=time.time())
     api.save(t)
     r.ok(t.current_state == "STALLED", f"idle → STALLED (got {t.current_state})")
-    r.ok(dec.action in ("RETRY", "ASK_USER"), f"poke action={dec.action}")
+    r.ok(dec.action in ("STALL", "ASK_USER"), f"poke action={dec.action}")
     r.ok(bool(dec.feedback or t.worker_feedback), "worker poked with feedback")
     # escalate long idle → ASK_USER
     t.last_progress_ts = time.time() - 1000
     t.current_state = "EXECUTING"
     t.stall_reason = None
     dec2 = engine.tick(t, now=time.time())
-    r.ok(dec2.action in ("ASK_USER", "RETRY") or t.current_state == "STALLED",
+    r.ok(dec2.action in ("ASK_USER", "STALL") or t.current_state == "STALLED",
          f"long idle escalates (action={dec2.action})")
     r.final_state = t.current_state
     # not waiting forever
@@ -202,9 +202,9 @@ def test_04_false_completion(r: TestResult):
     dec = api.request_verify(task.id)
     task = api.get(task.id)
     r.final_state = task.current_state
-    r.ok(dec.action != "COMPLETE", f"COMPLETE denied (action={dec.action})")
+    r.ok(dec.action == "VERIFY_FAILED", f"VERIFY_FAILED (action={dec.action})")
     r.ok(task.current_state == "EXECUTING", f"back to EXECUTING ({task.current_state})")
-    r.ok("fail" in (dec.feedback or "").lower() or dec.ok is False, "verify failed feedback")
+    r.ok(dec.blocking or "fail" in (dec.feedback or "").lower(), "verify failed blocking")
 
 
 # ── TEST 5 ──────────────────────────────────────────────────────────────
@@ -274,7 +274,7 @@ def test_07_evidence_quality(r: TestResult):
     for c in task.success_criteria:
         api.add_evidence(task.id, c, "It works.", kind="other")
     d1 = api.request_verify(task.id)
-    r.ok(d1.action != "COMPLETE", f"weak VERIFY rejected ({d1.action})")
+    r.ok(d1.action == "VERIFY_FAILED", f"weak VERIFY rejected ({d1.action})")
 
     r.line("strong evidence")
     # replace evidence by re-adding good ones (engine accumulates — need fresh criteria cover)
@@ -493,7 +493,7 @@ def test_16_hallucination(r: TestResult):
     t.evidence[-1].summary = "done"
     api.save(t)
     dec = api.request_verify(task.id)
-    r.ok(dec.action != "COMPLETE", f"hallucinated edit rejected ({dec.action})")
+    r.ok(dec.action == "VERIFY_FAILED", f"hallucinated edit rejected ({dec.action})")
     r.final_state = api.get(task.id).current_state
     r.ok(api.get(task.id).current_state == "EXECUTING", "returned to EXECUTING")
 

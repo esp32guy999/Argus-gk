@@ -34,16 +34,71 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     "ABORTED":   frozenset(),
 }
 
-# Supervisor actions (what the engine recommends / enacts)
+# ── Supervisor Decision Protocol v1 (immutable within protocol version) ──
+# The Worker MUST accept only these values. Synonyms are NOT allowed.
 ACTIONS = (
-    "CONTINUE",   # healthy
-    "RETRY",      # repeat last step
-    "REPLAN",     # back to PLANNING
-    "ASK_USER",   # need human
-    "ABORT",      # give up
-    "VERIFY",     # enter verification
-    "COMPLETE",   # verification passed
-    "RESUME",     # STALLED → EXECUTING
+    "CONTINUE",       # healthy progress
+    "RETRY",          # repeat current step; plan still valid
+    "REPLAN",         # plan invalid → PLANNING
+    "VERIFY_FAILED",  # verification denied → EXECUTING
+    "ASK_USER",       # need human → STALLED
+    "STALL",          # no progress / loop → STALLED
+    "ABORT",          # unrecoverable → ABORTED
+    "COMPLETE",       # verified success → COMPLETED
+)
+ACTIONS_SET = frozenset(ACTIONS)
+
+# Legacy / informal synonyms → canonical action (workers/orchestrators may map)
+ACTION_SYNONYMS = {
+    "WAIT": "ASK_USER",
+    "WAITING": "ASK_USER",
+    "SUCCESS": "COMPLETE",
+    "FINISHED": "COMPLETE",
+    "DONE": "COMPLETE",
+    "TRY_AGAIN": "RETRY",
+    "ERROR": "RETRY",
+    "FAIL": "VERIFY_FAILED",
+    "FAILED": "VERIFY_FAILED",
+    "STOP": "ABORT",
+    "RESUME": "CONTINUE",   # resume is CONTINUE after STALLED→EXECUTING
+    "VERIFY": "CONTINUE",   # worker requests verify; supervisor answers COMPLETE/VERIFY_FAILED
+}
+
+# Common reason codes (not exhaustive; free-form codes allowed if action is valid)
+CODES = (
+    "PROGRESS_DETECTED",
+    "CHECKPOINT_ACCEPTED",
+    "WORKER_ACTIVE",
+    "MISSING_EVIDENCE",
+    "UNRELATED_EVIDENCE",
+    "WEAK_EVIDENCE",
+    "COMMAND_FAILED",
+    "TEMPORARY_FAILURE",
+    "VALIDATION_FAILED",
+    "PLAN_INVALID",
+    "RESOURCE_MISSING",
+    "PRECONDITION_FAILED",
+    "NEW_INFORMATION",
+    "CRITERION_NOT_MET",
+    "VERIFICATION_FAILED",
+    "MISSING_INFORMATION",
+    "AMBIGUOUS_REQUEST",
+    "PERMISSION_REQUIRED",
+    "CONFIGURATION_UNKNOWN",
+    "NO_PROGRESS",
+    "TIMEOUT",
+    "LOOP_DETECTED",
+    "WAITING_FOREVER",
+    "UNRECOVERABLE_ERROR",
+    "MAX_RETRIES",
+    "SECURITY_POLICY",
+    "USER_CANCELLED",
+    "ALL_CRITERIA_MET",
+    "UNKNOWN_TASK",
+    "ILLEGAL_STATE",
+    "RESUMED",
+    "PLAN_ACCEPTED",
+    "EVENT_APPLIED",
 )
 
 # Event types (worker/tools/supervisor emit these)
@@ -129,15 +184,108 @@ class SeeEvent:
 
 @dataclass
 class SupervisorDecision:
-    """Result of a supervisor evaluation."""
-    action: str                    # one of ACTIONS
-    reason: str
-    new_state: str | None = None   # if a transition was applied
-    feedback: str | None = None    # message for the worker
-    ok: bool = True
+    """Supervisor Decision Protocol v1 — structured decision for the Worker.
+
+    Schema:
+      action, code, state, blocking, details, confidence?
+    Legacy aliases kept for older call sites: reason→code, new_state→state,
+    feedback→blocking joined, ok→action not ABORT/VERIFY_FAILED.
+    """
+    action: str
+    code: str
+    state: str
+    blocking: list[str] = field(default_factory=list)
+    details: dict = field(default_factory=dict)
+    confidence: float | None = None
+
+    def __post_init__(self) -> None:
+        act = (self.action or "").upper().strip()
+        if act in ACTION_SYNONYMS:
+            act = ACTION_SYNONYMS[act]
+        if act not in ACTIONS_SET:
+            raise ValueError(
+                f"invalid Supervisor action {self.action!r}; "
+                f"allowed: {', '.join(ACTIONS)}"
+            )
+        self.action = act
+        self.code = (self.code or "EVENT_APPLIED").upper()
+        self.state = (self.state or "").upper() or "EXECUTING"
+        if self.blocking is None:
+            self.blocking = []
+        if self.details is None:
+            self.details = {}
+
+    # ── legacy property aliases (tests / older UI) ──────────────────────
+    @property
+    def reason(self) -> str:
+        return self.code
+
+    @property
+    def new_state(self) -> str:
+        return self.state
+
+    @property
+    def feedback(self) -> str:
+        if self.blocking:
+            return "Supervisor: " + " | ".join(self.blocking)
+        return f"Supervisor: {self.action} ({self.code})"
+
+    @property
+    def ok(self) -> bool:
+        # Terminal fail / verify deny are not "ok" for the worker happy path.
+        return self.action not in ("ABORT", "VERIFY_FAILED")
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """Public protocol payload — workers must only depend on these fields."""
+        d = {
+            "action": self.action,
+            "code": self.code,
+            "state": self.state,
+            "blocking": list(self.blocking),
+            "details": dict(self.details),
+        }
+        if self.confidence is not None:
+            d["confidence"] = self.confidence
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SupervisorDecision":
+        """Parse a decision; reject unknown actions (Worker requirement)."""
+        if not isinstance(d, dict):
+            raise ValueError("decision must be an object")
+        action = (d.get("action") or "").upper().strip()
+        if action in ACTION_SYNONYMS:
+            action = ACTION_SYNONYMS[action]
+        if action not in ACTIONS_SET:
+            raise ValueError(f"unknown Supervisor action {d.get('action')!r} — rejected")
+        return cls(
+            action=action,
+            code=str(d.get("code") or "EVENT_APPLIED"),
+            state=str(d.get("state") or "EXECUTING"),
+            blocking=list(d.get("blocking") or []),
+            details=dict(d.get("details") or {}),
+            confidence=d.get("confidence"),
+        )
+
+
+def decide(
+    action: str,
+    code: str,
+    state: str,
+    *,
+    blocking: list[str] | None = None,
+    details: dict | None = None,
+    confidence: float | None = None,
+) -> SupervisorDecision:
+    """Factory for protocol decisions."""
+    return SupervisorDecision(
+        action=action,
+        code=code,
+        state=state,
+        blocking=list(blocking or []),
+        details=dict(details or {}),
+        confidence=confidence,
+    )
 
 
 @dataclass

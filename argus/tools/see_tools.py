@@ -56,7 +56,10 @@ def see_checkpoint(task_id: str, label: str, checklist_item: str = "") -> dict:
         task_id, label,
         checklist_item=checklist_item or None,
     )
-    return {"ok": dec.ok, "action": dec.action, "state": dec.new_state, "feedback": dec.feedback}
+    out = dec.to_dict()
+    out["ok"] = dec.ok
+    out["feedback"] = dec.feedback  # legacy human line
+    return out
 
 
 def see_add_evidence(
@@ -76,7 +79,9 @@ def see_add_evidence(
         kind=kind or "other",
         payload=payload or None,
     )
-    return {"ok": dec.ok, "action": dec.action, "state": dec.new_state}
+    out = dec.to_dict()
+    out["ok"] = dec.ok
+    return out
 
 
 def see_request_verify(task_id: str) -> dict:
@@ -86,13 +91,11 @@ def see_request_verify(task_id: str) -> dict:
         raise ModelRetry("see_request_verify: task_id required.")
     from argus.see import api
     dec = api.request_verify(task_id)
-    return {
-        "ok": dec.ok,
-        "action": dec.action,
-        "state": dec.new_state,
-        "feedback": dec.feedback,
-        "completed": dec.action == "COMPLETE",
-    }
+    out = dec.to_dict()
+    out["ok"] = dec.ok
+    out["feedback"] = dec.feedback
+    out["completed"] = dec.action == "COMPLETE"
+    return out
 
 
 def see_status(task_id: str = "") -> dict:

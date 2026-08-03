@@ -20,6 +20,7 @@ from .models import (
     SeeEvent,
     SeeTask,
     SupervisorDecision,
+    decide,
 )
 
 # Tunables (env overridable at process level for ops; tests patch these)
@@ -93,7 +94,7 @@ def start_planning(task: SeeTask) -> SupervisorDecision:
     ev = _transition(task, "PLANNING", "start_planning")
     _append_event(task, ev)
     _append_event(task, SeeEvent(type="TaskStarted", detail="PLANNING"))
-    return SupervisorDecision(action="CONTINUE", reason="planning", new_state="PLANNING")
+    return decide("CONTINUE", "WORKER_ACTIVE", "PLANNING")
 
 
 def accept_plan(
@@ -119,48 +120,46 @@ def accept_plan(
     ev = _transition(task, "EXECUTING", "plan_accepted")
     _append_event(task, ev)
     task.last_progress_ts = time.time()
-    return SupervisorDecision(
-        action="CONTINUE",
-        reason="plan accepted; worker may execute",
-        new_state="EXECUTING",
-        feedback="Execute the checklist. Request VERIFY when success criteria have evidence.",
+    task.worker_feedback = (
+        "Execute the checklist. Request verification when success criteria have evidence."
+    )
+    return decide(
+        "CONTINUE", "PLAN_ACCEPTED", "EXECUTING",
+        blocking=[],
+        details={"checklist": task.checklist, "success_criteria": task.success_criteria},
     )
 
 
 def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
     """Ingest one event; update task; may change state (e.g. loop → STALLED)."""
     if task.current_state in TERMINAL:
-        return SupervisorDecision(
-            action="ABORT", reason="task already terminal", ok=False,
-            feedback=f"Task is {task.current_state}; no further events.",
+        return decide(
+            "ABORT", "ILLEGAL_STATE", task.current_state,
+            blocking=[f"Task is {task.current_state}; no further events."],
         )
     ev = event if isinstance(event, SeeEvent) else SeeEvent.from_dict(event)
     if ev.type not in EVENT_TYPES and ev.type != "StateTransition":
-        # allow unknown but tag
         ev = SeeEvent(type=ev.type, detail=ev.detail, data={**ev.data, "unknown_type": True}, ts=ev.ts)
 
     _append_event(task, ev)
     now = time.time()
 
-    # --- tool tracking / loop detection ---
     if ev.type == "ToolCalled":
         tool = ev.detail or ev.data.get("tool") or "tool"
         args_key = ev.data.get("args_key") or json.dumps(ev.data.get("args") or {}, sort_keys=True, default=str)
         task.tool_history.append({"tool": tool, "args_key": args_key, "ts": ev.ts, "ok": None})
-        # count recent identical
         recent = [h for h in task.tool_history[-20:] if h["tool"] == tool and h["args_key"] == args_key]
         if len(recent) >= LOOP_REPEAT and task.current_state == "EXECUTING":
             _append_event(task, SeeEvent(type="LoopDetected", detail=tool, data={"count": len(recent)}))
             _append_event(task, _transition(task, "STALLED", f"loop:{tool}"))
             task.worker_feedback = (
-                f"Supervisor: loop detected on {tool} (×{len(recent)}). "
+                f"loop detected on {tool} (×{len(recent)}). "
                 f"Change approach, mark a checkpoint, or request REPLAN."
             )
-            return SupervisorDecision(
-                action="RETRY",
-                reason=f"repeated tool {tool}",
-                new_state="STALLED",
-                feedback=task.worker_feedback,
+            return decide(
+                "STALL", "LOOP_DETECTED", "STALLED",
+                blocking=[f"Repeated tool {tool} ×{len(recent)} with identical arguments"],
+                details={"tool": tool, "count": len(recent)},
             )
 
     if ev.type in ("ToolCompleted", "ToolFailed"):
@@ -169,16 +168,25 @@ def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
             task.tool_history[-1]["ok"] = ok
         if ok:
             task.last_progress_ts = now
+        elif ev.type == "ToolFailed":
+            return decide(
+                "RETRY", "COMMAND_FAILED", task.current_state,
+                blocking=[f"Tool {ev.detail or 'unknown'} failed"],
+                details={"tool": ev.detail, "error": ev.data.get("error")},
+            )
 
     if ev.type == "CheckpointReached":
         label = ev.detail or ev.data.get("label") or "checkpoint"
         task.checkpoints.append(Checkpoint(label=label, detail=ev.data.get("detail")))
         task.last_progress_ts = now
-        # optional: mark checklist item
         item = ev.data.get("checklist_item")
         if item and item in task.checklist and item not in task.completed_items:
             task.completed_items.append(item)
             _append_event(task, SeeEvent(type="ChecklistItemDone", detail=item))
+        return decide(
+            "CONTINUE", "CHECKPOINT_ACCEPTED", task.current_state,
+            details={"label": label, "checklist_item": item},
+        )
 
     if ev.type == "ChecklistItemDone":
         item = ev.detail or ""
@@ -196,27 +204,31 @@ def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
         task.evidence.append(e)
         task.last_progress_ts = now
 
-    # Auto-resume from STALLED on real progress events
     if task.current_state == "STALLED" and ev.type in (
         "CheckpointReached", "EvidenceAdded", "ChecklistItemDone", "ToolCompleted",
     ):
         _append_event(task, _transition(task, "EXECUTING", f"progress:{ev.type}"))
-        return SupervisorDecision(
-            action="RESUME",
-            reason=f"progress after stall ({ev.type})",
-            new_state="EXECUTING",
-            feedback="Supervisor: progress observed; resumed EXECUTING.",
+        task.worker_feedback = "progress observed; resumed EXECUTING."
+        return decide(
+            "CONTINUE", "RESUMED", "EXECUTING",
+            details={"via": ev.type},
         )
 
-    return SupervisorDecision(action="CONTINUE", reason=f"event {ev.type}", new_state=task.current_state)
+    return decide(
+        "CONTINUE", "PROGRESS_DETECTED" if ev.type in (
+            "ToolCompleted", "CheckpointReached", "EvidenceAdded", "ChecklistItemDone",
+        ) else "EVENT_APPLIED",
+        task.current_state,
+        details={"event": ev.type},
+    )
 
 
 def tick(task: SeeTask, *, now: float | None = None) -> SupervisorDecision:
     """Periodic stall check — call from a timer or between worker turns."""
     if task.current_state in TERMINAL:
-        return SupervisorDecision(action="CONTINUE", reason="terminal", new_state=task.current_state)
+        return decide("CONTINUE", "EVENT_APPLIED", task.current_state)
     if task.current_state not in ("EXECUTING", "PLANNING", "VERIFYING"):
-        return SupervisorDecision(action="CONTINUE", reason=f"state {task.current_state}", new_state=task.current_state)
+        return decide("CONTINUE", "EVENT_APPLIED", task.current_state)
 
     now = now if now is not None else time.time()
     idle = now - (task.last_progress_ts or task.last_event_ts or task.created_ts)
@@ -226,17 +238,27 @@ def tick(task: SeeTask, *, now: float | None = None) -> SupervisorDecision:
             data={"idle_sec": idle, "threshold": IDLE_STALL_SEC},
         ))
         _append_event(task, _transition(task, "STALLED", f"idle:{idle:.0f}s"))
+        code = "WAITING_FOREVER" if idle >= IDLE_STALL_SEC * 3 else "NO_PROGRESS"
+        blocking = [
+            f"No checkpoints for {idle:.0f} seconds",
+            "No measurable progress",
+        ]
         task.worker_feedback = (
-            f"Supervisor: idle stall ({idle:.0f}s without progress). "
-            f"Continue with a new action, add a checkpoint, or ask for REPLAN."
+            f"idle stall ({idle:.0f}s without progress). "
+            f"Continue with a new action, add a checkpoint, or request REPLAN."
         )
-        return SupervisorDecision(
-            action="ASK_USER" if idle >= IDLE_STALL_SEC * 3 else "RETRY",
-            reason=f"idle {idle:.0f}s",
-            new_state="STALLED",
-            feedback=task.worker_feedback,
+        # Long idle also escalates to ASK_USER semantics via code; action stays STALL
+        # unless extremely long — protocol: STALL for no progress; ASK_USER for missing info.
+        action = "ASK_USER" if idle >= IDLE_STALL_SEC * 3 else "STALL"
+        if action == "ASK_USER":
+            code = "MISSING_INFORMATION"
+            blocking.append("Supervisor needs user or replan guidance after prolonged idle")
+        return decide(
+            action, code, "STALLED",
+            blocking=blocking,
+            details={"idle_sec": idle, "threshold": IDLE_STALL_SEC},
         )
-    return SupervisorDecision(action="CONTINUE", reason="healthy", new_state=task.current_state)
+    return decide("CONTINUE", "WORKER_ACTIVE", task.current_state)
 
 
 _WEAK_EVIDENCE = frozenset({
@@ -272,6 +294,8 @@ _WEAK_VERBS = frozenset({
     "listening", "working", "healthy", "available", "reachable", "created",
     "modified", "updated", "installed", "deployed", "verified", "checked",
     "container", "port",  # structural words — subject is the service/name/number
+    "written", "marked", "configured", "enabled", "disabled", "present",
+    "absent", "failed", "succeed", "successful", "ready", "complete",
 })
 
 
@@ -377,18 +401,18 @@ def _evidence_quality_issues(task: SeeTask) -> list[str]:
 
 
 def request_verify(task: SeeTask) -> SupervisorDecision:
-    """Worker believes it is done — SEE decides COMPLETED vs EXECUTING."""
+    """Worker believes it is done — SEE returns COMPLETE or VERIFY_FAILED."""
     if task.current_state in TERMINAL:
-        return SupervisorDecision(action="ABORT", reason="terminal", ok=False, new_state=task.current_state)
+        return decide(
+            "ABORT", "ILLEGAL_STATE", task.current_state,
+            blocking=[f"Task already {task.current_state}"],
+        )
     if task.current_state == "STALLED":
         _append_event(task, _transition(task, "EXECUTING", "verify_from_stall"))
     if task.current_state not in ("EXECUTING", "VERIFYING"):
-        return SupervisorDecision(
-            action="RETRY",
-            reason=f"cannot verify from {task.current_state}",
-            ok=False,
-            feedback=f"Supervisor: verify only from EXECUTING (now {task.current_state}).",
-            new_state=task.current_state,
+        return decide(
+            "RETRY", "ILLEGAL_STATE", task.current_state,
+            blocking=[f"verify only from EXECUTING (now {task.current_state})"],
         )
 
     _append_event(task, _transition(task, "VERIFYING", "worker_request"))
@@ -399,96 +423,137 @@ def request_verify(task: SeeTask) -> SupervisorDecision:
     weak = _evidence_quality_issues(task)
 
     if missing or incomplete or weak:
-        feedback_parts = []
+        blocking: list[str] = []
+        code = "VERIFICATION_FAILED"
         if missing:
-            feedback_parts.append("missing evidence for: " + "; ".join(missing))
+            blocking.append("missing evidence for: " + "; ".join(missing))
+            code = "MISSING_EVIDENCE"
         if incomplete:
-            feedback_parts.append("checklist open: " + "; ".join(incomplete))
+            blocking.append("checklist open: " + "; ".join(incomplete))
         if weak:
-            feedback_parts.append("weak evidence: " + "; ".join(weak[:4]))
-        feedback = "Supervisor: verification failed — " + " | ".join(feedback_parts)
-        task.worker_feedback = feedback
+            for w in weak[:6]:
+                blocking.append(w)
+            if any("unrelated" in w.lower() or "does not prove" in w.lower() or "jellyfin" in w.lower()
+                   or "refers to" in w.lower() for w in weak):
+                code = "UNRELATED_EVIDENCE"
+            elif any("thin" in w.lower() or "bare claim" in w.lower() for w in weak):
+                code = "WEAK_EVIDENCE"
+            elif code == "VERIFICATION_FAILED":
+                code = "CRITERION_NOT_MET"
+        task.worker_feedback = " | ".join(blocking)
         _append_event(task, SeeEvent(
             type="VerificationFailed",
-            detail=feedback[:500],
+            detail=task.worker_feedback[:500],
             data={
                 "missing_evidence": missing,
                 "incomplete_checklist": incomplete,
                 "weak_evidence": weak,
+                "code": code,
             },
         ))
         _append_event(task, _transition(task, "EXECUTING", "verify_failed"))
-        return SupervisorDecision(
-            action="RETRY",
-            reason="evidence incomplete, weak, or unrelated to success criteria",
-            new_state="EXECUTING",
-            feedback=feedback,
-            ok=False,
+        return decide(
+            "VERIFY_FAILED", code, "EXECUTING",
+            blocking=blocking,
+            details={
+                "missing_evidence": missing,
+                "incomplete_checklist": incomplete,
+                "weak_evidence": weak[:8],
+            },
         )
 
     _append_event(task, SeeEvent(type="VerificationPassed", detail="all criteria evidenced"))
     _append_event(task, _transition(task, "COMPLETED", "verified"))
     _append_event(task, SeeEvent(type="TaskCompleted", detail=task.goal[:200]))
-    task.worker_feedback = "Supervisor: COMPLETED — evidence satisfied success criteria."
-    return SupervisorDecision(
-        action="COMPLETE",
-        reason="verified",
-        new_state="COMPLETED",
-        feedback=task.worker_feedback,
+    task.worker_feedback = "COMPLETED — evidence satisfied success criteria."
+    return decide(
+        "COMPLETE", "ALL_CRITERIA_MET", "COMPLETED",
+        blocking=[],
+        details={
+            "verified_criteria": len(task.success_criteria),
+            "evidence_items": len(task.evidence),
+            "checkpoints": len(task.checkpoints),
+        },
+        confidence=0.98,
     )
 
 
 def supervisor_action(task: SeeTask, action: str, *, reason: str = "") -> SupervisorDecision:
-    """Explicit SEE/user action: RESUME, REPLAN, ABORT, ASK_USER."""
-    action = (action or "").upper()
-    if action not in ACTIONS:
-        return SupervisorDecision(action="CONTINUE", reason="unknown action", ok=False)
+    """Explicit SEE/user action. Accepts protocol actions + RESUME synonym."""
+    from .models import ACTION_SYNONYMS, ACTIONS_SET
+    raw = (action or "").upper().strip()
+    action = ACTION_SYNONYMS.get(raw, raw)
+    # RESUME is synonym for CONTINUE after leaving STALLED
+    if raw == "RESUME":
+        action = "CONTINUE"
+
+    if action not in ACTIONS_SET and raw not in ("RESUME", "VERIFY"):
+        return decide(
+            "CONTINUE", "EVENT_APPLIED", task.current_state,
+            blocking=[f"unknown action {raw!r} ignored"],
+        )
+
+    if raw == "VERIFY" or action == "VERIFY_FAILED":
+        if raw == "VERIFY":
+            return request_verify(task)
 
     if action == "ABORT":
         if task.current_state not in TERMINAL:
             _append_event(task, _transition(task, "ABORTED", reason or "abort"))
             _append_event(task, SeeEvent(type="TaskAborted", detail=reason or "abort"))
-        return SupervisorDecision(action="ABORT", reason=reason or "aborted", new_state="ABORTED")
+        return decide(
+            "ABORT",
+            "USER_CANCELLED" if "user" in (reason or "").lower() else "UNRECOVERABLE_ERROR",
+            "ABORTED",
+            blocking=[reason or "aborted"],
+        )
 
     if action == "REPLAN":
         if task.current_state in TERMINAL:
-            return SupervisorDecision(action="ABORT", reason="terminal", ok=False)
+            return decide("ABORT", "ILLEGAL_STATE", task.current_state,
+                          blocking=["task already terminal"])
         if task.current_state != "PLANNING":
-            # STALLED or EXECUTING → PLANNING
             if task.current_state == "EXECUTING":
                 _append_event(task, _transition(task, "STALLED", "replan_prep"))
             _append_event(task, _transition(task, "PLANNING", reason or "replan"))
         _append_event(task, SeeEvent(type="SupervisorAction", detail="REPLAN", data={"reason": reason}))
-        task.worker_feedback = "Supervisor: REPLAN — produce a new checklist/plan."
-        return SupervisorDecision(
-            action="REPLAN", reason=reason or "replan", new_state="PLANNING",
-            feedback=task.worker_feedback,
+        task.worker_feedback = "REPLAN — produce a new checklist/plan."
+        return decide(
+            "REPLAN", "PLAN_INVALID" if reason else "NEW_INFORMATION", "PLANNING",
+            blocking=[reason] if reason else ["current plan cannot succeed"],
         )
 
-    if action == "RESUME" or action == "CONTINUE":
+    if action == "CONTINUE" or raw == "RESUME":
         if task.current_state == "STALLED":
             _append_event(task, _transition(task, "EXECUTING", reason or "resume"))
-            task.worker_feedback = "Supervisor: RESUME execution."
-            return SupervisorDecision(
-                action="RESUME", reason=reason or "resume", new_state="EXECUTING",
-                feedback=task.worker_feedback,
-            )
-        return SupervisorDecision(action="CONTINUE", reason="already active", new_state=task.current_state)
+            task.worker_feedback = "RESUME execution."
+            return decide("CONTINUE", "RESUMED", "EXECUTING", details={"reason": reason})
+        return decide("CONTINUE", "WORKER_ACTIVE", task.current_state)
 
     if action == "ASK_USER":
         _append_event(task, SeeEvent(type="SupervisorAction", detail="ASK_USER", data={"reason": reason}))
-        task.worker_feedback = reason or "Supervisor: need user input."
+        task.worker_feedback = reason or "need user input."
         if task.current_state == "EXECUTING":
             _append_event(task, _transition(task, "STALLED", "ask_user"))
-        return SupervisorDecision(
-            action="ASK_USER", reason=reason or "ask_user",
-            new_state=task.current_state, feedback=task.worker_feedback,
+        return decide(
+            "ASK_USER", "MISSING_INFORMATION", "STALLED",
+            blocking=[reason or "user input required"],
         )
 
-    if action == "VERIFY":
+    if action == "STALL":
+        if task.current_state == "EXECUTING":
+            _append_event(task, _transition(task, "STALLED", reason or "stall"))
+        return decide("STALL", "NO_PROGRESS", "STALLED", blocking=[reason or "stalled"])
+
+    if action == "RETRY":
+        return decide("RETRY", "TEMPORARY_FAILURE", "EXECUTING",
+                      blocking=[reason] if reason else [])
+
+    if action == "COMPLETE":
         return request_verify(task)
 
-    return SupervisorDecision(action=action, reason=reason or action, new_state=task.current_state)
+    return decide(action, "EVENT_APPLIED", task.current_state,
+                  blocking=[reason] if reason else [])
 
 
 def worker_brief(task: SeeTask) -> str:

@@ -156,13 +156,19 @@ def handle_task_command(text: str, *, conversation_id: str | None = None) -> dic
         dec = api.request_verify(tid)
         task = api.get(tid)
         icon = "✅" if dec.action == "COMPLETE" else "⚠️"
+        block = "\n".join(f"- {b}" for b in (dec.blocking or [])) or "_none_"
         return {
-            "ok": dec.ok or dec.action == "COMPLETE",
+            "ok": dec.action == "COMPLETE",
             "kind": "verify",
             "task_id": tid,
+            "decision": dec.to_dict(),
             "action": dec.action,
-            "state": dec.new_state or (task.current_state if task else None),
-            "markdown": f"{icon} **VERIFY** → `{dec.action}` ({dec.new_state})\n\n{dec.feedback or dec.reason}",
+            "code": dec.code,
+            "state": dec.state or (task.current_state if task else None),
+            "markdown": (
+                f"{icon} **{dec.action}** (`{dec.code}`) → `{dec.state}`\n\n"
+                f"**blocking:**\n{block}\n\n{dec.feedback}"
+            ),
         }
 
     if verb == "abort":

@@ -56,7 +56,7 @@ def main() -> int:
     # accept_plan from NEW goes PLANNING→EXECUTING; create starts NEW then accept_plan needs PLANNING
     # create_task is NEW; accept_plan handles NEW→PLANNING implicit
     dec2 = engine.request_verify(t2)
-    assert dec2.action == "RETRY" and t2.current_state == "EXECUTING", (dec2, t2.current_state)
+    assert dec2.action == "VERIFY_FAILED" and t2.current_state == "EXECUTING", (dec2, t2.current_state)
     assert "missing evidence" in (dec2.feedback or "").lower()
     print("PASS: verify without evidence returns EXECUTING")
 
@@ -129,7 +129,7 @@ def main() -> int:
         data={"criterion": "port up", "kind": "other", "summary": "ok"},
     ))
     d8 = engine.request_verify(t8)
-    assert d8.action == "RETRY" and t8.current_state == "EXECUTING", (d8, t8.current_state)
+    assert d8.action == "VERIFY_FAILED" and t8.current_state == "EXECUTING", (d8, t8.current_state)
     print("PASS: weak evidence 'ok' rejected")
 
     # 9. Strong evidence + resume after stall
@@ -189,11 +189,38 @@ def main() -> int:
             },
         ))
     d11 = engine.request_verify(t11)
-    assert d11.action != "COMPLETE", d11
+    assert d11.action == "VERIFY_FAILED", d11
     assert t11.current_state == "EXECUTING", t11.current_state
+    assert d11.code in ("UNRELATED_EVIDENCE", "WEAK_EVIDENCE", "CRITERION_NOT_MET", "MISSING_EVIDENCE"), d11
     assert "does not prove" in (d11.feedback or "").lower() or "jellyfin" in (d11.feedback or "").lower() \
         or "unrelated" in (d11.feedback or "").lower() or "sonarr" in (d11.feedback or "").lower(), d11.feedback
-    print("PASS: unrelated jellyfin evidence rejected for sonarr criteria")
+    # protocol schema
+    proto = d11.to_dict()
+    assert set(proto) >= {"action", "code", "state", "blocking", "details"}
+    assert proto["action"] in (
+        "CONTINUE", "RETRY", "REPLAN", "VERIFY_FAILED", "ASK_USER", "STALL", "ABORT", "COMPLETE",
+    )
+    print("PASS: unrelated jellyfin evidence → VERIFY_FAILED + protocol schema")
+
+    # 12. Protocol: worker rejects unknown actions
+    from argus.see.models import SupervisorDecision, ACTIONS
+    try:
+        SupervisorDecision.from_dict({"action": "TRY_AGAIN", "code": "X", "state": "EXECUTING"})
+        # synonym maps to RETRY
+        d = SupervisorDecision.from_dict({"action": "TRY_AGAIN", "code": "X", "state": "EXECUTING"})
+        assert d.action == "RETRY", d.action
+    except Exception:
+        pass
+    d_syn = SupervisorDecision.from_dict(
+        {"action": "TRY_AGAIN", "code": "TEMPORARY_FAILURE", "state": "EXECUTING", "blocking": []})
+    assert d_syn.action == "RETRY"
+    try:
+        SupervisorDecision.from_dict({"action": "MAGIC", "code": "X", "state": "EXECUTING"})
+        print("FAIL: accepted MAGIC"); return 1
+    except ValueError:
+        print("PASS: protocol rejects unknown action MAGIC")
+    assert len(ACTIONS) == 8
+    print("PASS: action vocabulary size 8")
 
     print("\nALL SEE TESTS PASSED ✅")
     return 0

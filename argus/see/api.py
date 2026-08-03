@@ -10,7 +10,7 @@ import threading
 from typing import Any
 
 from . import engine
-from .models import SeeEvent, SeeTask, SupervisorDecision
+from .models import SeeEvent, SeeTask, SupervisorDecision, decide
 
 # Active task per conversation (in-process; durable id still in DB)
 _CONV_TASK: dict[str, str] = {}
@@ -110,7 +110,7 @@ def bind_conversation(conversation_id: str, task_id: str) -> None:
 def on_event(task_id: str, event: SeeEvent | dict) -> SupervisorDecision:
     task = get(task_id)
     if not task:
-        return SupervisorDecision(action="ABORT", reason="unknown task", ok=False)
+        return decide("ABORT", "UNKNOWN_TASK", "ABORTED", blocking=["unknown task"])
     n = len(task.event_log)
     dec = engine.apply_event(task, event)
     _save(task, since_n=n)
@@ -168,7 +168,7 @@ def add_evidence(task_id: str, criterion: str, summary: str, *,
 def tick(task_id: str) -> SupervisorDecision:
     task = get(task_id)
     if not task:
-        return SupervisorDecision(action="ABORT", reason="unknown task", ok=False)
+        return decide("ABORT", "UNKNOWN_TASK", "ABORTED", blocking=["unknown task"])
     prev = task.current_state
     n = len(task.event_log)
     dec = engine.tick(task)
@@ -182,7 +182,7 @@ def tick(task_id: str) -> SupervisorDecision:
 def request_verify(task_id: str) -> SupervisorDecision:
     task = get(task_id)
     if not task:
-        return SupervisorDecision(action="ABORT", reason="unknown task", ok=False)
+        return decide("ABORT", "UNKNOWN_TASK", "ABORTED", blocking=["unknown task"])
     n = len(task.event_log)
     dec = engine.request_verify(task)
     _save(task, since_n=n)
@@ -201,7 +201,7 @@ def request_verify(task_id: str) -> SupervisorDecision:
 def action(task_id: str, action_name: str, *, reason: str = "") -> SupervisorDecision:
     task = get(task_id)
     if not task:
-        return SupervisorDecision(action="ABORT", reason="unknown task", ok=False)
+        return decide("ABORT", "UNKNOWN_TASK", "ABORTED", blocking=["unknown task"])
     n = len(task.event_log)
     dec = engine.supervisor_action(task, action_name, reason=reason)
     _save(task, since_n=n)

@@ -61,7 +61,7 @@ checklist:
     print("PASS: /task start + status")
 
     v = slash.handle_task_command("/task verify", conversation_id="s3-conv")
-    assert v.get("action") == "RETRY" or "missing" in (v.get("markdown") or "").lower()
+    assert v.get("action") in ("VERIFY_FAILED", "RETRY") or "missing" in (v.get("markdown") or "").lower()
     print("PASS: /task verify without evidence fails closed")
 
     api.add_evidence(tid, "container running",
