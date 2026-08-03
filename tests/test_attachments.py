@@ -44,12 +44,26 @@ def main() -> int:
     assert mats2[0].path.read_text() == body
     print("PASS: materialize text file")
 
-    # 3. vision content blocks
-    blocks = att.vision_content_blocks("what is this?", mats)
+    # 3. vision content blocks — Anthropic (CC) vs ACP (Grok)
+    blocks = att.vision_content_blocks("what is this?", mats, style="anthropic")
     assert blocks[0]["type"] == "image"
     assert blocks[0]["source"]["type"] == "base64"
     assert blocks[-1] == {"type": "text", "text": "what is this?"}
-    print("PASS: vision_content_blocks image + text")
+    print("PASS: vision_content_blocks anthropic image + text")
+
+    blocks_acp = att.vision_content_blocks("what is this?", mats, style="acp")
+    assert blocks_acp[0]["type"] == "image"
+    assert "data" in blocks_acp[0] and "mimeType" in blocks_acp[0]
+    assert "source" not in blocks_acp[0]
+    print("PASS: vision_content_blocks ACP image shape for Grok")
+
+    pf = att.write_acp_prompt_file("hi", mats)
+    assert pf.is_file() and pf.stat().st_size > 10
+    import json as _json
+    loaded = _json.loads(pf.read_text())
+    assert loaded[0]["type"] == "image" and loaded[0]["mimeType"]
+    pf.unlink(missing_ok=True)
+    print("PASS: write_acp_prompt_file")
 
     # 4. enrich_prompt includes path + text content
     enriched = att.enrich_prompt("summarize", mats2)
@@ -91,15 +105,15 @@ def main() -> int:
     assert not att.supports_native_vision("qwen3-next-80b")
     print("PASS: native vision model set")
 
-    # 9. grok _cmd chooses --prompt-json when attachments present (unit)
+    # 9. grok _cmd: plain -p vs multimodal --prompt-file (never fat --prompt-json argv)
     from argus import grok_code as gc
     s = gc.GrokSession("cmd-test")
     s.session_id = "00000000-0000-0000-0000-000000000001"
     cmd = s._cmd(prompt="hi")
-    assert "-p" in cmd and "--prompt-json" not in cmd
-    cmd2 = s._cmd(prompt_json='[{"type":"text","text":"hi"}]')
-    assert "--prompt-json" in cmd2 and "-p" not in cmd2
-    print("PASS: grok _cmd -p vs --prompt-json")
+    assert "-p" in cmd and "--prompt-file" not in cmd
+    cmd2 = s._cmd(prompt_file="/tmp/argus-fake-prompt.json")
+    assert "--prompt-file" in cmd2 and "-p" not in cmd2
+    print("PASS: grok _cmd -p vs --prompt-file")
 
     print("\nALL ATTACHMENT TESTS PASSED ✅")
     return 0

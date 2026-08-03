@@ -159,12 +159,16 @@ class GrokSession:
         self._lock = asyncio.Lock()
         self.last_used = time.monotonic()
 
-    def _cmd(self, *, prompt: str | None = None, prompt_json: str | None = None) -> list[str]:
-        """Build `grok -p` or `grok --prompt-json` argv (mutually exclusive prompt modes)."""
+    def _cmd(self, *, prompt: str | None = None, prompt_file: str | None = None) -> list[str]:
+        """Build `grok -p` or multimodal `grok --prompt-file` (ACP JSON on disk).
+
+        Never pass multi‑MB --prompt-json on argv — phone photos blow ARG_MAX
+        (\"Argument list too long\"). Grok accepts ACP content-block JSON via
+        --prompt-file when the path ends in .json.
+        """
         args = [GROK]
-        if prompt_json is not None:
-            # Multimodal / structured content blocks (images + text) — see attachments.vision_content_blocks
-            args.extend(["--prompt-json", prompt_json])
+        if prompt_file is not None:
+            args.extend(["--prompt-file", prompt_file])
         else:
             args.extend(["-p", prompt if prompt is not None else "(empty message)"])
         args.extend([
@@ -190,7 +194,7 @@ class GrokSession:
         `attachments` may be:
           - raw UI list [{filename, isImage, dataUrl}] (materialised here), or
           - already-materialised list of argus.attachments.Attachment
-        Images go through --prompt-json as Anthropic-style content blocks.
+        Images: ACP blocks via --prompt-file (compressed); not Anthropic source shape.
         """
         if not oauth_ready():
             raise RuntimeError(
@@ -200,6 +204,7 @@ class GrokSession:
         if not GROK or not Path(GROK).exists():
             raise RuntimeError(f"grok binary not found ({GROK!r}); install Grok Build CLI")
 
+        prompt_path: Path | None = None
         async with self._lock:
             self.last_used = time.monotonic()
             Path(WORKDIR).mkdir(parents=True, exist_ok=True)
@@ -210,12 +215,10 @@ class GrokSession:
                 # raw UI dicts
                 mats = attmod.materialize(mats, conversation_id=self.cid)
 
-            prompt_json = None
             prompt = text or "(empty message)"
             if mats:
-                blocks = attmod.vision_content_blocks(text or "", mats)
-                prompt_json = json.dumps(blocks)
-                cmd = self._cmd(prompt_json=prompt_json)
+                prompt_path = attmod.write_acp_prompt_file(text or "", mats)
+                cmd = self._cmd(prompt_file=str(prompt_path))
             else:
                 cmd = self._cmd(prompt=prompt)
 
@@ -281,6 +284,10 @@ class GrokSession:
                 err_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await err_task
+                # Temp ACP prompt file can be multi‑MB; always remove after the turn.
+                if prompt_path is not None:
+                    with contextlib.suppress(Exception):
+                        prompt_path.unlink(missing_ok=True)
 
             rc = proc.returncode
             if rc not in (0, None) and not acc:

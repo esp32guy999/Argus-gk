@@ -13,6 +13,7 @@ UI attachments shape (from app.js):
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import os
 import re
@@ -163,38 +164,100 @@ def materialize(raw_list: list | None, conversation_id: str = "default") -> list
     return out
 
 
-# ── Vision content blocks (Anthropic / Grok --prompt-json wire shape) ────────
+# ── Vision content blocks ───────────────────────────────────────────────────
+# Phone photos are multi‑MB; putting base64 on argv hits Linux ARG_MAX (~2 MiB)
+# → OSError: Argument list too long. We (1) downscale for vision, (2) for Grok
+# write ACP JSON to a temp file and pass --prompt-file (Grok parses .json as
+# content blocks — confirmed live). Claude Code still uses Anthropic wire shape
+# on a long-lived stdin, so argv limits do not apply there.
 
-def vision_content_blocks(text: str, attachments: list[Attachment]) -> list[dict]:
-    """Build multimodal content blocks for claude/grok agent CLIs."""
+VISION_MAX_EDGE = int(os.environ.get("ARGUS_VISION_MAX_EDGE", "1600"))
+VISION_JPEG_QUALITY = int(os.environ.get("ARGUS_VISION_JPEG_QUALITY", "85"))
+
+
+def compress_image_for_vision(path: Path, media_type: str | None = None) -> tuple[bytes, str]:
+    """Return (bytes, mimeType) sized for multimodal prompts.
+
+    Long edge ≤ VISION_MAX_EDGE, re-encoded JPEG (or original if already small PNG
+    under ~400 KiB). Falls back to original bytes if Pillow fails.
+    """
+    try:
+        from PIL import Image
+        import io
+        im = Image.open(path)
+        # HEIC etc. — convert to RGB for JPEG encode
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        elif im.mode == "L":
+            im = im.convert("RGB")
+        im.thumbnail((VISION_MAX_EDGE, VISION_MAX_EDGE))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=VISION_JPEG_QUALITY, optimize=True)
+        data = buf.getvalue()
+        if data:
+            return data, "image/jpeg"
+    except Exception:
+        pass
+    raw = path.read_bytes()
+    mt = media_type or mimetypes.guess_type(str(path))[0] or "image/jpeg"
+    if mt == "image/jpg":
+        mt = "image/jpeg"
+    return raw, mt
+
+
+def _file_marker_text(a: Attachment) -> str:
+    return (
+        f"[Attached file on disk — use tools to read if needed]\n"
+        f"filename: {a.filename}\n"
+        f"path: {a.path}\n"
+        f"mime: {a.mime}\n"
+        f"size: {a.size} bytes"
+    )
+
+
+def vision_content_blocks(text: str, attachments: list[Attachment], *, style: str = "anthropic") -> list[dict]:
+    """Build multimodal content blocks.
+
+    style:
+      - \"anthropic\" — Claude Code stream-json (source.base64)
+      - \"acp\"       — Grok Build --prompt-json / --prompt-file
+                       {\"type\":\"image\",\"data\": \"<b64>\", \"mimeType\": \"image/jpeg\"}
+    """
     blocks: list[dict] = []
     for a in attachments:
-        if a.is_image and a.data_b64 and a.media_type in _IMG_MIME:
-            blocks.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": a.media_type if a.media_type != "image/jpg" else "image/jpeg",
-                    "data": a.data_b64,
-                },
-            })
+        if a.is_image and a.path.is_file():
+            raw, mime = compress_image_for_vision(a.path, a.media_type)
+            b64 = base64.b64encode(raw).decode("ascii")
+            if style == "acp":
+                blocks.append({"type": "image", "data": b64, "mimeType": mime})
+            else:
+                blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": b64,
+                    },
+                })
         else:
-            # Non-image: describe path so the agent can open it with tools.
-            blocks.append({
-                "type": "text",
-                "text": (
-                    f"[Attached file on disk — use tools to read if needed]\n"
-                    f"filename: {a.filename}\n"
-                    f"path: {a.path}\n"
-                    f"mime: {a.mime}\n"
-                    f"size: {a.size} bytes"
-                ),
-            })
+            blocks.append({"type": "text", "text": _file_marker_text(a)})
     body = (text or "").strip() or (
         "(User sent attachment(s) with no text — describe / extract / act on them.)"
     )
     blocks.append({"type": "text", "text": body})
     return blocks
+
+
+def write_acp_prompt_file(text: str, attachments: list[Attachment], dest: Path | None = None) -> Path:
+    """Write Grok ACP content-block JSON to a temp file (avoids ARG_MAX)."""
+    import tempfile
+    blocks = vision_content_blocks(text, attachments, style="acp")
+    if dest is None:
+        fd, name = tempfile.mkstemp(prefix="argus-grok-prompt-", suffix=".json")
+        os.close(fd)
+        dest = Path(name)
+    dest.write_text(json.dumps(blocks), encoding="utf-8")
+    return dest
 
 
 def to_claude_ui_attachments(attachments: list[Attachment]) -> list[dict]:
