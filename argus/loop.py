@@ -35,7 +35,11 @@ SYSTEM_PROMPT = (
     "then tell them it's started. Use this instead of trying to do a huge job inline.\n"
     "- Prefer a tool call over guessing. Get homelab facts (IPs, ports, paths) from "
     "lookup_memory, never from memory. If a tool errors, read the message and "
-    "correct your next call."
+    "correct your next call.\n"
+    "- Multi-step work with measurable outcomes: use SEE (see_start_task → tools → "
+    "see_checkpoint / see_add_evidence → see_request_verify). Never declare success "
+    "yourself on a SEE task; only the supervisor can COMPLETE after evidence. "
+    "Hollow claims ('ok', 'done') are rejected. After interruption use see_resume."
 )
 
 # Argus's voice lives in soul.md (repo root) — editable persona, separate from the
@@ -110,6 +114,7 @@ PROVIDER_BRIEF: dict[str, tuple[str, str]] = {
     "code_edit":   ("✏️ Code edit", "surgical source edits"),
     "run_code":    ("🧪 Run code", "execute code in a sandbox"),
     "fs":          ("📂 Filesystem", "read/write/edit files"),
+    "see":         ("🎯 SEE", "supervised tasks — start/checkpoint/evidence/verify (no hollow success)"),
 }
 
 

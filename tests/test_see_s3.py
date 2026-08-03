@@ -64,8 +64,10 @@ checklist:
     assert v.get("action") == "RETRY" or "missing" in (v.get("markdown") or "").lower()
     print("PASS: /task verify without evidence fails closed")
 
-    api.add_evidence(tid, "container running", "docker ps ok", kind="docker")
-    api.add_evidence(tid, "port responds", "HTTP 200", kind="http")
+    api.add_evidence(tid, "container running",
+                     "docker ps shows sonarr container Up", kind="docker")
+    api.add_evidence(tid, "port responds",
+                     "curl HTTP 200 from glassgarden:8989/ping", kind="http")
     api.checkpoint(tid, "all checks", checklist_item="container running")
     # mark second checklist if different
     task = api.get(tid)

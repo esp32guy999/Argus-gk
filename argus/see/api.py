@@ -22,12 +22,17 @@ def _store():
     return get_store()
 
 
-def _save(task: SeeTask, *, event: SeeEvent | None = None) -> SeeTask:
+def _save(task: SeeTask, *, since_n: int | None = None) -> SeeTask:
+    """Persist task JSON and flush new events for replay (success criterion #7).
+
+    Pass since_n=len(event_log) *before* a multi-event engine call so every new
+    event is written to see_events (not only the last).
+    """
     st = _store()
     st.save_see_task(task.to_dict())
-    if event is not None:
-        st.append_see_event(task.id, event.to_dict())
-    # also persist latest event from log if not passed
+    if since_n is not None:
+        for ev in task.event_log[since_n:]:
+            st.append_see_event(task.id, ev.to_dict())
     elif task.event_log:
         st.append_see_event(task.id, task.event_log[-1].to_dict())
     try:
@@ -40,7 +45,7 @@ def _save(task: SeeTask, *, event: SeeEvent | None = None) -> SeeTask:
 
 def save(task: SeeTask) -> SeeTask:
     """Persist a mutated task (e.g. after planner replan)."""
-    return _save(task)
+    return _save(task, since_n=0)  # full event log flush on external mutate
 
 
 def create(
@@ -67,7 +72,7 @@ def create(
     if start:
         engine.start_planning(task)
         engine.accept_plan(task)  # v1: planner is external; use provided checklist as plan
-    _save(task)
+    _save(task, since_n=0)  # flush full plan/create event trail
     if conversation_id:
         with _LOCK:
             _CONV_TASK[conversation_id] = task.id
@@ -106,8 +111,9 @@ def on_event(task_id: str, event: SeeEvent | dict) -> SupervisorDecision:
     task = get(task_id)
     if not task:
         return SupervisorDecision(action="ABORT", reason="unknown task", ok=False)
+    n = len(task.event_log)
     dec = engine.apply_event(task, event)
-    _save(task)
+    _save(task, since_n=n)
     try:
         from argus import metrics
         metrics.SEE_EVENTS.labels(
@@ -163,8 +169,13 @@ def tick(task_id: str) -> SupervisorDecision:
     task = get(task_id)
     if not task:
         return SupervisorDecision(action="ABORT", reason="unknown task", ok=False)
+    prev = task.current_state
+    n = len(task.event_log)
     dec = engine.tick(task)
-    _save(task)
+    _save(task, since_n=n)
+    if dec.new_state == "STALLED" and prev != "STALLED":
+        _notify_see(task, "SEE stalled",
+                    f"{task.goal[:80]}\n{dec.feedback or task.stall_reason or ''}")
     return dec
 
 
@@ -172,10 +183,13 @@ def request_verify(task_id: str) -> SupervisorDecision:
     task = get(task_id)
     if not task:
         return SupervisorDecision(action="ABORT", reason="unknown task", ok=False)
+    n = len(task.event_log)
     dec = engine.request_verify(task)
-    _save(task)
+    _save(task, since_n=n)
     if dec.action == "COMPLETE":
         _emit_memory(task)
+        _notify_see(task, "SEE task complete",
+                    f"✅ {task.goal[:120]}\nEvidence ok · `{task.id}`")
         try:
             from argus import metrics
             metrics.SEE_COMPLETED.inc()
@@ -188,9 +202,65 @@ def action(task_id: str, action_name: str, *, reason: str = "") -> SupervisorDec
     task = get(task_id)
     if not task:
         return SupervisorDecision(action="ABORT", reason="unknown task", ok=False)
+    n = len(task.event_log)
     dec = engine.supervisor_action(task, action_name, reason=reason)
-    _save(task)
+    _save(task, since_n=n)
+    if dec.action == "ABORT" or dec.new_state == "ABORTED":
+        _notify_see(task, "SEE task aborted",
+                    f"🛑 {task.goal[:120]}\n{reason or dec.reason}\n`{task.id}`")
+    elif dec.action == "ASK_USER":
+        _notify_see(task, "SEE needs you",
+                    f"❓ {task.goal[:120]}\n{dec.feedback or reason}\n`{task.id}`")
     return dec
+
+
+def resume(task_id: str, *, reason: str = "resume from checkpoint") -> dict:
+    """Interrupt recovery: load durable task, RESUME if stalled, return brief + last checkpoint.
+
+    Success criterion #4 — no full chat history required; SQLite payload is enough.
+    """
+    task = get(task_id)
+    if not task:
+        return {"ok": False, "error": "unknown task"}
+    last_cp = task.checkpoints[-1].to_dict() if task.checkpoints else None
+    dec = None
+    if task.current_state == "STALLED":
+        n = len(task.event_log)
+        dec = engine.supervisor_action(task, "RESUME", reason=reason)
+        _save(task, since_n=n)
+    elif task.current_state in ("COMPLETED", "ABORTED"):
+        return {
+            "ok": False,
+            "error": f"task is terminal ({task.current_state})",
+            "task_id": task.id,
+            "state": task.current_state,
+            "last_checkpoint": last_cp,
+        }
+    # EXECUTING / PLANNING / VERIFYING — already live; just return orientation
+    return {
+        "ok": True,
+        "task_id": task.id,
+        "state": task.current_state,
+        "action": dec.action if dec else "CONTINUE",
+        "last_checkpoint": last_cp,
+        "completed_items": list(task.completed_items),
+        "missing_evidence": task.missing_evidence(),
+        "brief": engine.worker_brief(task),
+        "feedback": task.worker_feedback,
+    }
+
+
+def replay_events(task_id: str) -> dict:
+    """List append-only events for a task (replayable audit trail — success #7)."""
+    task = get(task_id)
+    events = _store().list_see_events(task_id, limit=1000)
+    return {
+        "task_id": task_id,
+        "state": task.current_state if task else None,
+        "events": events,
+        "event_count": len(events),
+        "checkpoints": [c.to_dict() for c in (task.checkpoints if task else [])],
+    }
 
 
 def worker_brief(task_id: str) -> str:
@@ -198,6 +268,47 @@ def worker_brief(task_id: str) -> str:
     if not task:
         return ""
     return engine.worker_brief(task)
+
+
+def prepare_worker_prompt(conversation_id: str | None, user_message: str) -> str:
+    """Prefix user message with SEE brief when a task is active (local + GK hosts)."""
+    if not conversation_id:
+        return user_message or ""
+    task = active_for_conversation(conversation_id)
+    if not task:
+        return user_message or ""
+    try:
+        tick(task.id)
+    except Exception:
+        pass
+    brief = worker_brief(task.id)
+    if not brief:
+        return user_message or ""
+    return f"{brief}\n\n---\nUser:\n{user_message or ''}"
+
+
+def _notify_see(task: SeeTask, title: str, message: str) -> None:
+    """Sparse HA push (S5). Disabled with ARGUS_SEE_NOTIFY=0."""
+    if os.environ.get("ARGUS_SEE_NOTIFY", "1") in ("0", "false", "no"):
+        return
+    # importance floor for non-terminal noise (stall still notifies — needs attention)
+    try:
+        import httpx
+        base = os.environ.get("HA_URL", "http://nyx:8123").rstrip("/")
+        token = os.environ.get("HA_TOKEN", "")
+        if not token:
+            return
+        service = os.environ.get("ARGUS_NOTIFY_SERVICE", "notify/mobile_app_shanes_iphone")
+        # service may be "notify/mobile_app_…" or full path
+        path = service if service.startswith("notify/") else f"notify/{service}"
+        httpx.post(
+            f"{base}/api/services/{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"title": title[:80], "message": (message or "")[:400]},
+            timeout=8,
+        )
+    except Exception:
+        pass
 
 
 def _emit_memory(task: SeeTask) -> None:

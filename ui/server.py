@@ -305,8 +305,11 @@ async def chat(request: Request):
                 source = claude_code.send(conversation_id, cc_text, attachments=cc_atts)
             elif model_name == "grok":
                 # SuperGrok OAuth via Grok Build CLI — multimodal via --prompt-json.
+                # S4: inject SEE worker brief when a supervised task is active.
                 from argus import grok_code
-                source = grok_code.send(conversation_id, message, attachments=mats or None)
+                from argus.see import api as see_api
+                grok_msg = see_api.prepare_worker_prompt(conversation_id, message)
+                source = grok_code.send(conversation_id, grok_msg, attachments=mats or None)
             else:
                 # Local / external: enriched text (OCR + paths) already in model_message.
                 # stream_run runs memory_policy.after_turn itself (F1).

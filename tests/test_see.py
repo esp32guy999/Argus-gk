@@ -39,12 +39,12 @@ def main() -> int:
     engine.apply_event(task, SeeEvent(
         type="EvidenceAdded", detail="container running",
         data={"criterion": "container running", "kind": "docker",
-              "summary": "docker ps shows sonarr"},
+              "summary": "docker ps shows sonarr container Up 2 hours"},
     ))
     engine.apply_event(task, SeeEvent(
         type="EvidenceAdded", detail="port responds",
         data={"criterion": "port responds", "kind": "http",
-              "summary": "HTTP 200"},
+              "summary": "curl HTTP 200 from http://glassgarden:8989/ping"},
     ))
     dec = engine.request_verify(task)
     assert dec.action == "COMPLETE" and task.current_state == "COMPLETED", (dec, task.current_state)
@@ -94,8 +94,8 @@ def main() -> int:
     active = api.active_for_conversation("conv-see-1")
     assert active and active.id == t5.id
     api.checkpoint(t5.id, "did a", checklist_item="a")
-    api.add_evidence(t5.id, "a", "ok", kind="test")
-    api.add_evidence(t5.id, "b", "ok", kind="test")
+    api.add_evidence(t5.id, "a", "unit test observed criterion a passed with log", kind="test")
+    api.add_evidence(t5.id, "b", "unit test observed criterion b passed with log", kind="test")
     api.checkpoint(t5.id, "did b", checklist_item="b")
     d5 = api.request_verify(t5.id)
     assert d5.action == "COMPLETE", d5
@@ -113,7 +113,54 @@ def main() -> int:
     from argus.tools import see_tools
     names = {t.name for t in see_tools.tools()}
     assert "see_start_task" in names and "see_request_verify" in names
+    assert "see_resume" in names
     print("PASS: see_tools registered")
+
+    # 8. Weak evidence rejected (S4)
+    t8 = engine.create_task("weak", success_criteria=["port up"])
+    engine.accept_plan(t8)
+    engine.apply_event(t8, SeeEvent(
+        type="CheckpointReached", detail="x", data={"checklist_item": "port up"}))
+    # ensure checklist item matches — plan uses success criteria as checklist
+    if "port up" not in t8.completed_items:
+        t8.completed_items.append("port up")
+    engine.apply_event(t8, SeeEvent(
+        type="EvidenceAdded", detail="port up",
+        data={"criterion": "port up", "kind": "other", "summary": "ok"},
+    ))
+    d8 = engine.request_verify(t8)
+    assert d8.action == "RETRY" and t8.current_state == "EXECUTING", (d8, t8.current_state)
+    print("PASS: weak evidence 'ok' rejected")
+
+    # 9. Strong evidence + resume after stall
+    t9 = engine.create_task("resume-me", success_criteria=["done item"])
+    engine.accept_plan(t9)
+    engine.apply_event(t9, SeeEvent(
+        type="CheckpointReached", detail="mid", data={"checklist_item": "done item"}))
+    t9.last_progress_ts = time.time() - 999
+    engine.tick(t9, now=time.time())
+    assert t9.current_state == "STALLED"
+    engine.supervisor_action(t9, "RESUME", reason="test")
+    assert t9.current_state == "EXECUTING"
+    engine.apply_event(t9, SeeEvent(
+        type="EvidenceAdded", detail="done item",
+        data={"criterion": "done item", "kind": "command",
+              "summary": "curl exit 0; HTTP 200 from localhost:8989/ping"},
+    ))
+    d9 = engine.request_verify(t9)
+    assert d9.action == "COMPLETE", d9
+    print("PASS: resume from stall + strong evidence COMPLETE")
+
+    # 10. api.resume + replay_events
+    storage._STORE = None
+    t10 = api.create("replay", success_criteria=["a"], conversation_id="c-resume")
+    api.checkpoint(t10.id, "halfway", checklist_item="a")
+    r10 = api.resume(t10.id)
+    assert r10["ok"] and r10.get("last_checkpoint", {}).get("label") == "halfway"
+    rep = api.replay_events(t10.id)
+    assert rep["event_count"] >= 1 and any(
+        e["type"] == "CheckpointReached" for e in rep["events"])
+    print("PASS: resume + event replay")
 
     print("\nALL SEE TESTS PASSED ✅")
     return 0

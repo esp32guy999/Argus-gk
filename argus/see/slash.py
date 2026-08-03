@@ -34,6 +34,7 @@ Or paste JSON: `/task {"goal":"…","success_criteria":["…"]}`
 - `/task abort` / `/task abort <id>`
 - `/task resume` / `/task replan`
 - `/task brief` — worker brief (checklist + supervisor feedback)
+- `/task events` / `/task events <id>` — replayable event log
 - `/task -help` — this text
 """
 
@@ -46,7 +47,7 @@ def _parse_cmd(text: str) -> tuple[str, str]:
         return "help", ""
     # verb rest
     m = re.match(
-        r"^(status|list|verify|abort|resume|replan|brief|start|new)\b\s*(.*)$",
+        r"^(status|list|verify|abort|resume|replan|brief|events|start|new)\b\s*(.*)$",
         raw, re.I | re.S,
     )
     if m:
@@ -133,6 +134,21 @@ def handle_task_command(text: str, *, conversation_id: str | None = None) -> dic
         brief = api.worker_brief(tid)
         return {"ok": True, "kind": "brief", "task_id": tid, "markdown": f"```\n{brief}\n```"}
 
+    if verb == "events":
+        tid = _resolve_id(rest)
+        if not tid:
+            return {"ok": False, "error": "No active SEE task."}
+        rep = api.replay_events(tid)
+        lines = [f"**SEE events** `{tid}` · state `{rep.get('state')}` · n={rep['event_count']}", ""]
+        for e in rep.get("events") or []:
+            lines.append(f"- `{e.get('type')}` {e.get('detail') or ''}")
+        if rep.get("checkpoints"):
+            lines.append("")
+            lines.append("**Checkpoints:** " + ", ".join(
+                c.get("label") or "?" for c in rep["checkpoints"]))
+        return {"ok": True, "kind": "events", "task_id": tid, "markdown": "\n".join(lines),
+                "replay": rep}
+
     if verb == "verify":
         tid = _resolve_id(rest)
         if not tid:
@@ -163,10 +179,17 @@ def handle_task_command(text: str, *, conversation_id: str | None = None) -> dic
         tid = _resolve_id(rest)
         if not tid:
             return {"ok": False, "error": "No active SEE task."}
-        dec = api.action(tid, "RESUME", reason="user /task resume")
+        out = api.resume(tid, reason="user /task resume")
+        if not out.get("ok"):
+            return {"ok": False, "error": out.get("error") or "resume failed"}
+        cp = out.get("last_checkpoint") or {}
+        cp_line = f"\nLast checkpoint: **{cp.get('label')}**" if cp.get("label") else ""
         return {
             "ok": True, "kind": "resume", "task_id": tid,
-            "markdown": f"▶️ Resume → `{dec.action}` ({dec.new_state})\n\n{dec.feedback or ''}",
+            "markdown": (
+                f"▶️ Resume `{tid}` → `{out.get('state')}`{cp_line}\n\n"
+                f"```\n{out.get('brief') or ''}\n```"
+            ),
         }
 
     if verb == "replan":

@@ -14,10 +14,12 @@ def see_start_task(
     success_criteria: str,
     checklist: str = "",
     importance: int = 60,
+    conversation_id: str = "",
 ) -> dict:
     """Start a supervised task (SEE). success_criteria and checklist are newline- or
     semicolon-separated measurable items. Returns task_id and worker brief. Use for
-    multi-step work that must not silently stall or fake completion."""
+    multi-step work that must not silently stall or fake completion. Pass conversation_id
+    when known so tool events bind to this chat."""
     if not (goal or "").strip():
         raise ModelRetry("see_start_task: provide a non-empty goal.")
     crit = [x.strip() for x in (success_criteria or "").replace(";", "\n").splitlines() if x.strip()]
@@ -25,14 +27,18 @@ def see_start_task(
         raise ModelRetry("see_start_task: provide at least one success criterion line.")
     checks = [x.strip() for x in (checklist or success_criteria).replace(";", "\n").splitlines() if x.strip()]
     from argus.see import api
+    cid = (conversation_id or "").strip() or None
     task = api.create(
         goal.strip(),
         success_criteria=crit,
         checklist=checks or crit,
         required_evidence=crit,
         importance=int(importance),
+        conversation_id=cid,
         start=True,
     )
+    if cid:
+        api.bind_conversation(cid, task.id)
     return {
         "task_id": task.id,
         "state": task.current_state,
@@ -108,7 +114,20 @@ def see_status(task_id: str = "") -> dict:
     }
 
 
+def see_resume(task_id: str) -> dict:
+    """Resume a supervised task after interruption or stall from last checkpoint.
+    Reloads durable state — no chat history required."""
+    if not task_id:
+        raise ModelRetry("see_resume: task_id required.")
+    from argus.see import api
+    out = api.resume(task_id)
+    if not out.get("ok"):
+        raise ModelRetry(out.get("error") or "resume failed")
+    return out
+
+
 def tools() -> list[Tool]:
+    common = dict(provider="see")
     return [
         Tool(
             name="see_start_task",
@@ -122,6 +141,7 @@ def tools() -> list[Tool]:
                 "goal": "Confirm Sonarr is healthy on glassgarden",
                 "success_criteria": "container running\nport 8989 responds",
             },
+            **common,
         ),
         Tool(
             name="see_checkpoint",
@@ -129,6 +149,7 @@ def tools() -> list[Tool]:
             tags=["see", "checkpoint", "progress"],
             func=see_checkpoint,
             example={"task_id": "see-abc", "label": "compose updated", "checklist_item": "edit compose"},
+            **common,
         ),
         Tool(
             name="see_add_evidence",
@@ -142,6 +163,7 @@ def tools() -> list[Tool]:
                 "summary": "HTTP 200 from :8989/ping",
                 "kind": "http",
             },
+            **common,
         ),
         Tool(
             name="see_request_verify",
@@ -150,6 +172,7 @@ def tools() -> list[Tool]:
             tags=["see", "verify", "complete", "done"],
             func=see_request_verify,
             example={"task_id": "see-abc"},
+            **common,
         ),
         Tool(
             name="see_status",
@@ -157,5 +180,15 @@ def tools() -> list[Tool]:
             tags=["see", "status", "progress"],
             func=see_status,
             example={"task_id": "see-abc"},
+            **common,
+        ),
+        Tool(
+            name="see_resume",
+            description=("Resume a stalled or interrupted SEE task from durable state / "
+                         "last checkpoint. Use after crashes or long idle."),
+            tags=["see", "resume", "checkpoint", "recover"],
+            func=see_resume,
+            example={"task_id": "see-abc"},
+            **common,
         ),
     ]

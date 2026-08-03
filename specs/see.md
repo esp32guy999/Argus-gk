@@ -290,8 +290,8 @@ Every transition append-only in task event log (replayable).
 | **S1** | `see_tasks` / `see_events` + pure engine + tests | **done** (`argus/see/`, `tests/test_see.py`) |
 | **S2** | Loop tool events → SEE; worker tools; brief inject | **done** (light): `loop` sink + `see_*` tools |
 | **S3** | Planner structured task JSON; slash `/task` UI | **done** |
-| **S4** | Richer VERIFY policies; multi-turn GK host | pending |
-| **S5** | HA on complete/ask; polish memory_policy from evidence | partial (COMPLETED → candidates) |
+| **S4** | Richer VERIFY policies; multi-turn GK host | **done** |
+| **S5** | HA on complete/ask; polish memory_policy from evidence | **done** |
 
 ### Code map (S1–S3)
 
@@ -310,7 +310,14 @@ Every transition append-only in task event log (replayable).
 
 **`/task` usage:** `/task <goal>`, sectioned criteria/checklist, JSON plan, `status|list|verify|abort|resume|replan|brief|-help`.
 
-Env: `ARGUS_SEE_IDLE_SEC` (default 120), `ARGUS_SEE_LOOP_REPEAT` (3), `ARGUS_SEE_MEMORY` (1).
+Env: `ARGUS_SEE_IDLE_SEC` (default 120), `ARGUS_SEE_LOOP_REPEAT` (3),
+`ARGUS_SEE_MEMORY` (1), `ARGUS_SEE_NOTIFY` (1 — HA on complete/abort/ask/stall).
+
+### v1 complete (S0–S5)
+
+Success criteria 1–5 and 7 are implemented in code + tests. Criterion 6 (new-session
+recall of *promoted* facts) remains soft: COMPLETED emits **cold candidates** via
+memory_policy; nightly promotion is still the flywheel F4 backlog.
 
 ---
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Callable
 
@@ -238,6 +239,40 @@ def tick(task: SeeTask, *, now: float | None = None) -> SupervisorDecision:
     return SupervisorDecision(action="CONTINUE", reason="healthy", new_state=task.current_state)
 
 
+_WEAK_EVIDENCE = frozenset({
+    "ok", "done", "yes", "yep", "passed", "pass", "success", "fine", "good",
+    "works", "working", "complete", "completed", "true", "1", "✓", "✅",
+})
+
+
+def _evidence_quality_issues(task: SeeTask) -> list[str]:
+    """Richer VERIFY (S4): reject hollow claims that aren't observable evidence."""
+    issues = []
+    for e in task.evidence:
+        summary = (e.summary or "").strip()
+        if len(summary) < 12:
+            issues.append(f"evidence too thin for {e.criterion!r}: {summary!r}")
+            continue
+        if summary.lower() in _WEAK_EVIDENCE:
+            issues.append(
+                f"evidence for {e.criterion!r} is a bare claim ({summary!r}); "
+                f"need observable detail (command output, HTTP status, path, …)"
+            )
+        if e.kind == "http" and not re.search(
+            r"\b([1-5]\d{2}|http|https|curl|status|respond)\b", summary, re.I
+        ):
+            issues.append(
+                f"http evidence for {e.criterion!r} should mention status/URL/response"
+            )
+        if e.kind == "docker" and not re.search(
+            r"\b(docker|container|up|running|compose|health)\b", summary, re.I
+        ):
+            issues.append(
+                f"docker evidence for {e.criterion!r} should mention container/state"
+            )
+    return issues
+
+
 def request_verify(task: SeeTask) -> SupervisorDecision:
     """Worker believes it is done — SEE decides COMPLETED vs EXECUTING."""
     if task.current_state in TERMINAL:
@@ -258,24 +293,31 @@ def request_verify(task: SeeTask) -> SupervisorDecision:
 
     missing = task.missing_evidence()
     incomplete = [c for c in task.checklist if c not in task.completed_items]
+    weak = _evidence_quality_issues(task)
 
-    if missing or incomplete:
+    if missing or incomplete or weak:
         feedback_parts = []
         if missing:
             feedback_parts.append("missing evidence for: " + "; ".join(missing))
         if incomplete:
             feedback_parts.append("checklist open: " + "; ".join(incomplete))
+        if weak:
+            feedback_parts.append("weak evidence: " + "; ".join(weak[:4]))
         feedback = "Supervisor: verification failed — " + " | ".join(feedback_parts)
         task.worker_feedback = feedback
         _append_event(task, SeeEvent(
             type="VerificationFailed",
-            detail=feedback,
-            data={"missing_evidence": missing, "incomplete_checklist": incomplete},
+            detail=feedback[:500],
+            data={
+                "missing_evidence": missing,
+                "incomplete_checklist": incomplete,
+                "weak_evidence": weak,
+            },
         ))
         _append_event(task, _transition(task, "EXECUTING", "verify_failed"))
         return SupervisorDecision(
             action="RETRY",
-            reason="evidence incomplete",
+            reason="evidence incomplete or weak",
             new_state="EXECUTING",
             feedback=feedback,
             ok=False,
