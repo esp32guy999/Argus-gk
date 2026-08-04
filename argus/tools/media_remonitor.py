@@ -1,22 +1,29 @@
-"""Media remonitor lane — find library gaps and re-enable *arr monitoring.
+"""Media remonitor lane — monitor-state mutations only (no downloads).
 
-The openapi *arr lane is read-only list/lookup; arr_acquire remonitors a *single*
-title when re-requested. This lane is library hygiene: scan for unmonitored /
-missing items across Sonarr + Radarr, then optionally remonitor and search.
+Architecture (supervisor owns intelligence; tools stay narrow):
 
-Modes (scan + apply):
-  unmonitored_missing  entity monitored=false AND missing files  (safe default)
-  unmonitored          any monitored=false entity
-  missing              has missing files (parent may already be monitored)
-  gaps                 union of unmonitored_missing + missing
+  media_health_scan  →  evidence objects  →  supervisor decision
+                              │
+              ┌───────────────┼────────────────┐
+              ▼               ▼                ▼
+        media_remonitor   media_acquire    (ignore)
+        (monitored=true)  (search/grab)
 
-Creds from config/openapi.yaml (same as arr_acquire). Side-effecting apply has
-no confirm gate — the operator/model calling apply IS authorization. Prefer
-scan (or apply with dry_run=true) before bulk apply.
+This module: probe → candidate evidence → remonitor mutation → post-condition.
+
+Modes:
+  unmonitored_missing  entity monitored=false AND missing files  (narrow default)
+  unmonitored          any monitored=false
+  missing              has missing files
+  gaps                 union (BROAD — needs allow_broad_scope or explicit ids)
+
+Acquisition (search/download) is deliberately NOT here — use media_acquire_request.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+import itertools
+import time
+from typing import Any
 
 import httpx
 import yaml
@@ -25,9 +32,19 @@ from pydantic_ai.exceptions import ModelRetry
 from ..registry import Tool
 
 _MODES = ("unmonitored_missing", "unmonitored", "missing", "gaps")
+_BROAD_MODES = frozenset({"gaps", "missing", "unmonitored"})  # need allow_broad_scope
 _SERVICES = ("sonarr", "radarr", "both")
 _DEFAULT_MANIFEST = "config/openapi.yaml"
 
+# Confidence thresholds (supervisor / health recommendations)
+CONF_AUTO = 90       # auto remonitor
+CONF_PROPOSE = 50    # proposal for supervisor
+# < CONF_PROPOSE → IGNORE
+
+_EVIDENCE_SEQ = itertools.count(1)
+
+
+# ── HTTP / config ────────────────────────────────────────────────────────────
 
 def _services(manifest_path: str) -> dict[str, tuple[str, dict]]:
     data = yaml.safe_load(open(manifest_path)) or {}
@@ -72,7 +89,7 @@ def _get(base: str, headers: dict, api: str, path: str, **params) -> Any:
     )
     if r.status_code >= 400:
         raise ModelRetry(
-            f"media_remonitor: GET {path} -> HTTP {r.status_code}: {r.text[:200]}"
+            f"media_lib: GET {path} -> HTTP {r.status_code}: {r.text[:200]}"
         )
     return r.json()
 
@@ -86,7 +103,7 @@ def _put(base: str, headers: dict, api: str, path: str, body: dict) -> Any:
     )
     if r.status_code >= 400:
         raise ModelRetry(
-            f"media_remonitor: PUT {path} -> HTTP {r.status_code}: {r.text[:200]}"
+            f"media_lib: PUT {path} -> HTTP {r.status_code}: {r.text[:200]}"
         )
     return r.json() if r.content else {}
 
@@ -100,19 +117,116 @@ def _post(base: str, headers: dict, api: str, path: str, body: dict) -> Any:
     )
     if r.status_code >= 400:
         raise ModelRetry(
-            f"media_remonitor: POST {path} -> HTTP {r.status_code}: {r.text[:200]}"
+            f"media_lib: POST {path} -> HTTP {r.status_code}: {r.text[:200]}"
         )
     return r.json() if r.content else {}
 
 
-def _sonarr_missing_count(series: dict) -> int:
-    st = series.get("statistics") or {}
-    # episodeCount = aired/known monitored-eligible; totalEpisodeCount includes unaired
-    have = int(st.get("episodeFileCount") or 0)
-    want = int(st.get("episodeCount") or 0)
-    if want <= 0:
-        return 0
-    return max(0, want - have)
+def _resolve_services(service: str, svcs: dict, *, tool: str = "media_remonitor") -> list[str]:
+    service = (service or "both").lower().strip()
+    if service not in _SERVICES:
+        raise ModelRetry(
+            f"{tool}: service must be one of {list(_SERVICES)}, got {service!r}"
+        )
+    if service == "both":
+        names = [n for n in ("sonarr", "radarr") if n in svcs]
+    else:
+        names = [service] if service in svcs else []
+    if not names:
+        raise ModelRetry(f"{tool}: no matching sonarr/radarr entry in openapi.yaml")
+    return names
+
+
+def _validate_mode(mode: str, *, tool: str = "media_remonitor") -> str:
+    mode = (mode or "unmonitored_missing").lower().strip()
+    if mode not in _MODES:
+        raise ModelRetry(
+            f"{tool}: mode must be one of {list(_MODES)}, got {mode!r}"
+        )
+    return mode
+
+
+def _limit_n(limit: Any, default: int = 50) -> int:
+    try:
+        return max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        return default
+
+
+def _require_scope(
+    mode: str,
+    *,
+    dry_run: bool,
+    only_ids: set[int] | None,
+    allow_broad_scope: bool,
+    tool: str,
+) -> None:
+    """Broad modes without explicit ids need allow_broad_scope (writes only)."""
+    if dry_run:
+        return
+    if only_ids is not None:
+        return  # targeted by id = narrow
+    if mode in _BROAD_MODES and not allow_broad_scope:
+        raise ModelRetry(
+            f"{tool}: mode={mode!r} is a broad library operation. "
+            f"Pass allow_broad_scope=true to acknowledge, or pass ids=… to target "
+            f"specific items, or dry_run=true to preview. "
+            f"Prefer mode=unmonitored_missing for safe bulk remonitor."
+        )
+
+
+# ── Evidence + confidence ────────────────────────────────────────────────────
+
+def _new_evidence_id(prefix: str = "media-remonitor") -> str:
+    stamp = time.strftime("%Y%m%d")
+    return f"{prefix}-{stamp}-{next(_EVIDENCE_SEQ):05d}"
+
+
+def _score_confidence(
+    *,
+    monitored: bool,
+    missing: int,
+    has_file: bool,
+    year: int | None,
+    status: str | None,
+    season0_only: bool = False,
+    complete_unmonitored: bool = False,
+) -> tuple[int, list[str]]:
+    """Deterministic confidence 0–100 with score breakdown in reasons."""
+    score = 0
+    reasons: list[str] = []
+
+    if not monitored:
+        score += 30
+        reasons.append("score+30: unmonitored")
+    if missing > 0:
+        score += 30
+        reasons.append(f"score+30: missing_items={missing}")
+    # recently released / still airing
+    y = int(year) if year else 0
+    current = int(time.strftime("%Y"))
+    st = (status or "").lower()
+    if y >= current - 1 or st in ("continuing", "incinemas", "in cinemas", "announced"):
+        score += 20
+        reasons.append(f"score+20: recent_or_active (year={y or '?'}, status={status or '?'})")
+
+    if season0_only:
+        score -= 50
+        reasons.append("score-50: season_0_only_gaps")
+    if complete_unmonitored:
+        score -= 30
+        reasons.append("score-30: likely_intentional_removal (unmonitored + complete)")
+
+    score = max(0, min(100, score))
+    return score, reasons
+
+
+def _decision_from_confidence(confidence: int) -> str:
+    if confidence >= CONF_AUTO:
+        return "REMONITOR"       # auto-eligible
+    if confidence >= CONF_PROPOSE:
+        return "PROPOSE"         # supervisor review
+    return "IGNORE"
 
 
 def _match_mode(mode: str, *, monitored: bool, missing: int) -> bool:
@@ -127,8 +241,133 @@ def _match_mode(mode: str, *, monitored: bool, missing: int) -> bool:
     return False
 
 
-def _scan_sonarr(base: str, headers: dict, mode: str, limit: int,
-                 only_ids: set[int] | None) -> list[dict]:
+def _sonarr_missing_count(series: dict) -> int:
+    st = series.get("statistics") or {}
+    have = int(st.get("episodeFileCount") or 0)
+    want = int(st.get("episodeCount") or 0)
+    if want <= 0:
+        return 0
+    return max(0, want - have)
+
+
+def build_candidate_evidence(
+    *,
+    service: str,
+    entity: str,
+    item: dict,
+    missing: int,
+    has_file: bool,
+    extra_reasons: list[str] | None = None,
+    season0_only: bool = False,
+) -> dict[str, Any]:
+    """Build a supervisor-facing evidence object for one library entity."""
+    mon = bool(item.get("monitored"))
+    year = item.get("year")
+    status = item.get("status")
+    title = item.get("title") or item.get("artistName") or "?"
+    complete_unmon = (not mon) and has_file and missing == 0
+
+    conf, score_reasons = _score_confidence(
+        monitored=mon,
+        missing=missing,
+        has_file=has_file,
+        year=year if isinstance(year, int) else None,
+        status=status if isinstance(status, str) else None,
+        season0_only=season0_only,
+        complete_unmonitored=complete_unmon,
+    )
+    decision = _decision_from_confidence(conf)
+
+    facts: list[str] = [
+        f"monitored={str(mon).lower()}",
+        f"has_file={str(has_file).lower()}",
+        f"missing={missing}",
+        f"aired_or_released=true",
+    ]
+    if service == "sonarr":
+        facts.append("entity=series")
+        st = item.get("statistics") or {}
+        facts.append(f"episode_file_count={st.get('episodeFileCount', 0)}")
+        facts.append(f"episode_count={st.get('episodeCount', 0)}")
+        if season0_only:
+            facts.append("season>=1=false (specials only)")
+        else:
+            facts.append("season>=1=likely")
+    else:
+        facts.append("entity=movie")
+
+    reasons = facts + score_reasons + list(extra_reasons or [])
+
+    actions_suggested: list[str] = []
+    if not mon or missing > 0:
+        if not mon:
+            actions_suggested.append("set_monitored")
+        if service == "sonarr" and missing > 0:
+            actions_suggested.append("monitor_missing_episodes")
+    # acquisition is a separate tool — only suggest, never embed as remonitor action
+    if missing > 0 and mon:
+        actions_suggested.append("acquire_if_approved")  # handoff hint
+    elif missing > 0 and not mon:
+        actions_suggested.append("acquire_after_remonitor")
+
+    after_expected: dict[str, Any] = {"monitored": True}
+    if service == "sonarr":
+        after_expected["missing_episodes_monitored"] = True
+
+    return {
+        "entity": entity,
+        "service": service,
+        "id": int(item["id"]),
+        "title": title,
+        "year": year,
+        "status": status,
+        "before": {
+            "monitored": mon,
+            "has_file": has_file,
+            "missing": missing,
+        },
+        "decision": decision,
+        "confidence": conf,
+        "reasons": reasons,
+        "actions_suggested": actions_suggested,
+        "after_expected": after_expected,
+        "evidence_id": _new_evidence_id("media-remonitor"),
+        # flat mirrors for older call sites / sorting
+        "monitored": mon,
+        "has_file": has_file,
+        "missing": missing,
+    }
+
+
+def scan_library(
+    manifest_path: str,
+    *,
+    service: str = "both",
+    mode: str = "unmonitored_missing",
+    limit: int = 50,
+    ids: str = "",
+    tool: str = "media_remonitor",
+) -> list[dict[str, Any]]:
+    """Shared scan → list of evidence objects (no mutations)."""
+    mode = _validate_mode(mode, tool=tool)
+    limit_n = _limit_n(limit)
+    only = _parse_ids(ids)
+    svcs = _services(manifest_path)
+    names = _resolve_services(service, svcs, tool=tool)
+    candidates: list[dict] = []
+    for name in names:
+        base, headers = svcs[name]
+        if name == "sonarr":
+            candidates.extend(_scan_sonarr(base, headers, mode, limit_n, only))
+        else:
+            candidates.extend(_scan_radarr(base, headers, mode, limit_n, only))
+    candidates.sort(key=lambda c: (-c.get("confidence", 0), -c.get("missing", 0), (c.get("title") or "").lower()))
+    return candidates[:limit_n]
+
+
+def _scan_sonarr(
+    base: str, headers: dict, mode: str, limit: int, only_ids: set[int] | None,
+) -> list[dict]:
     series = _get(base, headers, "v3", "/series")
     cands: list[dict] = []
     for s in series:
@@ -139,31 +378,24 @@ def _scan_sonarr(base: str, headers: dict, mode: str, limit: int,
         missing = _sonarr_missing_count(s)
         if not _match_mode(mode, monitored=mon, missing=missing):
             continue
+        has_file = missing == 0
+        ev = build_candidate_evidence(
+            service="sonarr",
+            entity="sonarr.series",
+            item=s,
+            missing=missing,
+            has_file=has_file,
+        )
         st = s.get("statistics") or {}
-        reasons = []
-        if not mon:
-            reasons.append("series_unmonitored")
-        if missing > 0:
-            reasons.append(f"missing_episodes:{missing}")
-        cands.append({
-            "service": "sonarr",
-            "id": sid,
-            "title": s.get("title") or "?",
-            "year": s.get("year"),
-            "monitored": mon,
-            "has_file": missing == 0,
-            "missing": missing,
-            "episode_file_count": st.get("episodeFileCount"),
-            "episode_count": st.get("episodeCount"),
-            "status": s.get("status"),
-            "reasons": reasons,
-        })
-    cands.sort(key=lambda c: (-c["missing"], c["title"].lower()))
+        ev["episode_file_count"] = st.get("episodeFileCount")
+        ev["episode_count"] = st.get("episodeCount")
+        cands.append(ev)
     return cands[:limit]
 
 
-def _scan_radarr(base: str, headers: dict, mode: str, limit: int,
-                 only_ids: set[int] | None) -> list[dict]:
+def _scan_radarr(
+    base: str, headers: dict, mode: str, limit: int, only_ids: set[int] | None,
+) -> list[dict]:
     movies = _get(base, headers, "v3", "/movie")
     cands: list[dict] = []
     for m in movies:
@@ -175,40 +407,37 @@ def _scan_radarr(base: str, headers: dict, mode: str, limit: int,
         missing = 0 if has_file else 1
         if not _match_mode(mode, monitored=mon, missing=missing):
             continue
-        reasons = []
-        if not mon:
-            reasons.append("movie_unmonitored")
-        if missing:
-            reasons.append("missing_file")
-        cands.append({
-            "service": "radarr",
-            "id": mid,
-            "title": m.get("title") or "?",
-            "year": m.get("year"),
-            "monitored": mon,
-            "has_file": has_file,
-            "missing": missing,
-            "status": m.get("status"),
-            "reasons": reasons,
-        })
-    cands.sort(key=lambda c: (c["has_file"], c["title"].lower()))
+        ev = build_candidate_evidence(
+            service="radarr",
+            entity="radarr.movie",
+            item=m,
+            missing=missing,
+            has_file=has_file,
+        )
+        cands.append(ev)
     return cands[:limit]
 
 
-def _apply_sonarr(
-    base: str, headers: dict, cand: dict, *, search: bool, dry_run: bool,
+# ── Mutations (monitor only) ─────────────────────────────────────────────────
+
+def _apply_sonarr_monitor(
+    base: str, headers: dict, cand: dict, *, dry_run: bool,
 ) -> dict:
-    """Remonitor series + missing unmonitored episodes; optional SeriesSearch."""
     sid = cand["id"]
     actions: list[str] = []
     series = _get(base, headers, "v3", f"/series/{sid}")
+    before = {
+        "monitored": bool(series.get("monitored")),
+        "has_file": cand.get("before", {}).get("has_file"),
+        "missing": cand.get("before", {}).get("missing"),
+    }
+
     if not series.get("monitored"):
-        actions.append("set_series_monitored")
+        actions.append("set_monitored")
         if not dry_run:
             _put(base, headers, "v3", f"/series/{sid}", {**series, "monitored": True})
 
     episodes = _get(base, headers, "v3", "/episode", seriesId=sid)
-    # Specials (season 0) often intentionally unmonitored — only S1+
     need_mon = [
         e for e in episodes
         if int(e.get("seasonNumber") or 0) > 0
@@ -216,118 +445,117 @@ def _apply_sonarr(
         and not e.get("monitored")
     ]
     mon_ids = [int(e["id"]) for e in need_mon]
+    ep_reasons = [
+        f"episode id={e['id']} S{e.get('seasonNumber')}E{e.get('episodeNumber')}: "
+        f"monitored=false has_file=false season>=1=true"
+        for e in need_mon[:12]
+    ]
     if mon_ids:
-        actions.append(f"monitor_episodes:{len(mon_ids)}")
+        actions.append("monitor_missing_episodes")
         if not dry_run:
             _put(base, headers, "v3", "/episode/monitor", {
                 "episodeIds": mon_ids,
                 "monitored": True,
             })
 
-    searched = False
-    missing_now = sum(
-        1 for e in episodes
-        if int(e.get("seasonNumber") or 0) > 0 and not e.get("hasFile")
-    )
-    if search and missing_now > 0:
-        actions.append("series_search")
-        if not dry_run:
-            _post(base, headers, "v3", "/command", {
-                "name": "SeriesSearch",
-                "seriesId": sid,
-            })
-            searched = True
-        else:
-            searched = True  # would search
+    # post-condition verification
+    after_actual: dict[str, Any]
+    verify_ok: bool
+    if dry_run:
+        after_actual = {"monitored": True, "episodes_to_monitor": len(mon_ids)}
+        verify_ok = True
+    else:
+        fresh = _get(base, headers, "v3", f"/series/{sid}")
+        after_actual = {"monitored": bool(fresh.get("monitored"))}
+        verify_ok = bool(fresh.get("monitored"))
 
+    evidence = {
+        "entity": "sonarr.series",
+        "id": sid,
+        "title": cand.get("title"),
+        "before": before,
+        "decision": "REMONITOR",
+        "actions": actions,
+        "after_expected": {"monitored": True},
+        "after_actual": after_actual,
+        "post_condition_ok": verify_ok,
+        "confidence": cand.get("confidence"),
+        "reasons": list(cand.get("reasons") or []) + ep_reasons,
+        "evidence_id": cand.get("evidence_id") or _new_evidence_id(),
+        "episodes_monitored": len(mon_ids),
+        "search_requested": False,
+        "note": (
+            "monitor-only — use media_acquire_request to search/download"
+        ),
+    }
     return {
+        "ok": verify_ok if not dry_run else True,
+        "dry_run": dry_run,
         "service": "sonarr",
         "id": sid,
         "title": cand.get("title"),
-        "ok": True,
-        "dry_run": dry_run,
-        "actions": actions,
-        "episodes_monitored": len(mon_ids),
-        "missing_episodes": missing_now,
-        "searching": searched and search,
-        "note": (
-            f"{'would ' if dry_run else ''}remonitor series; "
-            f"{'would monitor' if dry_run else 'monitored'} {len(mon_ids)} episode(s); "
-            f"{'would search' if dry_run and search else ('search started' if searched else 'no search')}"
-        ),
+        "evidence": evidence,
     }
 
 
-def _apply_radarr(
-    base: str, headers: dict, cand: dict, *, search: bool, dry_run: bool,
+def _apply_radarr_monitor(
+    base: str, headers: dict, cand: dict, *, dry_run: bool,
 ) -> dict:
     mid = cand["id"]
     actions: list[str] = []
     movie = _get(base, headers, "v3", f"/movie/{mid}")
+    before = {
+        "monitored": bool(movie.get("monitored")),
+        "has_file": bool(movie.get("hasFile")),
+        "missing": 0 if movie.get("hasFile") else 1,
+    }
+
     if not movie.get("monitored"):
-        actions.append("set_movie_monitored")
+        actions.append("set_monitored")
         if not dry_run:
             _put(base, headers, "v3", f"/movie/{mid}", {**movie, "monitored": True})
 
-    has_file = bool(movie.get("hasFile"))
-    searched = False
-    if search and not has_file:
-        actions.append("movies_search")
-        if not dry_run:
-            _post(base, headers, "v3", "/command", {
-                "name": "MoviesSearch",
-                "movieIds": [mid],
-            })
-            searched = True
-        else:
-            searched = True
+    if dry_run:
+        after_actual = {"monitored": True}
+        verify_ok = True
+    else:
+        fresh = _get(base, headers, "v3", f"/movie/{mid}")
+        after_actual = {
+            "monitored": bool(fresh.get("monitored")),
+            "has_file": bool(fresh.get("hasFile")),
+        }
+        verify_ok = bool(fresh.get("monitored"))
 
-    return {
-        "service": "radarr",
+    evidence = {
+        "entity": "radarr.movie",
         "id": mid,
         "title": cand.get("title"),
         "year": cand.get("year"),
-        "ok": True,
-        "dry_run": dry_run,
+        "before": before,
+        "decision": "REMONITOR",
         "actions": actions,
-        "has_file": has_file,
-        "searching": searched and search,
-        "note": (
-            f"{'would ' if dry_run else ''}remonitor movie; "
-            f"{'would search' if dry_run and search and not has_file else ('search started' if searched else 'no search')}"
-        ),
+        "after_expected": {"monitored": True, "search_requested": False},
+        "after_actual": after_actual,
+        "post_condition_ok": verify_ok,
+        "confidence": cand.get("confidence"),
+        "reasons": list(cand.get("reasons") or []),
+        "evidence_id": cand.get("evidence_id") or _new_evidence_id(),
+        "search_requested": False,
+        "note": "monitor-only — use media_acquire_request to search/download",
+    }
+    return {
+        "ok": verify_ok if not dry_run else True,
+        "dry_run": dry_run,
+        "service": "radarr",
+        "id": mid,
+        "title": cand.get("title"),
+        "evidence": evidence,
     }
 
 
-def _resolve_services(service: str, svcs: dict) -> list[str]:
-    service = (service or "both").lower().strip()
-    if service not in _SERVICES:
-        raise ModelRetry(
-            f"media_remonitor: service must be one of {list(_SERVICES)}, got {service!r}"
-        )
-    if service == "both":
-        names = [n for n in ("sonarr", "radarr") if n in svcs]
-    else:
-        names = [service] if service in svcs else []
-    if not names:
-        raise ModelRetry(
-            "media_remonitor: no matching sonarr/radarr entry in openapi.yaml"
-        )
-    return names
-
-
-def _validate_mode(mode: str) -> str:
-    mode = (mode or "unmonitored_missing").lower().strip()
-    if mode not in _MODES:
-        raise ModelRetry(
-            f"media_remonitor: mode must be one of {list(_MODES)}, got {mode!r}"
-        )
-    return mode
-
+# ── Tools ────────────────────────────────────────────────────────────────────
 
 def _make_tools(manifest_path: str) -> list[Tool]:
-    # Late-bind services so tests can pass a temp manifest; re-read each call
-    # so key rotation without restart still works.
 
     def media_remonitor_scan(
         service: str = "both",
@@ -335,41 +563,27 @@ def _make_tools(manifest_path: str) -> list[Tool]:
         limit: int = 50,
         ids: str = "",
     ) -> dict:
-        """Scan Sonarr/Radarr for library gaps that need remonitoring.
+        """Scan Sonarr/Radarr; return evidence objects with confidence + reasons.
 
-        mode: unmonitored_missing (default) | unmonitored | missing | gaps.
-        service: sonarr | radarr | both. Optional ids = comma-separated filter.
-        Returns candidates with id, title, reasons — does NOT change monitoring.
+        Read-only. Does not change monitoring or start downloads.
+        decision: REMONITOR (>=90) | PROPOSE (50–89) | IGNORE (<50).
         """
-        mode = _validate_mode(mode)
-        try:
-            limit_n = max(1, min(int(limit), 200))
-        except (TypeError, ValueError):
-            limit_n = 50
-        only = _parse_ids(ids)
-        svcs = _services(manifest_path)
-        names = _resolve_services(service, svcs)
-        candidates: list[dict] = []
-        for name in names:
-            base, headers = svcs[name]
-            if name == "sonarr":
-                candidates.extend(
-                    _scan_sonarr(base, headers, mode, limit_n, only)
-                )
-            else:
-                candidates.extend(
-                    _scan_radarr(base, headers, mode, limit_n, only)
-                )
-        # re-cap after merge
-        candidates = candidates[:limit_n]
+        candidates = scan_library(
+            manifest_path, service=service, mode=mode, limit=limit, ids=ids,
+        )
+        buckets = {"REMONITOR": 0, "PROPOSE": 0, "IGNORE": 0}
+        for c in candidates:
+            buckets[c.get("decision", "IGNORE")] = buckets.get(c.get("decision", "IGNORE"), 0) + 1
         return {
-            "mode": mode,
+            "mode": _validate_mode(mode),
             "service": service,
             "count": len(candidates),
+            "by_decision": buckets,
             "candidates": candidates,
+            "thresholds": {"auto": CONF_AUTO, "propose": CONF_PROPOSE},
             "note": (
-                "scan only — call media_remonitor_apply to remonitor "
-                "(use dry_run=true first for a plan)"
+                "evidence only — media_remonitor_apply for monitor state; "
+                "media_acquire_request for search/download (supervisor-approved)"
             ),
         }
 
@@ -377,72 +591,82 @@ def _make_tools(manifest_path: str) -> list[Tool]:
         service: str = "both",
         mode: str = "unmonitored_missing",
         ids: str = "",
-        search: bool = True,
         dry_run: bool = False,
         limit: int = 50,
+        allow_broad_scope: bool = False,
+        min_confidence: int = 50,
     ) -> dict:
-        """Remonitor Sonarr/Radarr gaps found by the same mode filters as scan.
+        """Set monitored=true only (series/movie + missing S1+ episodes).
 
-        Sets monitored=true on the series/movie (and missing unmonitored Sonarr
-        episodes S1+). If search=true, starts SeriesSearch / MoviesSearch for
-        items still missing files. Pass ids to target specific library ids;
-        empty ids = all candidates up to limit. dry_run=true plans without writes.
+        Does NOT search or download — use media_acquire_request after supervisor
+        approval. Broad modes (gaps/missing/unmonitored) need allow_broad_scope=true
+        unless ids= is set or dry_run=true. Skips candidates below min_confidence.
         """
         mode = _validate_mode(mode)
-        try:
-            limit_n = max(1, min(int(limit), 200))
-        except (TypeError, ValueError):
-            limit_n = 50
         only = _parse_ids(ids)
+        _require_scope(
+            mode,
+            dry_run=bool(dry_run),
+            only_ids=only,
+            allow_broad_scope=bool(allow_broad_scope),
+            tool="media_remonitor_apply",
+        )
+        try:
+            min_c = max(0, min(100, int(min_confidence)))
+        except (TypeError, ValueError):
+            min_c = CONF_PROPOSE
+
+        plan = scan_library(
+            manifest_path, service=service, mode=mode, limit=limit, ids=ids,
+        )
+        # Filter by confidence — supervisor can lower min_confidence explicitly
+        skipped = [c for c in plan if int(c.get("confidence") or 0) < min_c]
+        plan = [c for c in plan if int(c.get("confidence") or 0) >= min_c]
+
         svcs = _services(manifest_path)
-        names = _resolve_services(service, svcs)
-
-        # Re-scan under the same mode so apply never invents targets
-        plan: list[dict] = []
-        for name in names:
-            base, headers = svcs[name]
-            if name == "sonarr":
-                plan.extend(_scan_sonarr(base, headers, mode, limit_n, only))
-            else:
-                plan.extend(_scan_radarr(base, headers, mode, limit_n, only))
-        plan = plan[:limit_n]
-
         results: list[dict] = []
         for cand in plan:
             base, headers = svcs[cand["service"]]
             try:
                 if cand["service"] == "sonarr":
                     results.append(
-                        _apply_sonarr(base, headers, cand, search=bool(search), dry_run=bool(dry_run))
+                        _apply_sonarr_monitor(base, headers, cand, dry_run=bool(dry_run))
                     )
                 else:
                     results.append(
-                        _apply_radarr(base, headers, cand, search=bool(search), dry_run=bool(dry_run))
+                        _apply_radarr_monitor(base, headers, cand, dry_run=bool(dry_run))
                     )
             except ModelRetry as e:
                 results.append({
+                    "ok": False,
                     "service": cand["service"],
                     "id": cand["id"],
                     "title": cand.get("title"),
-                    "ok": False,
                     "error": str(e),
+                    "evidence_id": cand.get("evidence_id"),
                 })
 
         ok_n = sum(1 for r in results if r.get("ok"))
-        searching_n = sum(1 for r in results if r.get("searching"))
+        evidence_out = [r.get("evidence") for r in results if r.get("evidence")]
         return {
             "mode": mode,
             "service": service,
             "dry_run": bool(dry_run),
-            "search": bool(search),
+            "allow_broad_scope": bool(allow_broad_scope),
+            "min_confidence": min_c,
             "planned": len(plan),
+            "skipped_low_confidence": len(skipped),
             "applied_ok": ok_n,
-            "searching": searching_n,
             "results": results,
+            "evidence": evidence_out,
+            "acquisition": {
+                "started": False,
+                "hint": "call media_acquire_request with approved ids for search/download",
+            },
             "note": (
-                "dry run — no changes written"
+                "dry run — no monitor changes"
                 if dry_run else
-                f"remonitored {ok_n}/{len(plan)}; searches started for {searching_n}"
+                f"monitor mutations only: {ok_n}/{len(plan)} ok; no searches started"
             ),
         }
 
@@ -450,13 +674,13 @@ def _make_tools(manifest_path: str) -> list[Tool]:
         Tool(
             name="media_remonitor_scan",
             description=(
-                "Scan Sonarr/Radarr library for unmonitored or missing items that need "
-                "remonitoring. Modes: unmonitored_missing (default), unmonitored, missing, gaps. "
-                "Read-only — does not change monitoring."
+                "Scan Sonarr/Radarr for remonitor candidates. Returns evidence objects "
+                "with confidence, reasons, and decision (REMONITOR|PROPOSE|IGNORE). "
+                "Read-only — no monitor changes, no downloads."
             ),
             tags=[
                 "media", "sonarr", "radarr", "remonitor", "monitor", "library",
-                "missing", "scan", "tv", "movie", "hygiene",
+                "missing", "scan", "evidence", "tv", "movie", "hygiene",
             ],
             func=media_remonitor_scan,
             provider="media_remonitor",
@@ -465,13 +689,14 @@ def _make_tools(manifest_path: str) -> list[Tool]:
         Tool(
             name="media_remonitor_apply",
             description=(
-                "Remonitor Sonarr/Radarr library gaps (set monitored + optional search). "
-                "Same modes as media_remonitor_scan. Use dry_run=true to preview. "
-                "Pass ids to target specific items. Downloads are asynchronous."
+                "Set monitored=true on Sonarr/Radarr gaps (monitor-only). Does NOT search "
+                "or download — use media_acquire_request after approval. Broad modes need "
+                "allow_broad_scope=true. dry_run=true previews. Returns evidence with "
+                "before/after and post_condition_ok."
             ),
             tags=[
                 "media", "sonarr", "radarr", "remonitor", "monitor", "library",
-                "missing", "search", "download", "tv", "movie", "hygiene", "fix",
+                "missing", "tv", "movie", "hygiene", "fix", "evidence",
             ],
             func=media_remonitor_apply,
             provider="media_remonitor",

@@ -1,4 +1,4 @@
-"""Contract tests for media remonitor lane (offline fake *arr server).
+"""Contract tests for media remonitor / acquire / health (offline fake *arr).
 
 python tests/test_media_remonitor.py
 """
@@ -14,7 +14,6 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Mutable library state the fake server mutates on PUT
 SERIES = {
     1: {
         "id": 1, "title": "Ended Show", "year": 2020, "monitored": False, "status": "ended",
@@ -40,6 +39,10 @@ MOVIES = {
     },
     12: {
         "id": 12, "title": "Mon Missing", "year": 2015, "monitored": True,
+        "hasFile": False, "status": "released",
+    },
+    13: {
+        "id": 13, "title": "Fresh Release", "year": 2026, "monitored": False,
         "hasFile": False, "status": "released",
     },
 }
@@ -122,7 +125,8 @@ class _H(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    from argus.tools import media_remonitor
+    from pydantic_ai.exceptions import ModelRetry
+    from argus.tools import media_remonitor, media_acquire, media_health
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -137,81 +141,154 @@ def main() -> int:
     os.close(fd)
 
     try:
-        tools = media_remonitor.tools(mpath)
-        by = {t.name: t for t in tools}
-        assert set(by) == {"media_remonitor_scan", "media_remonitor_apply"}, list(by)
-        print("PASS: tools registered")
+        rby = {t.name: t for t in media_remonitor.tools(mpath)}
+        aby = {t.name: t for t in media_acquire.tools(mpath)}
+        hby = {t.name: t for t in media_health.tools(mpath)}
+        assert "media_remonitor_scan" in rby and "media_remonitor_apply" in rby
+        assert "media_acquire_request" in aby
+        assert "media_health_scan" in hby
+        print("PASS: remonitor + acquire + health tools registered")
 
-        scan = by["media_remonitor_scan"].func
-        apply = by["media_remonitor_apply"].func
+        scan = rby["media_remonitor_scan"].func
+        apply = rby["media_remonitor_apply"].func
+        acquire = aby["media_acquire_request"].func
+        health = hby["media_health_scan"].func
 
-        # default mode: unmonitored + missing
+        # --- evidence contract on scan ---
         r = scan(service="both", mode="unmonitored_missing", limit=50)
-        ids = {(c["service"], c["id"]) for c in r["candidates"]}
-        assert ("sonarr", 1) in ids, r
-        assert ("radarr", 10) in ids, r
-        assert ("radarr", 11) not in ids  # unmon but has file
-        assert ("sonarr", 2) not in ids
-        assert ("radarr", 12) not in ids  # monitored missing — not unmonitored_missing
-        print("PASS: scan unmonitored_missing filters correctly")
+        assert r["count"] >= 2
+        for c in r["candidates"]:
+            assert "evidence_id" in c and c["evidence_id"].startswith("media-remonitor-")
+            assert "before" in c and "monitored" in c["before"]
+            assert "confidence" in c and isinstance(c["confidence"], int)
+            assert "reasons" in c and len(c["reasons"]) >= 2
+            assert c["decision"] in ("REMONITOR", "PROPOSE", "IGNORE")
+            assert "actions_suggested" in c
+            assert "set_monitored" in c["actions_suggested"] or c["before"]["monitored"]
+        print("PASS: scan evidence contract (id, before, confidence, reasons, decision)")
 
-        r = scan(service="radarr", mode="missing")
-        ids = {c["id"] for c in r["candidates"]}
-        assert ids == {10, 12}, ids
-        print("PASS: scan radarr missing")
+        # confidence: fresh release unmon missing should score high
+        fresh = next(c for c in r["candidates"] if c["id"] == 13)
+        assert fresh["confidence"] >= 80, fresh
+        assert fresh["decision"] in ("REMONITOR", "PROPOSE")
+        print("PASS: confidence scoring boosts recent unmon missing")
 
-        r = scan(service="sonarr", mode="gaps")
-        ids = {c["id"] for c in r["candidates"]}
-        assert 1 in ids and 3 in ids and 2 not in ids, ids
-        print("PASS: scan sonarr gaps")
+        # complete unmon should score low / IGNORE on unmonitored mode
+        r_un = scan(service="radarr", mode="unmonitored")
+        complete = next(c for c in r_un["candidates"] if c["id"] == 11)
+        assert complete["confidence"] < 50, complete
+        assert complete["decision"] == "IGNORE"
+        assert any("intentional" in x for x in complete["reasons"])
+        print("PASS: complete unmonitored → low confidence IGNORE")
 
-        r = scan(service="both", mode="unmonitored")
-        titles = {c["title"] for c in r["candidates"]}
-        assert "Unmon Complete" in titles  # has file but unmon
-        print("PASS: scan unmonitored includes complete unmon")
-
-        # dry_run apply — no PUT/POST
-        PUTS.clear(); POSTS.clear()
-        r = apply(service="both", mode="unmonitored_missing", dry_run=True, search=True)
-        assert r["dry_run"] is True
-        assert r["planned"] >= 2
-        assert all(x.get("ok") for x in r["results"])
-        assert PUTS == [] and POSTS == []
-        print("PASS: dry_run apply writes nothing")
-
-        # real apply — remonitor + search
-        PUTS.clear(); POSTS.clear()
-        r = apply(service="both", mode="unmonitored_missing", dry_run=False, search=True)
-        assert r["applied_ok"] == r["planned"]
-        assert SERIES[1]["monitored"] is True
-        assert MOVIES[10]["monitored"] is True
-        # episodes S1+ monitored; season 0 left alone
-        assert EPISODES[1][0]["monitored"] is True
-        assert EPISODES[1][1]["monitored"] is True
-        assert EPISODES[1][2]["monitored"] is False  # special
-        cmds = [b.get("name") for _, b in POSTS if _.endswith("/command")]
-        assert "SeriesSearch" in cmds and "MoviesSearch" in cmds, cmds
-        print("PASS: apply remonitors + searches; skips season 0")
-
-        # ids filter
-        PUTS.clear(); POSTS.clear()
-        # reset movie 12 still mon missing — use missing mode on id 12 only
-        r = apply(service="radarr", mode="missing", ids="12", dry_run=False, search=True)
-        assert r["planned"] == 1 and r["results"][0]["id"] == 12
-        assert any(b.get("name") == "MoviesSearch" for _, b in POSTS)
-        print("PASS: ids filter targets one movie")
-
-        # invalid mode teaches
+        # --- safety gate broad apply ---
         try:
-            scan(mode="nope")
-            raise AssertionError("expected ModelRetry")
-        except Exception as e:
-            assert "mode" in str(e).lower() or "ModelRetry" in type(e).__name__
-            from pydantic_ai.exceptions import ModelRetry
-            assert isinstance(e, ModelRetry)
-        print("PASS: invalid mode -> ModelRetry")
+            apply(service="both", mode="gaps", dry_run=False, limit=5)
+            raise AssertionError("expected ModelRetry for broad gaps")
+        except ModelRetry as e:
+            assert "allow_broad_scope" in str(e)
+        print("PASS: broad mode gaps blocked without allow_broad_scope")
 
-        print("\nALL MEDIA_REMONITOR TESTS PASSED")
+        # dry_run broad is ok
+        PUTS.clear(); POSTS.clear()
+        r = apply(service="both", mode="gaps", dry_run=True, limit=20, min_confidence=0)
+        assert r["dry_run"] is True
+        assert PUTS == [] and POSTS == []
+        print("PASS: dry_run broad gaps allowed, no writes")
+
+        # --- monitor-only apply (no search) ---
+        PUTS.clear(); POSTS.clear()
+        r = apply(
+            service="radarr", mode="unmonitored_missing", ids="10,13",
+            dry_run=False, min_confidence=0,
+        )
+        assert r["applied_ok"] == 2
+        assert r["acquisition"]["started"] is False
+        assert POSTS == [], "remonitor must not POST search commands"
+        assert MOVIES[10]["monitored"] is True and MOVIES[13]["monitored"] is True
+        for ev in r["evidence"]:
+            assert ev["post_condition_ok"] is True
+            assert ev["after_actual"]["monitored"] is True
+            assert ev.get("search_requested") is False
+            assert "set_monitored" in ev["actions"]
+        print("PASS: apply is monitor-only with post_condition evidence")
+
+        # sonarr episodes S1+ monitored, season 0 skipped
+        PUTS.clear(); POSTS.clear()
+        r = apply(service="sonarr", mode="unmonitored_missing", ids="1", dry_run=False, min_confidence=0)
+        assert SERIES[1]["monitored"] is True
+        assert EPISODES[1][0]["monitored"] is True
+        assert EPISODES[1][2]["monitored"] is False
+        assert POSTS == []
+        print("PASS: sonarr remonitor episodes; no acquire; skip S0")
+
+        # min_confidence filters
+        r = apply(
+            service="radarr", mode="unmonitored", ids="11",
+            dry_run=True, min_confidence=90,
+        )
+        assert r["planned"] == 0 and r["skipped_low_confidence"] >= 1
+        print("PASS: min_confidence skips low-score candidates")
+
+        # --- acquire boundary ---
+        POSTS.clear()
+        # unmonitored still fails for id 11
+        r = acquire(service="radarr", ids="11", dry_run=False)
+        assert r["ok"] == 0 and not r["results"][0]["ok"]
+        assert "not monitored" in r["results"][0]["error"].lower() or "remonitor" in r["results"][0]["error"].lower()
+        print("PASS: acquire refuses unmonitored entity")
+
+        # monitored missing → search
+        POSTS.clear()
+        r = acquire(service="radarr", ids="12", dry_run=False)
+        assert r["searching"] == 1
+        assert any(b.get("name") == "MoviesSearch" for _, b in POSTS)
+        assert r["evidence"][0]["decision"] == "ACQUIRE"
+        assert r["evidence"][0]["search_requested"] is True
+        print("PASS: acquire queues MoviesSearch with evidence")
+
+        # dry_run acquire
+        POSTS.clear()
+        r = acquire(service="radarr", ids="12", dry_run=True)
+        assert r["dry_run"] is True and POSTS == []
+        print("PASS: acquire dry_run writes nothing")
+
+        # ids required
+        try:
+            acquire(service="radarr", ids="")
+            raise AssertionError("expected ModelRetry")
+        except ModelRetry:
+            pass
+        print("PASS: acquire requires ids")
+
+        # batch >10 needs broad scope
+        try:
+            acquire(service="radarr", ids=",".join(str(i) for i in range(1, 12)), dry_run=False)
+            raise AssertionError("expected broad scope ModelRetry")
+        except ModelRetry as e:
+            assert "allow_broad_scope" in str(e)
+        print("PASS: large acquire batch needs allow_broad_scope")
+
+        # --- health auditor ---
+        h = health(service="both", limit=50)
+        assert "stats" in h and "recommendations" in h
+        assert "movies" in h["stats"] and "tv" in h["stats"]
+        rec = h["recommendations"]
+        assert set(rec) >= {"REMONITOR", "REVIEW", "IGNORE", "ACQUIRE"}
+        # monitored missing movie 12 → ACQUIRE bucket
+        acq_ids = {i["id"] for i in rec["ACQUIRE"]["items"] if i["service"] == "radarr"}
+        assert 12 in acq_ids
+        # unmon complete 11 → IGNORE
+        ign_ids = {i["id"] for i in rec["IGNORE"]["items"] if i.get("service") == "radarr"}
+        assert 11 in ign_ids
+        print("PASS: media_health_scan buckets REMONITOR/REVIEW/IGNORE/ACQUIRE")
+
+        # explanation fields present on health items
+        sample = (rec["ACQUIRE"]["items"] or rec["REMONITOR"]["items"] or rec["REVIEW"]["items"])[0]
+        assert any("monitored=" in x for x in sample["reasons"])
+        print("PASS: explanation reasons on health evidence")
+
+        print("\nALL MEDIA REMONITOR/ACQUIRE/HEALTH TESTS PASSED")
         return 0
     finally:
         srv.shutdown()

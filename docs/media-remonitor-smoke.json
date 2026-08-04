@@ -1,27 +1,43 @@
 {
   "ts": "2026-08-03",
-  "lane": "media_remonitor",
-  "tools": ["media_remonitor_scan", "media_remonitor_apply"],
-  "live_scan": {
-    "unmonitored_missing": {
-      "count": 2,
-      "candidates": [
-        {"service": "radarr", "id": 22, "title": "National Lampoon's Vacation", "year": 1983},
-        {"service": "radarr", "id": 20, "title": "TRON: Ares", "year": 2025}
-      ]
+  "architecture": {
+    "flow": "media_health_scan → evidence → supervisor → media_remonitor_apply | media_acquire_request",
+    "principle": "tools collect evidence + bounded mutations; supervisor approves risk"
+  },
+  "lanes": {
+    "media_health": ["media_health_scan"],
+    "media_remonitor": ["media_remonitor_scan", "media_remonitor_apply"],
+    "media_acquire": ["media_acquire_request"]
+  },
+  "contracts": {
+    "evidence": ["entity", "id", "title", "before", "decision", "confidence", "reasons", "actions", "after_expected", "evidence_id"],
+    "confidence_thresholds": {"auto_remonitor": 90, "propose": 50},
+    "remonitor": "monitor-only (no search)",
+    "acquire": "search only; requires monitored=true; ids required",
+    "broad_scope": "gaps/missing/unmonitored apply needs allow_broad_scope or ids or dry_run"
+  },
+  "live_health": {
+    "movies": {
+      "total": 73,
+      "monitored_missing": 3,
+      "unmonitored_missing": 2,
+      "unmonitored_complete": 1
     },
-    "missing": {
-      "count": 10,
-      "note": "includes monitored series/movies with file gaps (Dexter, Wayne, etc.)"
-    }
+    "tv": {
+      "total_series": 32,
+      "incomplete_series": 5
+    },
+    "summary": {
+      "remonitor": 0,
+      "review": 2,
+      "ignore": 1,
+      "acquire": 8
+    },
+    "review_examples": [
+      {"id": 20, "title": "TRON: Ares", "confidence": 80},
+      {"id": 22, "title": "National Lampoon's Vacation", "confidence": 60}
+    ],
+    "ignore_example": {"id": 14, "title": "Twilight", "confidence": 0}
   },
-  "dry_run_apply": {
-    "mode": "unmonitored_missing",
-    "planned": 2,
-    "applied_ok": 2,
-    "searching": 2,
-    "wrote_changes": false
-  },
-  "registry": "media-remonitor: +2 tools from config/openapi.yaml",
   "tests": "tests/test_media_remonitor.py ALL PASSED"
 }
