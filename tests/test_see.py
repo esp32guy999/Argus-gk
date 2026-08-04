@@ -198,7 +198,8 @@ def main() -> int:
     proto = d11.to_dict()
     assert set(proto) >= {"action", "code", "state", "blocking", "details"}
     assert proto["action"] in (
-        "CONTINUE", "RETRY", "REPLAN", "VERIFY_FAILED", "ASK_USER", "STALL", "ABORT", "COMPLETE",
+        "CONTINUE", "RETRY", "REPLAN", "VERIFY_FAILED", "ASK_USER", "STALL", "ABORT",
+        "COMPLETE", "NO_OP",
     )
     print("PASS: unrelated jellyfin evidence → VERIFY_FAILED + protocol schema")
 
@@ -208,6 +209,10 @@ def main() -> int:
         {"action": "TRY_AGAIN", "code": "TEMPORARY_FAILURE", "state": "EXECUTING", "blocking": []})
     assert d_syn.action == "RETRY"
     assert decide("COMPLETE", "ALL_CRITERIA_MET", "COMPLETED").to_dict()["protocol"] == PROTOCOL_ID
+    # STP-1.0 still accepted (normalized to current PROTOCOL_ID)
+    d10 = SupervisorDecision.from_dict(
+        {"protocol": "STP-1.0", "action": "NO_OP", "code": "NO_OP", "state": "EXECUTING"})
+    assert d10.action == "NO_OP" and d10.protocol == PROTOCOL_ID
     try:
         SupervisorDecision.from_dict(
             {"action": "MAGIC", "code": "EVENT_APPLIED", "state": "EXECUTING"})
@@ -228,8 +233,8 @@ def main() -> int:
         print("FAIL: accepted STP-2.0"); return 1
     except ValueError:
         print("PASS: protocol rejects incompatible version")
-    assert len(ACTIONS) == 8
-    print("PASS: STP-1.0 action vocabulary size 8 + protocol field")
+    assert len(ACTIONS) == 9 and "NO_OP" in ACTIONS
+    print("PASS: STP-1.1 action vocabulary size 9 (incl NO_OP) + protocol field")
 
     print("\nALL SEE TESTS PASSED ✅")
     return 0

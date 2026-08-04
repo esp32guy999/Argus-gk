@@ -38,10 +38,15 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 # ── Supervisory Task Protocol (STP) ──────────────────────────────────────
 # Versioned network protocol (not merely Python classes). Changing ACTIONS or
 # CODES is a protocol revision: update specs/see-protocol.md + tests + workers.
-PROTOCOL_ID = "STP-1.0"
+#
+# STP-1.1: adds NO_OP action + worker step response contract (every /task step
+# yields exactly one decision object — never empty/null/EOF).
+PROTOCOL_ID = "STP-1.1"
 PROTOCOL_MAJOR = 1  # workers reject major != 1
+# Accepted protocol ids for this major (emitters use PROTOCOL_ID).
+PROTOCOL_ACCEPTED = frozenset({"STP-1.0", "STP-1.1"})
 
-# Frozen action vocabulary (STP § Recommendation 2). No synonyms as actions.
+# Action vocabulary (STP-1.1). NO_OP = intentional no work this step.
 ACTIONS = (
     "CONTINUE",
     "RETRY",
@@ -51,6 +56,7 @@ ACTIONS = (
     "STALL",
     "ABORT",
     "COMPLETE",
+    "NO_OP",
 )
 ACTIONS_SET = frozenset(ACTIONS)
 
@@ -68,6 +74,12 @@ ACTION_SYNONYMS = {
     "STOP": "ABORT",
     "RESUME": "CONTINUE",
     "VERIFY": "CONTINUE",
+    # Intentional idle / nothing-to-do
+    "NOOP": "NO_OP",
+    "NONE": "NO_OP",
+    "IDLE": "NO_OP",
+    "NOTHING": "NO_OP",
+    "SKIP": "NO_OP",
 }
 
 # Frozen code registry (STP § Recommendation 3). Unknown codes rejected.
@@ -79,6 +91,9 @@ CODES = (
     "PLAN_ACCEPTED",
     "EVENT_APPLIED",
     "RESUMED",
+    "NO_OP",                 # intentional no work (step evaluated; nothing to do)
+    "STEP_ACCEPTED",         # worker step contract accepted
+    "MALFORMED_STEP",        # worker step failed response contract
     # Verification
     "MISSING_EVIDENCE",
     "WEAK_EVIDENCE",
@@ -132,6 +147,7 @@ EVENT_TYPES = (
     "StallDetected",
     "LoopDetected",
     "SupervisorAction",
+    "WorkerStepReported",
     "TaskCompleted",
     "TaskAborted",
     "StateTransition",
@@ -214,21 +230,30 @@ class SeeEvent:
 
 
 def _parse_protocol(value: str | None) -> str:
-    """Return canonical protocol id or raise PROTOCOL_ERROR."""
+    """Return canonical protocol id or raise PROTOCOL_ERROR.
+
+    Accepts STP-1.0 and STP-1.1 (same major). Emitters always write PROTOCOL_ID.
+    """
     if not value:
         return PROTOCOL_ID  # emitters may omit; workers should require it
     v = str(value).strip().upper().replace("_", "-")
-    if v in ("STP-1.0", "STP-1", "STP1.0", "STP1"):
-        return PROTOCOL_ID
-    # major version check
-    m = re.match(r"STP-?(\d+)", v)
-    if m and int(m.group(1)) != PROTOCOL_MAJOR:
-        raise ValueError(
-            f"incompatible STP protocol {value!r}; this runtime speaks {PROTOCOL_ID}"
-        )
-    if v != "STP-1.0":
+    # normalize STP1.1 → STP-1.1
+    m_loose = re.match(r"STP-?(\d+)(?:\.(\d+))?", v)
+    if m_loose:
+        major = int(m_loose.group(1))
+        if major != PROTOCOL_MAJOR:
+            raise ValueError(
+                f"incompatible STP protocol {value!r}; this runtime speaks {PROTOCOL_ID}"
+            )
+        minor = m_loose.group(2) or "0"
+        candidate = f"STP-{major}.{minor}"
+        if candidate in PROTOCOL_ACCEPTED or candidate == PROTOCOL_ID:
+            return PROTOCOL_ID  # normalize to current emitter id
+        # accept any 1.x we don't know yet? fail-closed on unknown minor for safety
+        if major == 1 and int(minor) <= 1:
+            return PROTOCOL_ID
         raise ValueError(f"unknown STP protocol {value!r}; expected {PROTOCOL_ID}")
-    return PROTOCOL_ID
+    raise ValueError(f"unknown STP protocol {value!r}; expected {PROTOCOL_ID}")
 
 
 @dataclass

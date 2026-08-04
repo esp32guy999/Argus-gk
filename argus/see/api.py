@@ -229,6 +229,35 @@ def action(task_id: str, action_name: str, *, reason: str = "") -> SupervisorDec
     return dec
 
 
+def report_step(task_id: str, step: dict | str) -> SupervisorDecision:
+    """Worker step response contract — one decision object per /task step.
+
+    Rejects empty/malformed payloads (RETRY + MALFORMED_STEP). NO_OP is intentional idle.
+    """
+    task = get(task_id)
+    if not task:
+        return decide("ABORT", "UNKNOWN_TASK", "ABORTED", blocking=["unknown task"])
+    n = len(task.event_log)
+    dec = engine.apply_worker_step(task, step)
+    _save(task, since_n=n)
+    if dec.action == "COMPLETE":
+        _emit_memory(task)
+        _notify_see(task, "SEE task complete",
+                    f"✅ {task.goal[:120]}\nEvidence ok · `{task.id}`")
+        try:
+            from argus import metrics
+            metrics.SEE_COMPLETED.inc()
+        except Exception:
+            pass
+    elif dec.action == "ASK_USER":
+        _notify_see(task, "SEE needs you",
+                    f"❓ {task.goal[:120]}\n{dec.feedback or ''}\n`{task.id}`")
+    elif dec.action == "ABORT" or dec.new_state == "ABORTED":
+        _notify_see(task, "SEE task aborted",
+                    f"🛑 {task.goal[:120]}\n{dec.feedback or ''}\n`{task.id}`")
+    return dec
+
+
 def resume(task_id: str, *, reason: str = "resume from checkpoint") -> dict:
     """Interrupt recovery: load durable task, RESUME if stalled, return brief + last checkpoint.
 

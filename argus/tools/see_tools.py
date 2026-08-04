@@ -138,6 +138,62 @@ def see_resume(task_id: str) -> dict:
     return out
 
 
+def see_report_step(
+    task_id: str,
+    action: str,
+    reason: str = "",
+    code: str = "",
+    evidence_json: str = "",
+    confidence: float = -1.0,
+    tool: str = "",
+) -> dict:
+    """Report one supervised worker-step decision (SEE response contract).
+
+    Every /task step MUST end with exactly one decision. Never empty.
+    action: CONTINUE|RETRY|REPLAN|ASK_USER|STALL|ABORT|COMPLETE|NO_OP.
+    NO_OP = evaluated, nothing to do this step (intentional idle).
+    COMPLETE requests supervisor VERIFY (you cannot self-complete).
+    evidence_json: optional JSON list of {criterion, summary, kind?, ...}.
+    """
+    if not task_id:
+        raise ModelRetry("see_report_step: task_id required.")
+    if not (action or "").strip():
+        raise ModelRetry(
+            "see_report_step: action is required — use NO_OP if nothing to do "
+            "(empty action violates the response contract)."
+        )
+    import json
+    evidence = []
+    if (evidence_json or "").strip():
+        try:
+            evidence = json.loads(evidence_json)
+        except json.JSONDecodeError as e:
+            raise ModelRetry(f"see_report_step: evidence_json is not valid JSON: {e}") from e
+        if not isinstance(evidence, list):
+            raise ModelRetry("see_report_step: evidence_json must be a JSON list")
+    step = {
+        "protocol": "STP-1.1",
+        "action": action.strip(),
+        "reason": reason or "",
+        "evidence": evidence,
+    }
+    if (code or "").strip():
+        step["code"] = code.strip()
+    if (tool or "").strip():
+        step["tool"] = tool.strip()
+    if confidence is not None and float(confidence) >= 0:
+        step["confidence"] = float(confidence)
+    from argus.see import api
+    dec = api.report_step(task_id, step)
+    out = dec.to_dict()
+    out["ok"] = dec.ok
+    out["feedback"] = dec.feedback
+    out["no_op"] = dec.action == "NO_OP"
+    out["completed"] = dec.action == "COMPLETE"
+    out["contract"] = "ok" if dec.code != "MALFORMED_STEP" else "failed"
+    return out
+
+
 def tools() -> list[Tool]:
     common = dict(provider="see")
     return [
@@ -201,6 +257,24 @@ def tools() -> list[Tool]:
             tags=["see", "resume", "checkpoint", "recover"],
             func=see_resume,
             example={"task_id": "see-abc"},
+            **common,
+        ),
+        Tool(
+            name="see_report_step",
+            description=(
+                "Report one SEE worker-step decision (response contract). "
+                "Every supervised step must call this with a required action — "
+                "never end a step empty. Use action=NO_OP when nothing to do. "
+                "COMPLETE requests verification; NO_OP is intentional idle."
+            ),
+            tags=["see", "task", "decision", "no_op", "contract", "step", "protocol"],
+            func=see_report_step,
+            example={
+                "task_id": "see-abc",
+                "action": "NO_OP",
+                "reason": "No changes required.",
+                "confidence": 1.0,
+            },
             **common,
         ),
     ]

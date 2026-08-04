@@ -571,14 +571,113 @@ def supervisor_action(task: SeeTask, action: str, *, reason: str = "") -> Superv
     if action == "COMPLETE":
         return request_verify(task)
 
+    if action == "NO_OP":
+        # Intentional idle this step — not a stall, not completion.
+        _append_event(task, SeeEvent(
+            type="WorkerStepReported",
+            detail="NO_OP",
+            data={"reason": reason or "No changes required.", "code": "NO_OP"},
+        ))
+        task.last_event_ts = time.time()
+        task.last_progress_ts = task.last_event_ts  # agent is alive; avoid false stall
+        task.worker_feedback = reason or "NO_OP — nothing to do this step."
+        if task.current_state == "STALLED":
+            # Healthy evaluation while stalled still counts as progress signal
+            _append_event(task, _transition(task, "EXECUTING", "no_op_alive"))
+        return decide(
+            "NO_OP", "NO_OP",
+            task.current_state if task.current_state != "STALLED" else "EXECUTING",
+            blocking=[],
+            details={"reason": reason or "No changes required."},
+            confidence=1.0,
+        )
+
     return decide(action, "EVENT_APPLIED", task.current_state,
                   blocking=[reason] if reason else [])
 
 
+def apply_worker_step(task: SeeTask, raw_step) -> SupervisorDecision:
+    """Accept one worker step decision object (response contract).
+
+    Rejects empty/malformed input. NO_OP is a first-class intentional idle.
+    COMPLETE routes to request_verify (worker never self-completes).
+    """
+    from .contract import ContractError, parse_worker_step
+
+    if task.current_state in TERMINAL:
+        return decide(
+            "ABORT", "ILLEGAL_STATE", task.current_state,
+            blocking=[f"task already {task.current_state}"],
+        )
+
+    try:
+        step = parse_worker_step(raw_step)
+    except ContractError as e:
+        _append_event(task, SeeEvent(
+            type="WorkerStepReported",
+            detail="MALFORMED",
+            data={"error": str(e), "code": getattr(e, "code", "MALFORMED_STEP")},
+        ))
+        task.worker_feedback = (
+            f"Response contract failed: {e}. "
+            f"Every step must return a decision object with action "
+            f"(CONTINUE|RETRY|REPLAN|ASK_USER|STALL|ABORT|COMPLETE|NO_OP)."
+        )
+        return decide(
+            "RETRY", "MALFORMED_STEP", task.current_state,
+            blocking=[str(e)],
+            details={"contract": "failed"},
+        )
+
+    # Attach any evidence declared on the step
+    for item in step.evidence:
+        if not isinstance(item, dict):
+            continue
+        crit = item.get("criterion") or item.get("name") or ""
+        summary = item.get("summary") or item.get("detail") or ""
+        if not crit or not summary:
+            continue
+        apply_event(task, SeeEvent(
+            type="EvidenceAdded",
+            detail=crit,
+            data={
+                "criterion": crit,
+                "kind": item.get("kind") or "other",
+                "summary": summary,
+                "payload": item.get("payload"),
+                "source": item.get("source") or "worker:step",
+                "command": item.get("command"),
+                "trust": item.get("trust"),
+            },
+        ))
+
+    reason = step.reason or step.explanation or ""
+    if step.action == "NO_OP":
+        return supervisor_action(task, "NO_OP", reason=reason or "No changes required.")
+
+    _append_event(task, SeeEvent(
+        type="WorkerStepReported",
+        detail=step.action,
+        data=step.to_dict(),
+    ))
+
+    if step.action == "COMPLETE":
+        # Worker requests verification — never silent COMPLETE without evidence check
+        return request_verify(task)
+    if step.action in ("ABORT", "REPLAN", "ASK_USER", "STALL", "RETRY", "CONTINUE"):
+        return supervisor_action(task, step.action, reason=reason)
+
+    return decide(
+        "RETRY", "MALFORMED_STEP", task.current_state,
+        blocking=[f"unhandled worker action {step.action!r}"],
+    )
+
+
 def worker_brief(task: SeeTask) -> str:
     """Compact prompt fragment for the worker (not full chat)."""
+    from .models import PROTOCOL_ID
     lines = [
-        f"[SEE task {task.id} · {task.current_state}]",
+        f"[SEE task {task.id} · {task.current_state} · {PROTOCOL_ID}]",
         f"Goal: {task.goal}",
         "Success criteria:",
     ]
@@ -596,6 +695,12 @@ def worker_brief(task: SeeTask) -> str:
         lines.append(f"Stalled: {task.stall_reason or 'unknown'}")
     lines.append(
         "When criteria have evidence, request verification (do not declare success yourself)."
+    )
+    lines.append(
+        "Response contract: every supervised step ends with one decision via "
+        "see_report_step (action required). Use action=NO_OP when nothing to do "
+        "this step — never return empty/null. Actions: CONTINUE|RETRY|REPLAN|"
+        "ASK_USER|STALL|ABORT|COMPLETE|NO_OP."
     )
     return "\n".join(lines)
 
