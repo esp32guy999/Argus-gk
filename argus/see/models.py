@@ -415,8 +415,13 @@ class SeeTask:
     event_log: list[SeeEvent] = field(default_factory=list)
     conversation_id: str | None = None
     job_id: str | None = None
+    # Activity = worker is responding (includes NO_OP heartbeats).
+    # Progress = task moved closer to completion (checkpoint/evidence/tool ok).
+    # Never conflate the two — NO_OP must not mask no-progress stalls.
     last_event_ts: float = field(default_factory=time.time)
+    last_activity_ts: float = field(default_factory=time.time)
     last_progress_ts: float = field(default_factory=time.time)
+    consecutive_no_ops: int = 0
     created_ts: float = field(default_factory=time.time)
     updated_ts: float = field(default_factory=time.time)
     stall_reason: str | None = None
@@ -444,7 +449,9 @@ class SeeTask:
             "conversation_id": self.conversation_id,
             "job_id": self.job_id,
             "last_event_ts": self.last_event_ts,
+            "last_activity_ts": self.last_activity_ts,
             "last_progress_ts": self.last_progress_ts,
+            "consecutive_no_ops": int(self.consecutive_no_ops or 0),
             "created_ts": self.created_ts,
             "updated_ts": self.updated_ts,
             "stall_reason": self.stall_reason,
@@ -453,6 +460,10 @@ class SeeTask:
 
     @classmethod
     def from_dict(cls, d: dict) -> "SeeTask":
+        now = time.time()
+        # Migrate older tasks: activity defaults to last_event_ts if absent
+        last_event = float(d.get("last_event_ts") or now)
+        last_activity = float(d.get("last_activity_ts") or last_event)
         return cls(
             id=d["id"],
             goal=d.get("goal") or "",
@@ -469,10 +480,12 @@ class SeeTask:
             event_log=[SeeEvent.from_dict(x) for x in (d.get("event_log") or [])],
             conversation_id=d.get("conversation_id"),
             job_id=d.get("job_id"),
-            last_event_ts=float(d.get("last_event_ts") or time.time()),
-            last_progress_ts=float(d.get("last_progress_ts") or time.time()),
-            created_ts=float(d.get("created_ts") or time.time()),
-            updated_ts=float(d.get("updated_ts") or time.time()),
+            last_event_ts=last_event,
+            last_activity_ts=last_activity,
+            last_progress_ts=float(d.get("last_progress_ts") or now),
+            consecutive_no_ops=int(d.get("consecutive_no_ops") or 0),
+            created_ts=float(d.get("created_ts") or now),
+            updated_ts=float(d.get("updated_ts") or now),
             stall_reason=d.get("stall_reason"),
             worker_feedback=d.get("worker_feedback"),
         )

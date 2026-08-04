@@ -60,11 +60,16 @@ class ContractError(ValueError):
 
 @dataclass
 class WorkerStepResult:
-    """One deterministic decision from a worker step (response contract object)."""
+    """One deterministic decision from a worker step (response contract object).
+
+    NO_OP means: state was evaluated and no mutation was required — not "nothing
+    happened" and not task progress.
+    """
     action: str
     code: str
-    reason: str = ""
-    explanation: str = ""          # alias of reason if reason empty
+    message: str = ""              # human-readable explanation (preferred)
+    reason: str = ""               # alias of message (legacy)
+    explanation: str = ""          # alias of message
     confidence: float | None = None
     evidence: list[dict] = field(default_factory=list)
     tool: str | None = None        # optional tool name if EXECUTE-style
@@ -87,8 +92,10 @@ class WorkerStepResult:
         if code not in CODES_SET:
             raise ContractError(f"unknown code {self.code!r} — rejected")
         self.code = code
-        if not self.reason and self.explanation:
-            self.reason = self.explanation
+        # Prefer message; fold legacy aliases
+        text = (self.message or self.reason or self.explanation or "").strip()
+        self.message = text
+        self.reason = text  # keep reason populated for older callers
         if self.confidence is not None:
             self.confidence = max(0.0, min(1.0, float(self.confidence)))
         if self.evidence is None:
@@ -100,17 +107,21 @@ class WorkerStepResult:
     def is_no_op(self) -> bool:
         return self.action == "NO_OP"
 
+    def message_text(self) -> str:
+        return self.message or self.reason or self.explanation or ""
+
     def to_dict(self) -> dict:
         d = {
             "protocol": self.protocol,
             "action": self.action,
             "code": self.code,
-            "reason": self.reason or self.explanation or "",
+            "message": self.message_text(),
             "evidence": list(self.evidence),
             "details": dict(self.details),
         }
-        if self.explanation and self.explanation != self.reason:
-            d["explanation"] = self.explanation
+        # Legacy mirror for older consumers
+        if self.message_text():
+            d["reason"] = self.message_text()
         if self.confidence is not None:
             d["confidence"] = self.confidence
         if self.tool:
@@ -201,7 +212,9 @@ def parse_worker_step(raw: Any, *, require_protocol: bool = False) -> WorkerStep
             au = ACTION_SYNONYMS[au]
         code = _DEFAULT_CODE.get(au, "STEP_ACCEPTED")
 
-    reason = d.get("reason") or d.get("explanation") or ""
+    message = (
+        d.get("message") or d.get("reason") or d.get("explanation") or ""
+    )
     evidence = d.get("evidence")
     if evidence is None:
         evidence = []
@@ -213,7 +226,8 @@ def parse_worker_step(raw: Any, *, require_protocol: bool = False) -> WorkerStep
             protocol=d.get("protocol") or PROTOCOL_ID,
             action=str(action),
             code=str(code or "STEP_ACCEPTED"),
-            reason=str(reason or ""),
+            message=str(message or ""),
+            reason=str(message or ""),
             explanation=str(d.get("explanation") or ""),
             confidence=d.get("confidence"),
             evidence=list(evidence),
@@ -235,12 +249,18 @@ def assert_step_result(raw: Any) -> WorkerStepResult:
     return step
 
 
-def no_op_step(reason: str = "No changes required.", *, confidence: float = 1.0) -> dict:
-    """Canonical intentional idle decision (for tests and programmatic workers)."""
+def no_op_step(
+    message: str = "State was evaluated and no mutation was required.",
+    *,
+    confidence: float = 1.0,
+    reason: str | None = None,
+) -> dict:
+    """Canonical NO_OP: evaluated, no mutation required (not empty, not progress)."""
+    text = reason if reason is not None else message
     return WorkerStepResult(
         action="NO_OP",
         code="NO_OP",
-        reason=reason,
+        message=text,
         confidence=confidence,
         evidence=[],
     ).to_dict()

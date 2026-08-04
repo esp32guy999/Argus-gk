@@ -22,10 +22,18 @@ Every decision includes:
 
 ### v1.1 delta
 
-- **`NO_OP` action** — intentional idle for this step (not stall, not empty).
-- **Worker step response contract** (`argus/see/contract.py`, tool `see_report_step`):
+- **`NO_OP` action** — *state was evaluated and no mutation was required*
+  (not “nothing happened”, not empty, **not progress**).
+- **Activity vs progress** — `last_activity_ts` (worker responding, includes NO_OP)
+  vs `last_progress_ts` (checkpoint / evidence / successful tool). Idle stall uses
+  **progress** only so NO_OP spam cannot mask a stuck task.
+- **NO_OP accumulation** — consecutive NO_OPs: 0–5 normal, 6–10 review flag,
+  **>10 → STALL / NO_PROGRESS** (`ARGUS_SEE_NOOP_REVIEW`, `ARGUS_SEE_NOOP_STALL`).
+- **Worker step events** — immutable `WorkerStepReported` with `step_id`.
+- **Worker step response contract** (`see_report_step` trust boundary):
   every supervised step yields **exactly one** decision object. Empty / null /
   malformed JSON / missing `action` → rejected (`MALFORMED_STEP`), never success.
+- **`message`** — preferred human-readable field (`reason` / `explanation` aliases).
 
 ---
 
@@ -45,7 +53,7 @@ CONTINUE | RETRY | REPLAN | VERIFY_FAILED | ASK_USER | STALL | ABORT | COMPLETE 
 | STALL | STALLED | No progress / loop |
 | ABORT | ABORTED | Unrecoverable |
 | COMPLETE | COMPLETED | Criteria independently verified |
-| NO_OP | (unchanged / EXECUTING) | Step evaluated; nothing to do |
+| NO_OP | EXECUTING (or STALL if accumulated) | Evaluated; no mutation required — activity only |
 
 **Prohibited as actions:** DONE, WAIT, SUCCESS, TRY_AGAIN, STOP, FAIL, ERROR.  
 Human/CLI layer may normalize synonyms (`NOOP`/`IDLE`/`SKIP` → `NO_OP`); Supervisor emitters must use canonical values only.
@@ -59,7 +67,7 @@ Human/CLI layer may normalize synonyms (`NOOP`/`IDLE`/`SKIP` → `NO_OP`); Super
   "protocol": "STP-1.1",
   "action": "NO_OP",
   "code": "NO_OP",
-  "reason": "No changes required.",
+  "message": "Configuration already satisfies requirements.",
   "confidence": 1.0,
   "evidence": []
 }
@@ -67,17 +75,49 @@ Human/CLI layer may normalize synonyms (`NOOP`/`IDLE`/`SKIP` → `NO_OP`); Super
 
 | Field | Required | Notes |
 |-------|----------|--------|
-| action | **YES** | Worker vocabulary (includes `NO_OP`) |
-| code | SHOULD | Registry; defaults per action |
-| reason / explanation | SHOULD | Why this decision |
-| evidence | MAY | List of evidence objects to attach |
-| confidence | NO | Telemetry only |
+| protocol | SHOULD | Emitters set `STP-1.1` |
+| action | **YES** | Canonical only (includes `NO_OP`) |
+| code | SHOULD | Registry only; defaults per action |
+| message | SHOULD | Human-readable (`reason`/`explanation` aliases) |
+| evidence | MAY | Criterion-oriented proof objects |
+| confidence | NO | Telemetry only — never drives control |
 | tool | MAY | Optional tool name hint |
 
 **Invariant:** the orchestrator never accepts empty / null / EOF as a step result.
-Use `action=NO_OP` when the absence of work is intentional.
+Use `action=NO_OP` when **evaluation** found no mutation necessary — not when the
+worker is idle, confused, or stuck.
 
 `COMPLETE` on a worker step **requests VERIFY** — the worker never self-completes.
+
+### Activity vs progress
+
+| Clock | Updated by | Stall? |
+|-------|------------|--------|
+| `last_activity_ts` | Any worker response including NO_OP, tool call | No |
+| `last_progress_ts` | Checkpoint, evidence, successful tool, plan accept | **Yes** — idle stall |
+
+### NO_OP accumulation
+
+| Consecutive NO_OP | Policy |
+|-------------------|--------|
+| 0–5 | Normal evaluation heartbeats |
+| 6–10 | `details.review=true` — supervisor should inspect |
+| ≥11 (`ARGUS_SEE_NOOP_STALL`, default 11) | Escalate to `STALL` / `NO_PROGRESS` |
+
+### Event: WorkerStepReported
+
+```json
+{
+  "type": "WorkerStepReported",
+  "detail": "NO_OP",
+  "data": {
+    "step_id": "a1b2c3d4e5f6",
+    "action": "NO_OP",
+    "message": "…",
+    "consecutive_no_ops": 4
+  }
+}
+```
 
 ---
 

@@ -141,6 +141,7 @@ def see_resume(task_id: str) -> dict:
 def see_report_step(
     task_id: str,
     action: str,
+    message: str = "",
     reason: str = "",
     code: str = "",
     evidence_json: str = "",
@@ -149,18 +150,20 @@ def see_report_step(
 ) -> dict:
     """Report one supervised worker-step decision (SEE response contract).
 
+    Trust boundary: worker cannot mutate completion/memory — only this path.
     Every /task step MUST end with exactly one decision. Never empty.
     action: CONTINUE|RETRY|REPLAN|ASK_USER|STALL|ABORT|COMPLETE|NO_OP.
-    NO_OP = evaluated, nothing to do this step (intentional idle).
+    NO_OP = state evaluated, no mutation required (activity only, not progress).
     COMPLETE requests supervisor VERIFY (you cannot self-complete).
+    message: human-readable explanation (preferred over reason).
     evidence_json: optional JSON list of {criterion, summary, kind?, ...}.
     """
     if not task_id:
         raise ModelRetry("see_report_step: task_id required.")
     if not (action or "").strip():
         raise ModelRetry(
-            "see_report_step: action is required — use NO_OP if nothing to do "
-            "(empty action violates the response contract)."
+            "see_report_step: action is required — use NO_OP if state was evaluated "
+            "and no mutation is required (empty action violates the contract)."
         )
     import json
     evidence = []
@@ -171,10 +174,11 @@ def see_report_step(
             raise ModelRetry(f"see_report_step: evidence_json is not valid JSON: {e}") from e
         if not isinstance(evidence, list):
             raise ModelRetry("see_report_step: evidence_json must be a JSON list")
+    text = (message or reason or "").strip()
     step = {
         "protocol": "STP-1.1",
         "action": action.strip(),
-        "reason": reason or "",
+        "message": text,
         "evidence": evidence,
     }
     if (code or "").strip():
@@ -191,6 +195,7 @@ def see_report_step(
     out["no_op"] = dec.action == "NO_OP"
     out["completed"] = dec.action == "COMPLETE"
     out["contract"] = "ok" if dec.code != "MALFORMED_STEP" else "failed"
+    out["consecutive_no_ops"] = (dec.details or {}).get("consecutive_no_ops")
     return out
 
 
@@ -272,7 +277,7 @@ def tools() -> list[Tool]:
             example={
                 "task_id": "see-abc",
                 "action": "NO_OP",
-                "reason": "No changes required.",
+                "message": "Configuration already satisfies requirements.",
                 "confidence": 1.0,
             },
             **common,

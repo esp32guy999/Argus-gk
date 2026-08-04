@@ -27,6 +27,9 @@ from .models import (
 IDLE_STALL_SEC = float(os.environ.get("ARGUS_SEE_IDLE_SEC", "120"))
 LOOP_REPEAT = int(os.environ.get("ARGUS_SEE_LOOP_REPEAT", "3"))
 MAX_EVENTS_KEPT = int(os.environ.get("ARGUS_SEE_MAX_EVENTS", "500"))
+# NO_OP accumulation: evaluation heartbeats without progress (STP-1.1 hardening)
+NO_OP_REVIEW_AT = int(os.environ.get("ARGUS_SEE_NOOP_REVIEW", "6"))   # flag review in details
+NO_OP_STALL_AT = int(os.environ.get("ARGUS_SEE_NOOP_STALL", "11"))    # >10 → STALL
 
 
 class TransitionError(ValueError):
@@ -60,6 +63,24 @@ def _append_event(task: SeeTask, ev: SeeEvent) -> None:
         task.event_log = task.event_log[-MAX_EVENTS_KEPT:]
     task.last_event_ts = ev.ts
     task.updated_ts = time.time()
+
+
+def _touch_activity(task: SeeTask, *, now: float | None = None) -> None:
+    """Worker is responding (alive). Does NOT count as task progress."""
+    t = now if now is not None else time.time()
+    task.last_activity_ts = t
+    task.last_event_ts = t
+    task.updated_ts = t
+
+
+def _touch_progress(task: SeeTask, *, now: float | None = None) -> None:
+    """Task moved closer to completion. Also counts as activity."""
+    t = now if now is not None else time.time()
+    task.last_progress_ts = t
+    task.last_activity_ts = t
+    task.last_event_ts = t
+    task.updated_ts = t
+    task.consecutive_no_ops = 0  # real progress resets NO_OP streak
 
 
 def create_task(
@@ -119,7 +140,7 @@ def accept_plan(
     ))
     ev = _transition(task, "EXECUTING", "plan_accepted")
     _append_event(task, ev)
-    task.last_progress_ts = time.time()
+    _touch_progress(task)
     task.worker_feedback = (
         "Execute the checklist. Request verification when success criteria have evidence."
     )
@@ -148,6 +169,7 @@ def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
         tool = ev.detail or ev.data.get("tool") or "tool"
         args_key = ev.data.get("args_key") or json.dumps(ev.data.get("args") or {}, sort_keys=True, default=str)
         task.tool_history.append({"tool": tool, "args_key": args_key, "ts": ev.ts, "ok": None})
+        _touch_activity(task, now=now)  # alive; progress only on ToolCompleted
         recent = [h for h in task.tool_history[-20:] if h["tool"] == tool and h["args_key"] == args_key]
         if len(recent) >= LOOP_REPEAT and task.current_state == "EXECUTING":
             _append_event(task, SeeEvent(type="LoopDetected", detail=tool, data={"count": len(recent)}))
@@ -167,8 +189,9 @@ def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
         if task.tool_history:
             task.tool_history[-1]["ok"] = ok
         if ok:
-            task.last_progress_ts = now
+            _touch_progress(task, now=now)
         elif ev.type == "ToolFailed":
+            _touch_activity(task, now=now)
             return decide(
                 "RETRY", "COMMAND_FAILED", task.current_state,
                 blocking=[f"Tool {ev.detail or 'unknown'} failed"],
@@ -178,7 +201,7 @@ def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
     if ev.type == "CheckpointReached":
         label = ev.detail or ev.data.get("label") or "checkpoint"
         task.checkpoints.append(Checkpoint(label=label, detail=ev.data.get("detail")))
-        task.last_progress_ts = now
+        _touch_progress(task, now=now)
         item = ev.data.get("checklist_item")
         if item and item in task.checklist and item not in task.completed_items:
             task.completed_items.append(item)
@@ -192,7 +215,7 @@ def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
         item = ev.detail or ""
         if item and item not in task.completed_items:
             task.completed_items.append(item)
-            task.last_progress_ts = now
+            _touch_progress(task, now=now)
 
     if ev.type == "EvidenceAdded":
         raw = dict(ev.data or {})
@@ -212,7 +235,7 @@ def apply_event(task: SeeTask, event: SeeEvent | dict) -> SupervisorDecision:
             e.source = "worker:claim"
             e.trust = min(e.trust, 0.5)
         task.evidence.append(e)
-        task.last_progress_ts = now
+        _touch_progress(task, now=now)
 
     if task.current_state == "STALLED" and ev.type in (
         "CheckpointReached", "EvidenceAdded", "ChecklistItemDone", "ToolCompleted",
@@ -572,35 +595,105 @@ def supervisor_action(task: SeeTask, action: str, *, reason: str = "") -> Superv
         return request_verify(task)
 
     if action == "NO_OP":
-        # Intentional idle this step — not a stall, not completion.
-        _append_event(task, SeeEvent(
-            type="WorkerStepReported",
-            detail="NO_OP",
-            data={"reason": reason or "No changes required.", "code": "NO_OP"},
-        ))
-        task.last_event_ts = time.time()
-        task.last_progress_ts = task.last_event_ts  # agent is alive; avoid false stall
-        task.worker_feedback = reason or "NO_OP — nothing to do this step."
-        if task.current_state == "STALLED":
-            # Healthy evaluation while stalled still counts as progress signal
-            _append_event(task, _transition(task, "EXECUTING", "no_op_alive"))
-        return decide(
-            "NO_OP", "NO_OP",
-            task.current_state if task.current_state != "STALLED" else "EXECUTING",
-            blocking=[],
-            details={"reason": reason or "No changes required."},
-            confidence=1.0,
-        )
+        # NO_OP = state was evaluated and no mutation was required.
+        # Activity only — never progress (prevents infinite polite inactivity).
+        return _handle_no_op(task, message=reason or "No changes required.")
 
     return decide(action, "EVENT_APPLIED", task.current_state,
                   blocking=[reason] if reason else [])
 
 
-def apply_worker_step(task: SeeTask, raw_step) -> SupervisorDecision:
-    """Accept one worker step decision object (response contract).
+def _new_step_id() -> str:
+    import uuid
+    return uuid.uuid4().hex[:12]
 
-    Rejects empty/malformed input. NO_OP is a first-class intentional idle.
-    COMPLETE routes to request_verify (worker never self-completes).
+
+def _handle_no_op(task: SeeTask, *, message: str = "No changes required.") -> SupervisorDecision:
+    """NO_OP: evaluation done, no mutation required — activity only, not progress.
+
+    Accumulation policy (defaults):
+      0–5  normal
+      6–10 review flag in details (still NO_OP)
+      >10  escalate to STALL / NO_PROGRESS
+    """
+    step_id = _new_step_id()
+    task.consecutive_no_ops = int(task.consecutive_no_ops or 0) + 1
+    n = task.consecutive_no_ops
+    msg = (message or "").strip() or (
+        "State was evaluated and no mutation was required."
+    )
+
+    # Activity only — do NOT call _touch_progress
+    _touch_activity(task)
+
+    payload = {
+        "step_id": step_id,
+        "action": "NO_OP",
+        "code": "NO_OP",
+        "message": msg,
+        "consecutive_no_ops": n,
+        "definition": "evaluated; no mutation required",
+    }
+
+    if n >= NO_OP_STALL_AT:
+        _append_event(task, SeeEvent(
+            type="WorkerStepReported",
+            detail="NO_OP",
+            data={**payload, "escalated": "STALL"},
+        ))
+        if task.current_state == "EXECUTING":
+            _append_event(task, _transition(
+                task, "STALLED", f"no_op_accumulation:{n}",
+            ))
+        task.stall_reason = f"consecutive NO_OP ×{n} without progress"
+        task.worker_feedback = (
+            f"STALL — {n} consecutive NO_OP steps without progress. "
+            f"Change approach, add evidence, or REPLAN. Last: {msg}"
+        )
+        return decide(
+            "STALL", "NO_PROGRESS", "STALLED",
+            blocking=[
+                f"{n} consecutive NO_OP steps (threshold {NO_OP_STALL_AT})",
+                msg,
+            ],
+            details={
+                "consecutive_no_ops": n,
+                "step_id": step_id,
+                "message": msg,
+                "policy": "no_op_accumulation",
+            },
+        )
+
+    _append_event(task, SeeEvent(
+        type="WorkerStepReported",
+        detail="NO_OP",
+        data=payload,
+    ))
+    review = n >= NO_OP_REVIEW_AT
+    task.worker_feedback = (
+        f"NO_OP ({n} consecutive) — {msg}"
+        + ("; supervisor should review task health" if review else "")
+    )
+    return decide(
+        "NO_OP", "NO_OP", task.current_state,
+        blocking=[],
+        details={
+            "consecutive_no_ops": n,
+            "step_id": step_id,
+            "message": msg,
+            "review": review,
+            "definition": "State was evaluated and no mutation was required.",
+        },
+        confidence=1.0,
+    )
+
+
+def apply_worker_step(task: SeeTask, raw_step) -> SupervisorDecision:
+    """Accept one worker step decision object (response contract / trust boundary).
+
+    Worker never mutates completion/memory directly — only via this path.
+    Rejects empty/malformed input. NO_OP = evaluated, no mutation required
+    (activity only). COMPLETE routes to request_verify.
     """
     from .contract import ContractError, parse_worker_step
 
@@ -610,13 +703,19 @@ def apply_worker_step(task: SeeTask, raw_step) -> SupervisorDecision:
             blocking=[f"task already {task.current_state}"],
         )
 
+    step_id = _new_step_id()
     try:
         step = parse_worker_step(raw_step)
     except ContractError as e:
+        _touch_activity(task)
         _append_event(task, SeeEvent(
             type="WorkerStepReported",
             detail="MALFORMED",
-            data={"error": str(e), "code": getattr(e, "code", "MALFORMED_STEP")},
+            data={
+                "step_id": step_id,
+                "error": str(e),
+                "code": getattr(e, "code", "MALFORMED_STEP"),
+            },
         ))
         task.worker_feedback = (
             f"Response contract failed: {e}. "
@@ -626,10 +725,10 @@ def apply_worker_step(task: SeeTask, raw_step) -> SupervisorDecision:
         return decide(
             "RETRY", "MALFORMED_STEP", task.current_state,
             blocking=[str(e)],
-            details={"contract": "failed"},
+            details={"contract": "failed", "step_id": step_id},
         )
 
-    # Attach any evidence declared on the step
+    # Attach any evidence declared on the step (progress via EvidenceAdded)
     for item in step.evidence:
         if not isinstance(item, dict):
             continue
@@ -651,25 +750,31 @@ def apply_worker_step(task: SeeTask, raw_step) -> SupervisorDecision:
             },
         ))
 
-    reason = step.reason or step.explanation or ""
+    message = step.message_text()
     if step.action == "NO_OP":
-        return supervisor_action(task, "NO_OP", reason=reason or "No changes required.")
+        return _handle_no_op(task, message=message or "No changes required.")
 
+    # Non-NO_OP steps: reset accumulation; activity at minimum
+    task.consecutive_no_ops = 0
+    _touch_activity(task)
+
+    step_payload = step.to_dict()
+    step_payload["step_id"] = step_id
     _append_event(task, SeeEvent(
         type="WorkerStepReported",
         detail=step.action,
-        data=step.to_dict(),
+        data=step_payload,
     ))
 
     if step.action == "COMPLETE":
-        # Worker requests verification — never silent COMPLETE without evidence check
         return request_verify(task)
     if step.action in ("ABORT", "REPLAN", "ASK_USER", "STALL", "RETRY", "CONTINUE"):
-        return supervisor_action(task, step.action, reason=reason)
+        return supervisor_action(task, step.action, reason=message)
 
     return decide(
         "RETRY", "MALFORMED_STEP", task.current_state,
         blocking=[f"unhandled worker action {step.action!r}"],
+        details={"step_id": step_id},
     )
 
 
@@ -693,14 +798,19 @@ def worker_brief(task: SeeTask) -> str:
         lines.append(f"Supervisor: {task.worker_feedback}")
     if task.current_state == "STALLED":
         lines.append(f"Stalled: {task.stall_reason or 'unknown'}")
+    if task.consecutive_no_ops:
+        lines.append(
+            f"Consecutive NO_OP: {task.consecutive_no_ops} "
+            f"(stall at {NO_OP_STALL_AT}; NO_OP is evaluation not progress)"
+        )
     lines.append(
         "When criteria have evidence, request verification (do not declare success yourself)."
     )
     lines.append(
         "Response contract: every supervised step ends with one decision via "
-        "see_report_step (action required). Use action=NO_OP when nothing to do "
-        "this step — never return empty/null. Actions: CONTINUE|RETRY|REPLAN|"
-        "ASK_USER|STALL|ABORT|COMPLETE|NO_OP."
+        "see_report_step (action required). NO_OP means 'state evaluated; no "
+        "mutation required' — not empty and not progress. Never return empty/null. "
+        "Actions: CONTINUE|RETRY|REPLAN|ASK_USER|STALL|ABORT|COMPLETE|NO_OP."
     )
     return "\n".join(lines)
 

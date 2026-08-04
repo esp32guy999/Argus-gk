@@ -68,8 +68,13 @@ def main() -> int:
         "confidence": 1.0,
         "evidence": [],
     })
-    assert step.action == "CONTINUE" and "Nothing" in step.reason
-    print("PASS: decision/explanation aliases")
+    assert step.action == "CONTINUE" and "Nothing" in step.message_text()
+    step = parse_worker_step({
+        "action": "NO_OP",
+        "message": "Configuration already satisfies requirements.",
+    })
+    assert step.message.startswith("Configuration")
+    print("PASS: decision/explanation/message aliases")
 
     step = assert_step_result('{"action":"RETRY","code":"TEMPORARY_FAILURE"}')
     assert step.action == "RETRY"
@@ -80,15 +85,57 @@ def main() -> int:
     engine.accept_plan(task)
     assert task.current_state == "EXECUTING"
 
-    dec = engine.apply_worker_step(task, no_op_step())
+    prog_before = task.last_progress_ts
+    act_before = task.last_activity_ts
+    import time as _t
+    _t.sleep(0.02)
+    dec = engine.apply_worker_step(task, no_op_step(
+        "Configuration already satisfies requirements."
+    ))
     assert dec.action == "NO_OP" and dec.code == "NO_OP", dec
     assert task.current_state == "EXECUTING"
-    assert any(e.type == "WorkerStepReported" for e in task.event_log)
-    print("PASS: apply_worker_step NO_OP keeps EXECUTING")
+    assert task.consecutive_no_ops == 1
+    assert task.last_progress_ts == prog_before, "NO_OP must not update progress"
+    assert task.last_activity_ts >= act_before
+    assert any(e.type == "WorkerStepReported" and e.data.get("step_id")
+               for e in task.event_log)
+    assert dec.details.get("consecutive_no_ops") == 1
+    print("PASS: NO_OP activity-only, step_id, consecutive count")
 
-    dec = engine.apply_worker_step(task, None)
+    # Accumulation: stall after threshold
+    engine.NO_OP_STALL_AT = 3
+    engine.NO_OP_REVIEW_AT = 2
+    task.consecutive_no_ops = 0
+    for i in range(2):
+        d = engine.apply_worker_step(task, no_op_step(f"still ok {i}"))
+        assert d.action == "NO_OP", d
+    assert task.consecutive_no_ops == 2
+    assert engine.apply_worker_step(task, no_op_step("third")).action == "STALL"
+    assert task.current_state == "STALLED"
+    print("PASS: NO_OP accumulation → STALL")
+
+    # Reset threshold for rest of suite
+    engine.NO_OP_STALL_AT = 11
+    engine.NO_OP_REVIEW_AT = 6
+
+    t_mal = engine.create_task("mal", success_criteria=["x"])
+    engine.accept_plan(t_mal)
+    dec = engine.apply_worker_step(t_mal, None)
     assert dec.action == "RETRY" and dec.code == "MALFORMED_STEP", dec
     print("PASS: null step → RETRY MALFORMED_STEP (not success)")
+
+    # Progress event resets NO_OP streak
+    t_p = engine.create_task("prog", success_criteria=["x"])
+    engine.accept_plan(t_p)
+    engine.apply_worker_step(t_p, no_op_step())
+    engine.apply_worker_step(t_p, no_op_step())
+    assert t_p.consecutive_no_ops == 2
+    engine.apply_event(t_p, SeeEvent(
+        type="CheckpointReached", detail="moved",
+        data={"checklist_item": "x"},
+    ))
+    assert t_p.consecutive_no_ops == 0
+    print("PASS: real progress resets consecutive_no_ops")
 
     # COMPLETE without evidence still VERIFY_FAILED
     dec = engine.apply_worker_step(task, {
