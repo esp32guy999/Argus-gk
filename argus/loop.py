@@ -39,7 +39,12 @@ SYSTEM_PROMPT = (
     "- Multi-step work with measurable outcomes: use SEE (see_start_task → tools → "
     "see_checkpoint / see_add_evidence → see_request_verify). Never declare success "
     "yourself on a SEE task; only the supervisor can COMPLETE after evidence. "
-    "Hollow claims ('ok', 'done') are rejected. After interruption use see_resume."
+    "Hollow claims ('ok', 'done') are rejected. After interruption use see_resume.\n"
+    "- Turn contract: every turn MUST end as one of — a real user-visible reply; "
+    "tool call(s) that do the work; intentional silence (output ONLY the token "
+    "NO_REPLY and nothing else); or a short plain statement that you are blocked. "
+    "Empty output (no text and no tools) is never valid — the harness will retry "
+    "once, then surface a blocked error."
 )
 
 # Argus's voice lives in soul.md (repo root) — editable persona, separate from the
@@ -401,12 +406,15 @@ def _gate_tools(selected, model_name: str, history=None):
     return _apply_research_isolation(kept, model_name, history)
 
 
-# ── anti-stall (2026-07-05) ─────────────────────────────────────────────
-# Two local-model failure modes the eval suite measures:
-#  1. announce-then-stop — the reply promises an action ("let me check…") but
-#     the run made zero tool calls. One corrective retry, then honesty.
-#  2. budget exhaustion that discards progress — replaced by a summary built
-#     from the tools actually called, so partial work is visible + resumable.
+# ── anti-stall (2026-07-05) + turn contract (2026-08) ───────────────────
+# Local-model failure modes the harness owns (not the model's manners):
+#  1. announce-then-stop — promises an action but zero tool calls → one nudge.
+#  2. budget exhaustion — summary of tools so far, not a silent drop.
+#  3. empty turn — no text and no tools → one empty-retry, then BLOCKED.
+#  4. NO_REPLY — intentional silence sentinel; stripped before the UI bubble.
+#
+# Terminal kinds after resolution: REPLY | NO_REPLY | TOOL_ONLY | BLOCKED.
+# EMPTY is never a successful terminal — it is always retried or escalated.
 
 _ANNOUNCE_RX = re.compile(
     r"\b(let me|i[’']ll|i will|i[’']m going to|one (moment|sec\w*)|hold on"
@@ -414,6 +422,98 @@ _ANNOUNCE_RX = re.compile(
     r"[^.!?]{0,80}[.!?…]?\s*$",
     re.IGNORECASE,
 )
+
+# Intentional silence (OpenClaw-style silent sentinel). Whole-message only.
+NO_REPLY_TOKEN = "NO_REPLY"
+_NO_REPLY_EXACT = frozenset({
+    "NO_REPLY", "NO_REPLY.", "no_reply", "no_reply.",
+    "`NO_REPLY`", "```NO_REPLY```",
+})
+
+BLOCKED_EMPTY_MSG = (
+    "I got an empty model response (no text and no tools). "
+    "Try again, or switch models if it keeps happening."
+)
+
+
+def is_no_reply(text: str | None) -> bool:
+    """True when the entire assistant text is the intentional-silence token."""
+    if text is None:
+        return False
+    t = text.strip()
+    if not t:
+        return False
+    if t in _NO_REPLY_EXACT or t.upper().strip("`").rstrip(".") == NO_REPLY_TOKEN:
+        return True
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    if len(lines) == 1:
+        core = lines[0].strip("`").rstrip(".").upper()
+        if core == NO_REPLY_TOKEN:
+            return True
+    return False
+
+
+def classify_turn(text: str | None, tool_calls: int) -> str:
+    """Classify a raw model turn before contract resolution.
+
+    Returns one of: REPLY | NO_REPLY | EMPTY | TOOL_ONLY.
+    EMPTY means no text and no tools — invalid terminal until retried.
+    """
+    n = int(tool_calls or 0)
+    t = (text or "").strip()
+    if n > 0:
+        # Tools ran: silence token alone is still a successful tool-only turn.
+        if not t or is_no_reply(t):
+            return "TOOL_ONLY"
+        return "REPLY"
+    if not t:
+        return "EMPTY"
+    if is_no_reply(t):
+        return "NO_REPLY"
+    return "REPLY"
+
+
+def empty_retry_prompt(prompt: str) -> str:
+    return (
+        prompt + "\n\n[CORRECTION: your previous turn produced no reply and no tool "
+        "calls. Empty output is not allowed. CALL tools and answer, reply with the "
+        f"result, say plainly that you are blocked, or output only {NO_REPLY_TOKEN} "
+        "if intentional silence is correct.]"
+    )
+
+
+def resolve_turn_text(text: str | None, tool_calls: int) -> tuple[str, str]:
+    """Map a classified turn to (user_visible_text, terminal_kind).
+
+    NO_REPLY → ("", "NO_REPLY") so the UI can hide the bubble.
+    EMPTY is returned as ("", "EMPTY") — caller must retry before accepting.
+    TOOL_ONLY with only NO_REPLY body → ("", "TOOL_ONLY").
+    """
+    kind = classify_turn(text, tool_calls)
+    if kind == "EMPTY":
+        return "", "EMPTY"
+    if kind == "NO_REPLY":
+        return "", "NO_REPLY"
+    if kind == "TOOL_ONLY":
+        t = (text or "").strip()
+        if not t or is_no_reply(t):
+            return "", "TOOL_ONLY"
+        return t, "TOOL_ONLY"
+    return (text or "").strip(), "REPLY"
+
+
+def public_turn_payload(text: str | None, tool_calls: int = 0) -> dict:
+    """UI/storage helper: strip NO_REPLY and flag silent turns.
+
+    Does not convert EMPTY→BLOCKED (that is the loop's job after retry).
+    """
+    visible, kind = resolve_turn_text(text, tool_calls)
+    return {
+        "text": visible,
+        "kind": kind,
+        "silent": kind == "NO_REPLY",
+        "empty": kind == "EMPTY",
+    }
 
 
 def _looks_unfinished(text: str, tool_calls: int) -> bool:
@@ -431,6 +531,43 @@ def _nudge_prompt(prompt: str, text: str) -> str:
         "you stop writing. CALL the tools now and deliver the finished result. "
         "If you genuinely cannot, say so plainly.]"
     )
+
+
+def _record_terminal(kind: str) -> None:
+    try:
+        metrics.TURN_TERMINALS.labels(kind).inc()
+        if kind == "NO_REPLY":
+            metrics.SILENT_REPLIES.inc()
+    except Exception:
+        pass
+
+
+def _apply_empty_and_silent(
+    text: str | None,
+    tool_calls: int,
+    *,
+    retried_empty: bool,
+) -> tuple[str, str]:
+    """After optional empty-retry: return (visible_text, terminal_kind).
+
+    If still EMPTY after a retry was already done, escalate to BLOCKED.
+    """
+    visible, kind = resolve_turn_text(text, tool_calls)
+    if kind == "EMPTY":
+        if retried_empty:
+            try:
+                metrics.EMPTY_RETRIES.labels("blocked").inc()
+            except Exception:
+                pass
+            _record_terminal("BLOCKED")
+            return BLOCKED_EMPTY_MSG, "BLOCKED"
+        # Caller should retry (and should have counted EMPTY_TURNS at detection).
+        return "", "EMPTY"
+    if kind == "NO_REPLY":
+        _record_terminal("NO_REPLY")
+        return "", "NO_REPLY"
+    _record_terminal(kind)
+    return visible, kind
 
 
 def _budget_summary(turn_budget: int, called: list[str]) -> str:
@@ -567,7 +704,42 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
                 async for text in result2.stream_text():
                     final = f"{final}\n\n{text}"
                     yield final
-        metrics.AGENT_TURNS.labels("ok").inc()
+        # Turn contract: empty → one retry → BLOCKED; NO_REPLY → silent strip.
+        retried_empty = False
+        if anti_stall and classify_turn(final, len(called)) == "EMPTY":
+            metrics.EMPTY_TURNS.inc()
+            sink("empty", "retry", 0)
+            retried_empty = True
+            final = ""
+            async with agent.run_stream(
+                empty_retry_prompt(prompt), message_history=message_history,
+                usage_limits=limits, model_settings=settings,
+            ) as result3:
+                async for text in result3.stream_text():
+                    final = text
+                    yield final
+            if classify_turn(final, len(called)) != "EMPTY":
+                try:
+                    metrics.EMPTY_RETRIES.labels("recovered").inc()
+                except Exception:
+                    pass
+        visible, kind = _apply_empty_and_silent(
+            final, len(called), retried_empty=retried_empty,
+        )
+        if kind == "EMPTY":
+            # anti_stall off, or empty never retried — still never leave silent void
+            visible, kind = BLOCKED_EMPTY_MSG, "BLOCKED"
+            _record_terminal("BLOCKED")
+        final = visible
+        if kind == "NO_REPLY":
+            sink("silent", NO_REPLY_TOKEN, 0)
+            yield ""  # clear any partial NO_REPLY that streamed into the bubble
+        elif kind == "BLOCKED":
+            sink("blocked", "empty_turn", 0)
+            yield final
+        elif kind == "TOOL_ONLY" and not final:
+            yield ""  # tools ran; strip a lone NO_REPLY body if streamed
+        metrics.AGENT_TURNS.labels("ok" if kind != "BLOCKED" else "blocked").inc()
         # F1: orchestrator memory policy (cold candidates only)
         try:
             from . import memory_policy as mp
@@ -591,6 +763,116 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
         metrics.TASK_DURATION.observe(time.perf_counter() - start)
 
 
+def _finish_turn_text(
+    output: str | None,
+    called: list[str],
+    *,
+    prompt: str,
+    agent: Agent,
+    message_history,
+    limits,
+    settings,
+    sink,
+    anti_stall: bool,
+    sync: bool = True,
+) -> str:
+    """Shared post-pass for run/run_async: announce nudge, empty retry, NO_REPLY strip."""
+    if anti_stall and _looks_unfinished(output or "", len(called)):
+        metrics.ANNOUNCE_NUDGES.inc()
+        sink("nudge", "announce-without-acting", 0)
+        if sync:
+            result = agent.run_sync(
+                _nudge_prompt(prompt, output or ""),
+                message_history=message_history,
+                usage_limits=limits, model_settings=settings,
+            )
+            output = result.output
+        else:
+            raise RuntimeError("_finish_turn_text sync-only for announce path")
+
+    retried_empty = False
+    if anti_stall and classify_turn(output, len(called)) == "EMPTY":
+        metrics.EMPTY_TURNS.inc()
+        sink("empty", "retry", 0)
+        retried_empty = True
+        if sync:
+            result = agent.run_sync(
+                empty_retry_prompt(prompt),
+                message_history=message_history,
+                usage_limits=limits, model_settings=settings,
+            )
+            output = result.output
+        if classify_turn(output, len(called)) != "EMPTY":
+            try:
+                metrics.EMPTY_RETRIES.labels("recovered").inc()
+            except Exception:
+                pass
+
+    visible, kind = _apply_empty_and_silent(
+        output, len(called), retried_empty=retried_empty,
+    )
+    if kind == "EMPTY":
+        visible, kind = BLOCKED_EMPTY_MSG, "BLOCKED"
+        _record_terminal("BLOCKED")
+    if kind == "NO_REPLY":
+        sink("silent", NO_REPLY_TOKEN, 0)
+    elif kind == "BLOCKED":
+        sink("blocked", "empty_turn", 0)
+    return visible
+
+
+async def _finish_turn_text_async(
+    output: str | None,
+    called: list[str],
+    *,
+    prompt: str,
+    agent: Agent,
+    message_history,
+    limits,
+    settings,
+    sink,
+    anti_stall: bool,
+) -> str:
+    if anti_stall and _looks_unfinished(output or "", len(called)):
+        metrics.ANNOUNCE_NUDGES.inc()
+        sink("nudge", "announce-without-acting", 0)
+        result = await agent.run(
+            _nudge_prompt(prompt, output or ""),
+            message_history=message_history,
+            usage_limits=limits, model_settings=settings,
+        )
+        output = result.output
+
+    retried_empty = False
+    if anti_stall and classify_turn(output, len(called)) == "EMPTY":
+        metrics.EMPTY_TURNS.inc()
+        sink("empty", "retry", 0)
+        retried_empty = True
+        result = await agent.run(
+            empty_retry_prompt(prompt),
+            message_history=message_history,
+            usage_limits=limits, model_settings=settings,
+        )
+        output = result.output
+        if classify_turn(output, len(called)) != "EMPTY":
+            try:
+                metrics.EMPTY_RETRIES.labels("recovered").inc()
+            except Exception:
+                pass
+
+    visible, kind = _apply_empty_and_silent(
+        output, len(called), retried_empty=retried_empty,
+    )
+    if kind == "EMPTY":
+        visible, kind = BLOCKED_EMPTY_MSG, "BLOCKED"
+        _record_terminal("BLOCKED")
+    if kind == "NO_REPLY":
+        sink("silent", NO_REPLY_TOKEN, 0)
+    elif kind == "BLOCKED":
+        sink("blocked", "empty_turn", 0)
+    return visible
+
+
 def run(registry: Registry, prompt: str, *, model_name: str = "local",
         base_url: str = "http://localhost:4000/v1", api_key: str = "none",
         turn_budget: int = 8,
@@ -612,14 +894,12 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
     try:
         result = agent.run_sync(prompt, message_history=message_history,
                                 usage_limits=limits, model_settings=settings)
-        output = result.output
-        if anti_stall and _looks_unfinished(output, len(called)):
-            metrics.ANNOUNCE_NUDGES.inc()
-            sink("nudge", "announce-without-acting", 0)
-            result = agent.run_sync(_nudge_prompt(prompt, output),
-                                    message_history=message_history,
-                                    usage_limits=limits, model_settings=settings)
-            output = result.output
+        output = _finish_turn_text(
+            result.output, called,
+            prompt=prompt, agent=agent, message_history=message_history,
+            limits=limits, settings=settings, sink=sink, anti_stall=anti_stall,
+            sync=True,
+        )
         metrics.AGENT_TURNS.labels("ok").inc()
         return output
     except UsageLimitExceeded:                        # turn budget hit -> report progress
@@ -658,14 +938,11 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     try:
         result = await agent.run(prompt, message_history=message_history,
                                  usage_limits=limits, model_settings=settings)
-        output = result.output
-        if anti_stall and _looks_unfinished(output, len(called)):
-            metrics.ANNOUNCE_NUDGES.inc()
-            sink("nudge", "announce-without-acting", 0)
-            result = await agent.run(_nudge_prompt(prompt, output),
-                                     message_history=message_history,
-                                     usage_limits=limits, model_settings=settings)
-            output = result.output
+        output = await _finish_turn_text_async(
+            result.output, called,
+            prompt=prompt, agent=agent, message_history=message_history,
+            limits=limits, settings=settings, sink=sink, anti_stall=anti_stall,
+        )
         metrics.AGENT_TURNS.labels("ok").inc()
         return output
     except UsageLimitExceeded:

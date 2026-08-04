@@ -287,6 +287,8 @@ async def chat(request: Request):
     async def run_chat():
         final = ""
         tools_for_policy: list[str] = []
+        # Loop sink phases: silent (NO_REPLY) / blocked (empty after retry).
+        turn_flags = {"silent": False, "blocked": False}
         try:
             if model_name == "claude-code":
                 # Persistent per-conversation CC session keeps its own context, so we
@@ -321,6 +323,10 @@ async def chat(request: Request):
                 def on_event_local(phase, detail, step):
                     if phase == "tool" and detail:
                         tools_for_policy.append(detail)
+                    if phase == "silent":
+                        turn_flags["silent"] = True
+                    if phase == "blocked":
+                        turn_flags["blocked"] = True
                     on_event(phase, detail, step)
                 source = loop.stream_run(
                     registry, model_message,
@@ -363,10 +369,31 @@ async def chat(request: Request):
                     )
                 except Exception:
                     pass
+            # Turn contract at the publish boundary: strip residual NO_REPLY text.
+            # Local stream_run already resolved empty→retry→BLOCKED and may have set
+            # turn_flags["silent"] via the sink (empty final text alone is not NO_REPLY).
+            n_tools = len(tools_for_policy)
+            payload = loop.public_turn_payload(final, n_tools)
+            if payload.get("silent"):
+                turn_flags["silent"] = True
+            if turn_flags["silent"]:
+                final = ""
+                publish("bubble_update", {"id": bubble_id, "content": ""})
+            else:
+                final = payload["text"] if payload.get("kind") != "EMPTY" else (final or "")
+            terminal = "NO_REPLY" if turn_flags["silent"] else (
+                "BLOCKED" if turn_flags["blocked"] else payload.get("kind")
+            )
             row = await asyncio.to_thread(
                 store.add_message, conversation_id, "assistant", final, model_name)
-            publish("bubble_done", {"id": bubble_id, "db_id": row["id"],
-                                    "user_id": user_row["id"], "conversation_id": conversation_id})
+            publish("bubble_done", {
+                "id": bubble_id,
+                "db_id": row["id"],
+                "user_id": user_row["id"],
+                "conversation_id": conversation_id,
+                "silent": turn_flags["silent"],
+                "terminal": terminal,
+            })
         except asyncio.CancelledError:
             if final:  # persist whatever streamed before cancel so memory stays consistent
                 await asyncio.to_thread(

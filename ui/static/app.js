@@ -1699,6 +1699,17 @@ function connectEvents() {
       }
       if(window._dbgLog) window._dbgLog('DONE: id=' + data.id + ' pending=' + state.pendingBubbleId + ' err=' + (data.error || ''));
       if (data.id !== state.pendingBubbleId) return;
+      // Turn contract: intentional silence (NO_REPLY) — remove the empty assistant bubble.
+      if (data.silent && state.pendingMsgEl) {
+        try { state.pendingMsgEl.remove(); } catch {}
+        state.pendingMsgEl = null;
+        if (state.statusPill) state.statusPill._collapse();
+        state.pendingDbId   = data.db_id   ?? null;
+        state.pendingUserId = data.user_id ?? null;
+        state.pendingBubbleId = null;
+        if (state.pendingResolve) state.pendingResolve();
+        return;
+      }
       // If the backend signaled an error and no content streamed, surface it in the bubble.
       if (data.error && state.pendingMsgEl && !state.pendingMsgEl.textContent.trim()) {
         state.pendingMsgEl.textContent = `[Error: ${data.error}]`;

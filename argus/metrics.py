@@ -50,6 +50,23 @@ NO_PROGRESS = Counter("argus_agent_no_progress_total", "No-progress give-ups")
 ANNOUNCE_NUDGES = Counter(
     "argus_agent_announce_nudges_total",
     "Announce-without-acting corrections (reply promised action, called no tool)")
+# Turn contract (OpenClaw-inspired): empty is never a valid terminal outcome.
+EMPTY_TURNS = Counter(
+    "argus_agent_empty_turns_total",
+    "Turns with no text and no tool calls (before/without recovery)")
+EMPTY_RETRIES = Counter(
+    "argus_agent_empty_retries_total",
+    "Empty-turn corrective retries",
+    ["outcome"],  # recovered | blocked
+)
+SILENT_REPLIES = Counter(
+    "argus_agent_silent_replies_total",
+    "Intentional silence (NO_REPLY terminal — no user-visible bubble text)")
+TURN_TERMINALS = Counter(
+    "argus_agent_turn_terminal_total",
+    "Final turn terminal classification after contract resolution",
+    ["kind"],  # REPLY | NO_REPLY | TOOL_ONLY | BLOCKED
+)
 TASK_DURATION = Histogram("argus_agent_task_duration_seconds", "Task wall-clock seconds")
 TOOLS_SELECTED = Histogram(
     "argus_tools_selected_per_turn", "Tools exposed to the model per task",
