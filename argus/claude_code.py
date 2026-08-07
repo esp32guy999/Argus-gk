@@ -209,10 +209,13 @@ class CCSession:
             self.proc.stdin.write((json.dumps(payload) + "\n").encode())
             await self.proc.stdin.drain()
             acc = ""
+            from .stream_util import merge_stream_text
             while True:
                 kind, data = await self._q.get()
                 if kind == "text":
-                    acc += ("\n\n" if acc else "") + data
+                    # CC often re-sends full cumulative text blocks; naive += echos
+                    # the entire answer. Merge handles delta vs snapshot vs redelivery.
+                    acc = merge_stream_text(acc, data if isinstance(data, str) else str(data))
                     yield acc
                 elif kind == "event":
                     yield ("__event__", data)

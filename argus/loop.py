@@ -701,8 +701,20 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
                 _nudge_prompt(prompt, final), message_history=message_history,
                 usage_limits=limits, model_settings=settings,
             ) as result2:
+                # Pass-2 stream_text is cumulative for the *nudge* only. Do not
+                # fold cumulative snapshots as if they were new paragraphs, and
+                # skip if the model just re-emitted the same answer (echo).
+                first = final
                 async for text in result2.stream_text():
-                    final = f"{final}\n\n{text}"
+                    if not text:
+                        continue
+                    if text == first or (first and text.startswith(first) and text != first):
+                        # restarted with same prefix — show nudge answer only
+                        final = text if text != first else first
+                    elif first and not text.startswith(first):
+                        final = first + "\n\n" + text
+                    else:
+                        final = text
                     yield final
         # Turn contract: empty → one retry → BLOCKED; NO_REPLY → silent strip.
         retried_empty = False

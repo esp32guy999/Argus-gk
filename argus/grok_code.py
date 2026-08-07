@@ -231,8 +231,8 @@ class GrokSession:
                 limit=2 ** 26,
             )
             acc = ""
-            saw_delta = False
             stderr_buf: list[bytes] = []
+            from .stream_util import merge_stream_text
 
             async def _drain_err():
                 while proc.stderr:
@@ -260,15 +260,20 @@ class GrokSession:
                             self.session_id = data
                             _save_sid(self.cid, data)
                         elif kind == "text_delta":
-                            saw_delta = True
-                            acc += data
+                            # Token deltas are suffixes — append. (Full re-snapshots
+                            # that wrongly arrive as deltas are rare; merge via
+                            # prefix check when piece looks like a full rewrite.)
+                            piece = data if isinstance(data, str) else str(data)
+                            if piece and acc and piece.startswith(acc):
+                                acc = piece
+                            else:
+                                acc = acc + piece
                             yield acc
                         elif kind == "text":
-                            # Whole block: replace if we never saw deltas (or it's longer)
-                            if not saw_delta or len(data) >= len(acc):
-                                acc = data
-                            else:
-                                acc = (acc + "\n\n" + data) if acc else data
+                            # Whole block / re-delivery — never blind-append (echo bug).
+                            acc = merge_stream_text(
+                                acc, data if isinstance(data, str) else str(data)
+                            )
                             yield acc
                         elif kind == "event":
                             yield ("__event__", data)
