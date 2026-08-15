@@ -7,6 +7,7 @@ import os, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["ARGUS_DB"] = os.path.join(tempfile.mkdtemp(), "see-s3.db")
+os.environ["ARGUS_SS"] = "0"  # isolate SEE planner from SS shadow
 
 
 def main() -> int:

@@ -26,6 +26,7 @@ os.environ["ARGUS_SEE_IDLE_SEC"] = "5"
 os.environ["ARGUS_SEE_LOOP_REPEAT"] = "3"
 os.environ["ARGUS_MEMORY_IMPORTANCE_MIN"] = "45"
 os.environ["ARGUS_MEMORY_AUTO_MIN"] = "65"
+os.environ["ARGUS_SS"] = "0"  # isolate SEE acceptance from SS shadow
 
 import argus.storage as storage
 storage._STORE = None

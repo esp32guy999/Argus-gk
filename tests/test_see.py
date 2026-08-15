@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["ARGUS_DB"] = os.path.join(tempfile.mkdtemp(), "see.db")
 os.environ["ARGUS_SEE_IDLE_SEC"] = "2"  # short idle for stall test
 os.environ["ARGUS_SEE_LOOP_REPEAT"] = "3"
+os.environ["ARGUS_SS"] = "0"  # isolate SEE contract from SS shadow
 
 
 def main() -> int:

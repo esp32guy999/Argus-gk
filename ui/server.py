@@ -134,10 +134,20 @@ TASKS: Dict[str, asyncio.Task] = {}
 # fallback: the client POLLS it, so a ticking timer + current activity are always visible.
 TURN_STATUS: Dict[str, dict] = {}
 
-def _turn_begin(cid, bubble_id):
+def _turn_begin(cid, bubble_id, model_name: str | None = None, base_url: str | None = None):
     TURN_STATUS[cid] = {"active": True, "bubble_id": bubble_id,
                         "started": time.time(), "last_activity": time.time(),
                         "phase": "starting", "detail": ""}
+    # SS generation pulse — every seated model, including Grok / CC / externals.
+    try:
+        from argus.ss.sensors import begin_turn
+        url = base_url
+        if not url and model_name:
+            ext = model_config.external(model_name)
+            url = (ext or {}).get("base_url") if ext else MODEL_URL
+        begin_turn(model_name or "", base_url=url or MODEL_URL)
+    except Exception:
+        pass
 
 def _turn_touch(cid, phase=None, detail=None):
     s = TURN_STATUS.get(cid)
@@ -148,11 +158,21 @@ def _turn_touch(cid, phase=None, detail=None):
         s["phase"] = phase
     if detail is not None:
         s["detail"] = detail
+    try:
+        from argus.ss.sensors import mark_activity
+        mark_activity()
+    except Exception:
+        pass
 
 def _turn_end(cid):
     s = TURN_STATUS.get(cid)
     if s:
         s["active"] = False
+    try:
+        from argus.ss.sensors import end_turn
+        end_turn()
+    except Exception:
+        pass
 
 app = FastAPI()
 # Expose harness metrics on the LIVE server (the CLI path called metrics.serve(); the
@@ -270,7 +290,7 @@ async def chat(request: Request):
     else:
         model_message = message
 
-    _turn_begin(conversation_id, bubble_id)
+    _turn_begin(conversation_id, bubble_id, model_name=model_name)
 
     # Load prior turns (memory) BEFORE persisting this one, then record the user msg.
     history = await asyncio.to_thread(store.model_history, conversation_id, HISTORY_TURNS,
@@ -506,7 +526,8 @@ async def roundtable(request: Request):
                 "speaker": ROUNDTABLE_MODELS[t]["speaker"]} for t in targets]
 
     async def run_round():
-        _turn_begin(conversation_id, bubbles[0]["id"])
+        _turn_begin(conversation_id, bubbles[0]["id"],
+                    model_name=bubbles[0].get("model"))
         try:
             for b in bubbles:
                 spec = ROUNDTABLE_MODELS[b["target"]]

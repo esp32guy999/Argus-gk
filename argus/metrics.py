@@ -84,6 +84,13 @@ SEE_STALLS = Counter("argus_see_stalls_total", "SEE stall/loop detections")
 SEE_EVENTS = Counter("argus_see_events_total", "SEE events ingested", ["type"])
 SEE_TASKS = Counter("argus_see_task_state_saves_total", "SEE task saves by state", ["state"])
 
+# --- SUPER-SEE (shadow supervisor; v1 has no authority) ---
+SS_DECISIONS = Counter(
+    "argus_ss_decisions_total",
+    "SS shadow decisions (never applied to SEE state in v1)",
+    ["action", "source"],  # source: rules | model | fallback
+)
+
 
 def serve(port: int = 9101) -> None:
     """Start the harness metrics endpoint (separate from LiteLLM's /metrics)."""

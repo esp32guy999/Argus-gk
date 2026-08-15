@@ -7,6 +7,8 @@ with tool lanes, SQLite storage, and a forked-Forge UI. See `SPEC.md` and `docs/
 how to run the tests (no pytest — standalone scripts), and the conventions/rules.
 **Then catch up:** read the latest `docs/session-*.md` and `git log --oneline -25` —
 the running log of what changed and the hard-won gotchas.
+**SUPER-SEE (SS):** follow `docs/ROADMAP-ss-v1.md`. Shadow supervisor on top of SEE;
+model-agnostic worker; sensors from D0; no authority in v1.
 
 ## Scope control (stay on task)
 

@@ -12,6 +12,19 @@ from typing import Any
 from . import engine
 from .models import SeeEvent, SeeTask, SupervisorDecision, decide
 
+
+def _ss_shadow(task: SeeTask, dec: SupervisorDecision) -> SupervisorDecision:
+    """Attach an SS shadow decision. Never mutates task state (v1)."""
+    try:
+        from argus.ss import enabled, observe_task
+        if not enabled():
+            return dec
+        ss = observe_task(task)
+        dec.details["ss_shadow"] = ss.to_dict()
+    except Exception:
+        pass
+    return dec
+
 # Active task per conversation (in-process; durable id still in DB)
 _CONV_TASK: dict[str, str] = {}
 _LOCK = threading.Lock()
@@ -123,7 +136,7 @@ def on_event(task_id: str, event: SeeEvent | dict) -> SupervisorDecision:
             metrics.SEE_STALLS.inc()
     except Exception:
         pass
-    return dec
+    return _ss_shadow(task, dec)
 
 
 def on_tool(
@@ -191,7 +204,7 @@ def tick(task_id: str) -> SupervisorDecision:
     if dec.new_state == "STALLED" and prev != "STALLED":
         _notify_see(task, "SEE stalled",
                     f"{task.goal[:80]}\n{dec.feedback or task.stall_reason or ''}")
-    return dec
+    return _ss_shadow(task, dec)
 
 
 def request_verify(task_id: str) -> SupervisorDecision:
@@ -210,7 +223,7 @@ def request_verify(task_id: str) -> SupervisorDecision:
             metrics.SEE_COMPLETED.inc()
         except Exception:
             pass
-    return dec
+    return _ss_shadow(task, dec)
 
 
 def action(task_id: str, action_name: str, *, reason: str = "") -> SupervisorDecision:
@@ -255,7 +268,7 @@ def report_step(task_id: str, step: dict | str) -> SupervisorDecision:
     elif dec.action == "ABORT" or dec.new_state == "ABORTED":
         _notify_see(task, "SEE task aborted",
                     f"🛑 {task.goal[:120]}\n{dec.feedback or ''}\n`{task.id}`")
-    return dec
+    return _ss_shadow(task, dec)
 
 
 def resume(task_id: str, *, reason: str = "resume from checkpoint") -> dict:

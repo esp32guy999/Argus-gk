@@ -579,6 +579,30 @@ def _budget_summary(turn_budget: int, called: list[str]) -> str:
     )
 
 
+def _ss_begin(model_name: str, base_url: str) -> None:
+    try:
+        from argus.ss.sensors import begin_turn
+        begin_turn(model_name, backend="openai", base_url=base_url)
+    except Exception:
+        pass
+
+
+def _ss_mark() -> None:
+    try:
+        from argus.ss.sensors import mark_activity
+        mark_activity()
+    except Exception:
+        pass
+
+
+def _ss_end() -> None:
+    try:
+        from argus.ss.sensors import end_turn
+        end_turn()
+    except Exception:
+        pass
+
+
 def _make_sink(called: list[str], on_event=None, *, conversation_id: str | None = None):
     """Wrap the caller's on_event so the driver also records which tools ran
     (fuel for the nudge check and the budget summary). Forwards tool events to
@@ -674,6 +698,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     limits = UsageLimits(request_limit=turn_budget)
     settings = _thinking_settings(enable_thinking)
     final = ""
+    _ss_begin(model_name, base_url)
     # If this conversation has an active SEE task, prepend worker brief once.
     see_prefix = ""
     if conversation_id:
@@ -693,6 +718,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
         ) as result:
             async for text in result.stream_text():   # cumulative text-so-far
                 final = text
+                _ss_mark()
                 yield text
         if anti_stall and _looks_unfinished(final, len(called)):
             metrics.ANNOUNCE_NUDGES.inc()
@@ -715,6 +741,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
                         final = first + "\n\n" + text
                     else:
                         final = text
+                    _ss_mark()
                     yield final
         # Turn contract: empty → one retry → BLOCKED; NO_REPLY → silent strip.
         retried_empty = False
@@ -729,6 +756,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
             ) as result3:
                 async for text in result3.stream_text():
                     final = text
+                    _ss_mark()
                     yield final
             if classify_turn(final, len(called)) != "EMPTY":
                 try:
@@ -772,6 +800,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
         metrics.AGENT_TURNS.labels("error").inc()
         raise
     finally:
+        _ss_end()
         metrics.TASK_DURATION.observe(time.perf_counter() - start)
 
 
@@ -903,6 +932,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
     start = time.perf_counter()
     limits = UsageLimits(request_limit=turn_budget)
     settings = _thinking_settings(enable_thinking)
+    _ss_begin(model_name, base_url)
     try:
         result = agent.run_sync(prompt, message_history=message_history,
                                 usage_limits=limits, model_settings=settings)
@@ -923,6 +953,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
         metrics.AGENT_TURNS.labels("error").inc()
         raise
     finally:
+        _ss_end()
         metrics.TASK_DURATION.observe(time.perf_counter() - start)
 
 
@@ -947,6 +978,7 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     start = time.perf_counter()
     limits = UsageLimits(request_limit=turn_budget)
     settings = _thinking_settings(enable_thinking)
+    _ss_begin(model_name, base_url)
     try:
         result = await agent.run(prompt, message_history=message_history,
                                  usage_limits=limits, model_settings=settings)
@@ -966,4 +998,5 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
         metrics.AGENT_TURNS.labels("error").inc()
         raise
     finally:
+        _ss_end()
         metrics.TASK_DURATION.observe(time.perf_counter() - start)
