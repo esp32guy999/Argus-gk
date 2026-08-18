@@ -36,6 +36,11 @@ SYSTEM_PROMPT = (
     "- Prefer a tool call over guessing. Get homelab facts (IPs, ports, paths) from "
     "lookup_memory, never from memory. If a tool errors, read the message and "
     "correct your next call.\n"
+    "- glassgarden / gg / Unraid NAS: do NOT use ssh/scp (blocked on purpose). Reach it "
+    "via tools: sonarr_*/radarr_*/lidarr_*/prowlarr_* (openapi), radarr_add_movie / "
+    "sonarr_add_series (acquire), media_fs on ~/movies and ~/tv (CIFS mounts), "
+    "navidrome_*, audiobook_*, media_health_scan, media_remonitor_*. Host aliases: "
+    "glassgarden or 192.168.4.206 — HTTP APIs, not shell ssh.\n"
     "- Multi-step work with measurable outcomes: use SEE (see_start_task → tools → "
     "see_checkpoint / see_add_evidence → see_request_verify). Never declare success "
     "yourself on a SEE task; only the supervisor can COMPLETE after evidence. "
@@ -113,9 +118,9 @@ PROVIDER_BRIEF: dict[str, tuple[str, str]] = {
     "navidrome":   ("🎵 Music", "the Navidrome music library"),
     "audiobook":   ("📚 Audiobooks", "the audiobook library"),
     "media_fs":    ("🎞 Media files", "browse/manage the media library"),
-    "arr_acquire": ("📥 Acquire", "download movies / TV / music / books"),
-    "openapi":     ("🔌 APIs", "registered HTTP APIs"),
-    "shell":       ("🛠 Shell", "run shell commands"),
+    "openapi":     ("🔌 APIs", "glassgarden *arr APIs (no ssh)"),
+    "arr_acquire": ("📥 Acquire", "download movies/TV/music/books on glassgarden"),
+    "shell":       ("🛠 Shell", "local shell only — no ssh to glassgarden"),
     "code_edit":   ("✏️ Code edit", "surgical source edits"),
     "run_code":    ("🧪 Run code", "execute code in a sandbox"),
     "fs":          ("📂 Filesystem", "read/write/edit files"),

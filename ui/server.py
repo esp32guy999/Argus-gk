@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from argus.main import build_registry
 from argus import loop, metrics, model_config
 from argus.storage import get_store
+from argus.chat_client import is_inviteable, normalize_to, normalize_client_msg_id
 from prometheus_client import make_asgi_app
 import httpx
 import relogin
@@ -106,7 +107,14 @@ def _cid(value) -> str:
 # Notify via Home Assistant DIRECTLY (Argus already has HA creds) — no dependency on
 # the separate iMessage UI app on :8095, which is just a wrapper around this service.
 from argus import tasks
+from argus import pwa_presence
 NOTIFY_SERVICE = os.environ.get("ARGUS_NOTIFY_SERVICE", "notify/mobile_app_shanes_iphone")
+# Reply-ready heads-up: the Android Companion (S26 / Freya). Separate from the
+# iPhone operational buzz (model-load, watchers) so a chat toast lands on the
+# phone that actually runs the PWA.
+REPLY_NOTIFY_SERVICE = os.environ.get(
+    "ARGUS_REPLY_NOTIFY_SERVICE", "notify/mobile_app_freya")
+ARGUS_PUBLIC_URL = os.environ.get("ARGUS_PUBLIC_URL", "http://anvil:8210/")
 
 
 def _notify(title, message):
@@ -116,6 +124,34 @@ def _notify(title, message):
         httpx.post(f"{HA_URL}/api/services/{NOTIFY_SERVICE}",
                    headers={"Authorization": f"Bearer {HA_TOKEN}"},
                    json={"title": title, "message": message}, timeout=10)
+    except Exception:
+        pass
+
+
+def _notify_reply(text: str):
+    """HA heads-up on Freya when a reply is posted and the PWA is not focused."""
+    if pwa_presence.is_focused(time.time()):
+        return
+    preview = pwa_presence.preview(text)
+    if not preview or not HA_URL or not HA_TOKEN:
+        return
+    try:
+        httpx.post(
+            f"{HA_URL}/api/services/{REPLY_NOTIFY_SERVICE}",
+            headers={"Authorization": f"Bearer {HA_TOKEN}"},
+            json={
+                "title": "Argus",
+                "message": preview,
+                "data": {
+                    "ttl": 0,
+                    "priority": "high",
+                    "channel": "argus",
+                    "importance": "high",
+                    "clickAction": ARGUS_PUBLIC_URL,
+                },
+            },
+            timeout=10,
+        )
     except Exception:
         pass
 
@@ -133,11 +169,28 @@ TASKS: Dict[str, asyncio.Task] = {}
 # quiet and "thinking" becomes indistinguishable from "stalled". This dict is the robust
 # fallback: the client POLLS it, so a ticking timer + current activity are always visible.
 TURN_STATUS: Dict[str, dict] = {}
+_CHAT_LOCKS: Dict[str, asyncio.Lock] = {}
 
-def _turn_begin(cid, bubble_id, model_name: str | None = None, base_url: str | None = None):
+
+def _chat_lock(cid: str) -> asyncio.Lock:
+    lock = _CHAT_LOCKS.get(cid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CHAT_LOCKS[cid] = lock
+    return lock
+
+
+def _turn_begin(cid, bubble_id, model_name: str | None = None, base_url: str | None = None,
+                user_id=None, client_msg_id: str | None = None):
+    prev = TURN_STATUS.get(cid) or {}
+    started = prev["started"] if prev.get("active") and prev.get("started") else time.time()
     TURN_STATUS[cid] = {"active": True, "bubble_id": bubble_id,
-                        "started": time.time(), "last_activity": time.time(),
-                        "phase": "starting", "detail": ""}
+                        "started": started, "last_activity": time.time(),
+                        "phase": "starting", "detail": "",
+                        "model": model_name,
+                        "user_id": user_id if user_id is not None else prev.get("user_id"),
+                        "client_msg_id": client_msg_id if client_msg_id is not None
+                        else prev.get("client_msg_id")}
     # SS generation pulse — every seated model, including Grok / CC / externals.
     try:
         from argus.ss.sensors import begin_turn
@@ -264,11 +317,34 @@ async def sse_generator():
 @app.post("/argus/chat")
 async def chat(request: Request):
     body = await request.json()
+    from argus.chat_client import normalize_to, normalize_client_msg_id
     model_name = body.get("model") or _default_model()
     message = body.get("message", "")
     raw_attachments = body.get("attachments") or []
     conversation_id = _cid(body.get("conversation_id"))
     bubble_id = uuid.uuid4().hex
+    client_msg_id = normalize_client_msg_id(body.get("client_msg_id"))
+    to = normalize_to(body, model_name) or [model_name]
+    turn_now = TURN_STATUS.get(conversation_id) or {}
+    decision = await asyncio.to_thread(
+        store.resolve_chat_send, conversation_id, client_msg_id, to,
+        turn_active=bool(turn_now.get("active")),
+        turn_client_msg_id=turn_now.get("client_msg_id"))
+    if decision["action"] == "replay_active":
+        return JSONResponse({
+            "id": turn_now.get("bubble_id") or bubble_id,
+            "user_id": (decision["user"] or {}).get("id"),
+            "replay": True, "to": to,
+        })
+    if decision["action"] == "replay_done":
+        return JSONResponse({
+            "id": None,
+            "user_id": (decision["user"] or {}).get("id"),
+            "replay": True, "done": True, "to": to,
+        })
+    # Join addressed models to the room (does not wipe history).
+    await asyncio.to_thread(store.add_participants, conversation_id, to, addressed=to)
+    generate_models = decision["missing"] or to
 
     # Materialise every attachment to disk — never silently drop. Hard failures
     # (size / decode) return 400 so the UI can show them; soft paths always leave
@@ -290,13 +366,18 @@ async def chat(request: Request):
     else:
         model_message = message
 
-    _turn_begin(conversation_id, bubble_id, model_name=model_name)
-
-    # Load prior turns (memory) BEFORE persisting this one, then record the user msg.
+    # Load prior turns BEFORE persisting a NEW user msg. Resume reuses the row.
     history = await asyncio.to_thread(store.model_history, conversation_id, HISTORY_TURNS,
-                                      _history_budget(model_name))
-    user_row = await asyncio.to_thread(
-        store.add_message, conversation_id, "user", store_text, None)
+                                      _history_budget(generate_models[0] if generate_models else model_name))
+    if decision["action"] == "resume" and decision.get("user"):
+        user_row = decision["user"]
+    else:
+        user_row = await asyncio.to_thread(
+            store.add_message, conversation_id, "user", store_text, None,
+            client_msg_id)
+
+    _turn_begin(conversation_id, bubble_id, model_name=generate_models[0] if generate_models else model_name,
+                user_id=user_row["id"], client_msg_id=client_msg_id)
 
     def on_event(phase, detail, step):
         # Live progress for the UI status pill (tool calls, loop caught).
@@ -310,6 +391,11 @@ async def chat(request: Request):
         # Loop sink phases: silent (NO_REPLY) / blocked (empty after retry).
         turn_flags = {"silent": False, "blocked": False}
         try:
+          for model_name in generate_models:
+            final = ""
+            tools_for_policy = []
+            turn_flags = {"silent": False, "blocked": False}
+            _turn_touch(conversation_id, "starting", model_name)
             if model_name == "claude-code":
                 # Persistent per-conversation CC session keeps its own context, so we
                 # send only the new message (not the full history).
@@ -359,13 +445,22 @@ async def chat(request: Request):
             async for content in source:
                 if isinstance(content, tuple) and content[0] == "__event__":
                     ev = content[1]
-                    # Keep the always-on status pill driven on tool use (as before)...
-                    if ev.get("kind") == "tool_use":
+                    kind = ev.get("kind")
+                    # Heartbeat TURN_STATUS on every agent signal so the poll-driven
+                    # working pill / status pill don't go "stalled" during thinking or
+                    # long tools (SSE alone is lossy on iOS).
+                    if kind == "tool_use":
                         name = ev.get("name", "tool")
                         on_event("tool", name, 0)
                         if model_name in ("claude-code", "grok"):
                             tools_for_policy.append(name)
-                    elif ev.get("kind") == "done":   # OAuth-agent metric: turn wall-clock
+                    elif kind == "thinking":
+                        on_event("thinking", "", 0)
+                    elif kind == "tool_result":
+                        on_event("tool", "result", 0)
+                    elif kind == "heartbeat":
+                        on_event("working", ev.get("text") or "still working", 0)
+                    elif kind == "done":   # OAuth-agent metric: turn wall-clock
                         if ev.get("duration_ms"):
                             metrics.CC_DURATION.observe(ev["duration_ms"] / 1000)
                     # ...and forward the rich activity to the tap-to-expand panel
@@ -414,6 +509,9 @@ async def chat(request: Request):
                 "silent": turn_flags["silent"],
                 "terminal": terminal,
             })
+            if final and not turn_flags["silent"]:
+                await asyncio.to_thread(_notify_reply, final)
+          # end for generate_models
         except asyncio.CancelledError:
             if final:  # persist whatever streamed before cancel so memory stays consistent
                 await asyncio.to_thread(
@@ -429,7 +527,7 @@ async def chat(request: Request):
     task = asyncio.create_task(run_chat())
     TASKS[bubble_id] = task
 
-    return JSONResponse({"id": bubble_id})
+    return JSONResponse({"id": bubble_id, "user_id": user_row["id"], "to": generate_models})
 
 
 # ── Roundtable ──────────────────────────────────────────────────────────────
@@ -560,11 +658,26 @@ async def roundtable(request: Request):
                                         "user_id": user_row["id"],
                                         "conversation_id": conversation_id,
                                         "speaker": spec["speaker"]})
+                if final:
+                    await asyncio.to_thread(_notify_reply, final)
         finally:
             _turn_end(conversation_id)
 
     asyncio.create_task(run_round())
     return JSONResponse({"user_id": user_row["id"], "bubbles": bubbles})
+
+
+@app.post("/argus/presence")
+async def pwa_presence_report(request: Request):
+    """Client visibility heartbeat. keepalive:true on hide is what makes
+    'PWA minimized → toast on reply' work — JS is frozen after that."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    visible = bool((body or {}).get("visible"))
+    pwa_presence.note(visible, time.time())
+    return JSONResponse({"ok": True, "focused": pwa_presence.is_focused(time.time())})
 
 
 @app.get("/argus/turn_status")
@@ -581,6 +694,10 @@ async def turn_status(conversation_id: str | None = None):
         "since_activity": round(now - s["last_activity"]),
         "phase": s.get("phase", ""),
         "detail": s.get("detail", ""),
+        "bubble_id": s.get("bubble_id"),
+        "user_id": s.get("user_id"),
+        "client_msg_id": s.get("client_msg_id"),
+        "model": s.get("model"),
     })
 
 @app.post("/api/cancel/{bubble_id}")
@@ -889,24 +1006,51 @@ async def make_app_icon(slug: str):
 
 @app.get("/argus/history")
 async def get_history(conversation_id: str | None = None, limit: int = 100,
-                     before_id: int | None = None):
+                     before_id: int | None = None, after_id: int | None = None):
     msgs = await asyncio.to_thread(
-        store.get_messages, _cid(conversation_id), limit, before_id)
+        store.get_messages, _cid(conversation_id), limit, before_id, after_id)
     return JSONResponse(msgs)
 
 @app.post("/argus/conversations")
 async def create_conversation(request: Request):
-    # The "New chat" button POSTed here and got 405 (no handler), so it silently fell back
-    # to the default thread — you could never actually start fresh. Conversations are
-    # implicit (born on first message), so "new" = a fresh id. Crucially, a new
-    # conversation_id also means a FRESH claude-code session (no carried-over context = fast).
-    return JSONResponse({"id": uuid.uuid4().hex})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    cid = uuid.uuid4().hex
+    parts = body.get("participants") if isinstance(body, dict) else None
+    addr = body.get("addressed") if isinstance(body, dict) else None
+    title = (body or {}).get("title") if isinstance(body, dict) else None
+    if parts or addr or title:
+        conv = await asyncio.to_thread(
+            store.ensure_conversation, cid, title=title,
+            participants=parts or [],
+            addressed=addr if addr else ((parts or [])[:1]))
+        return JSONResponse(conv)
+    return JSONResponse({"id": cid, "participants": [], "addressed": []})
 
 
 @app.get("/argus/conversations")
 async def get_conversations():
     convs = await asyncio.to_thread(store.list_conversations)
     return JSONResponse(convs)
+
+@app.get("/argus/conversations/{cid}")
+async def get_one_conversation(cid: str):
+    conv = await asyncio.to_thread(store.get_conversation, _cid(cid))
+    if not conv:
+        raise HTTPException(404, "unknown conversation")
+    return JSONResponse(conv)
+
+@app.patch("/argus/conversations/{cid}")
+async def patch_conversation(cid: str, request: Request):
+    body = await request.json()
+    conv = await asyncio.to_thread(
+        store.update_conversation, _cid(cid),
+        title=body.get("title"),
+        participants=body.get("participants"),
+        addressed=body.get("addressed"))
+    return JSONResponse(conv)
 
 @app.get("/argus/audiobook/search")
 async def ab_search(q: str):
@@ -1025,6 +1169,8 @@ async def inject_message(request: Request):
     row = await asyncio.to_thread(store.add_message, cid, role, content, model)
     publish("chat_message", {"role": role, "content": content, "model": model,
                              "conversation_id": cid, "id": row.get("id")})
+    if role == "assistant":
+        await asyncio.to_thread(_notify_reply, content)
     return JSONResponse({"ok": True, "id": row.get("id")})
 
 

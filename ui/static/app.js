@@ -13,7 +13,11 @@ const state = {
   currentModel:   null,
   conversationId: null,
   conversations: [],
-  gkActive:       false,     // GK toggle: route sends to grok (SuperGrok OAuth) over the dropdown model
+  sending:        false,     // send lock — Enter + tap cannot double-POST
+  participants:   [],        // models in this room
+  addressed:      [],        // who this send goes to
+  newestMsgId:    null,      // last merged history id (poll after_id)
+  gkActive:       false,     // legacy overlay; Grok is a participant now
   rtTo:           'both',    // Roundtable addressee: gemma | claude | both
   rtBubbles:      {},        // Roundtable: bubbleId -> {el, speaker, target} (parallel to pending path)
   currentView:    'chat',
@@ -21,6 +25,7 @@ const state = {
   pendingBubbleId:null,     // SSE id we're listening for
   pendingMsgEl:   null,     // current streaming message DOM node
   statusPill:     null,     // live status pill (phase + elapsed timer), killed on done
+  thinkingCanvas: null,     // doodler animation (runs alongside status pill until turn ends)
   pendingDbId:    null,     // DB id of the assistant message after save
   pendingUserId:  null,     // DB id of the user message that prompted it
   pendingDurMeta: null,     // " · 12s" turn time from the CC done event, appended to bubble meta
@@ -74,7 +79,25 @@ function fmtDay(ts) {
 // otherwise the dropdown selection. The dropdown keeps showing the local model
 // either way — GK is an overlay switch, not a dropdown entry.
 const GK_MODEL = 'grok';
-function activeModel() { return state.gkActive ? GK_MODEL : state.currentModel; }
+function isLocalGpuModel(id) {
+  return !!(id && id !== GK_MODEL && id !== 'claude-code' && id !== 'claude'
+            && !String(id).startsWith('z-')
+            && !(state.modelCfg[id] && state.modelCfg[id].external));
+}
+function sendTargets() {
+  // GK overlay talks to Grok only — never touches llama-swap / VRAM.
+  if (state.gkActive) return [GK_MODEL];
+  if (state.addressed && state.addressed.length) return state.addressed.slice();
+  return state.currentModel ? [state.currentModel] : [];
+}
+function activeModel() {
+  const t = sendTargets();
+  return t[0] || state.currentModel;
+}
+function isStandalonePwa() {
+  return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+    || !!window.navigator.standalone;
+}
 function modelLabel(id) {
   return (id && state.modelCfg && state.modelCfg[id] && state.modelCfg[id].display) || id || '';
 }
@@ -134,7 +157,9 @@ function createStatusPill() {
 
   const start = Date.now();
   let lastActivity = start, gotToken = false, phase = '', hasActivity = false;
-  const STALL = 20, CRASH = 90;  // seconds since the last signal
+  // Longer stall windows: Grok/CC tool turns often go quiet for 30–90s while a
+  // shell command runs. "no response" only after a true blackout.
+  const STALL = 45, CRASH = 180;  // seconds since the last signal
 
   function tick() {
     const elapsed = Math.round((Date.now() - start) / 1000);
@@ -148,7 +173,7 @@ function createStatusPill() {
   const timer = setInterval(tick, 1000);
   tick();
 
-  // Tap to expand — only meaningful once activity has streamed (claude-code path).
+  // Tap to expand — only meaningful once activity has streamed (claude-code / grok).
   pill.addEventListener('click', () => {
     if (!hasActivity) return;
     wrap.classList.toggle('open');
@@ -157,25 +182,52 @@ function createStatusPill() {
 
   wrap._activity = () => { lastActivity = Date.now(); gotToken = true; phase = ''; tick(); }; // token: streaming supersedes any tool label
   wrap._status   = (txt) => { phase = txt; lastActivity = Date.now(); tick(); };               // tool/loop labels
-  wrap._event    = (ev) => {                                                                   // CC activity stream
+  wrap._event    = (ev) => {                                                                   // OAuth-agent activity stream
     if (!ev || ev.kind === 'done') return;
+    // Heartbeat: thinking/tool deltas used to update the panel WITHOUT refreshing
+    // lastActivity, so the pill flipped to "no response" while Grok was still busy.
+    lastActivity = Date.now();
+    if (ev.kind === 'thinking' && !phase) phase = 'thinking';
+    if (ev.kind === 'tool_use') phase = `using ${ev.name || 'tool'}`;
+    if (ev.kind === 'tool_result') phase = phase && phase.startsWith('using') ? phase : 'working';
     hasActivity = true; pill.classList.add('expandable');
     appendActivityEntry(panel, ev);
     if (wrap.classList.contains('open')) panel.scrollTop = panel.scrollHeight;
+    tick();
   };
   wrap._dur      = (txt) => { dur.textContent = txt; };                                         // "· 12s"
   wrap._collapse = () => { wrap.classList.remove('open'); };
   wrap._stop     = () => { clearInterval(timer); wrap.remove(); };
+  // External heartbeat (turn_status poll) keeps the pill alive when SSE drops.
+  wrap._heartbeat = (txt) => {
+    lastActivity = Date.now();
+    if (txt) phase = txt;
+    tick();
+  };
   return wrap;
 }
 
 // Render one activity entry into the expandable panel. CSS-light, append-only DOM.
+// Thinking tokens arrive as many tiny deltas — coalesce into the last think row
+// so a long reason stream doesn't create thousands of DOM nodes (UI freeze).
 function appendActivityEntry(panel, ev) {
-  const row = document.createElement('div');
   if (ev.kind === 'thinking') {
+    const last = panel.lastElementChild;
+    const piece = ev.text || '';
+    if (last && last.classList.contains('act-think')) {
+      // Keep a rolling tail so the panel stays bounded.
+      const next = (last.textContent || '') + piece;
+      last.textContent = next.length > 4000 ? next.slice(-4000) : next;
+      return;
+    }
+    const row = document.createElement('div');
     row.className = 'act-think';
-    row.textContent = (ev.text || '').slice(0, 2000);
-  } else if (ev.kind === 'tool_use') {
+    row.textContent = piece.slice(0, 4000);
+    panel.appendChild(row);
+    return;
+  }
+  const row = document.createElement('div');
+  if (ev.kind === 'tool_use') {
     row.className = 'act-tool';
     row.textContent = `🔧 ${ev.name || 'tool'}(${fmtToolInput(ev.input)})`;
   } else if (ev.kind === 'tool_result') {
@@ -185,6 +237,8 @@ function appendActivityEntry(panel, ev) {
     return;
   }
   panel.appendChild(row);
+  // Cap activity panel growth (tool spam on long agent jobs).
+  while (panel.childElementCount > 80) panel.removeChild(panel.firstChild);
 }
 
 // Compact one-line summary of a tool's input args for the activity panel.
@@ -256,10 +310,12 @@ function createThinkingCanvas() {
     ctx.fillRect(0, 0, w, h);
   });
 
-  let raf;
+  let raf = 0;
   let frame = 0;
+  let stopped = false;
 
   function draw() {
+    if (stopped) return;
     const parent = canvas.parentElement;
     if (parent && !sized) {
       const pw = parent.clientWidth - 28;
@@ -319,8 +375,61 @@ function createThinkingCanvas() {
   }
 
   requestAnimationFrame(() => { raf = requestAnimationFrame(draw); });
-  canvas._stopThinking = () => { cancelAnimationFrame(raf); };
+  canvas._stopThinking = () => {
+    if (stopped) return;
+    stopped = true;
+    cancelAnimationFrame(raf);
+    raf = 0;
+    try { canvas.remove(); } catch {}
+  };
   return canvas;
+}
+
+/** Start both thinking indicators for a turn (status pill + doodler).
+ *  Inserted just before `beforeEl` (usually the empty typing bubble) so the
+ *  doodle sits where the reply will appear. */
+function startThinkingIndicators(beforeEl) {
+  const statusPill = createStatusPill();
+  state.statusPill = statusPill;
+
+  // Doodler while waiting / tooling. Skip if reduced-motion.
+  let canvas = null;
+  try {
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      canvas = createThinkingCanvas();
+      state.thinkingCanvas = canvas;
+    }
+  } catch (e) {
+    console.warn('[argus] thinking canvas failed', e);
+    state.thinkingCanvas = null;
+  }
+
+  const anchor = beforeEl || null;
+  if (anchor && anchor.parentNode === messagesEl) {
+    messagesEl.insertBefore(statusPill, anchor);
+    if (canvas) messagesEl.insertBefore(canvas, anchor);
+  } else {
+    messagesEl.appendChild(statusPill);
+    if (canvas) messagesEl.appendChild(canvas);
+  }
+  return { statusPill, canvas };
+}
+
+/** Stop the doodler only (first reply token) — keep the status pill for the turn. */
+function stopThinkingDoodle() {
+  if (state.thinkingCanvas) {
+    try { state.thinkingCanvas._stopThinking(); } catch {}
+    state.thinkingCanvas = null;
+  }
+}
+
+/** Tear down doodler + status pill (turn done / cancelled / error). */
+function stopThinkingIndicators() {
+  stopThinkingDoodle();
+  if (state.statusPill) {
+    try { state.statusPill._stop(); } catch {}
+    state.statusPill = null;
+  }
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────
@@ -331,8 +440,37 @@ async function init() {
   await loadLayout();
   connectEvents();
   wireUI();
+  wirePresence();
   // Kick off view-specific polls lazily; they'll hydrate on tab switch too.
   loadBriefing();
+}
+
+// ── PWA focus heartbeat (reply toast when minimized) ─────────────────
+// Android Chrome freezes the PWA when it's not on screen, so the server
+// cannot ask at reply time. We report visibility here; hide uses
+// `keepalive` so the POST still leaves as the app backgrounds.
+function pwaVisible() {
+  return document.visibilityState === 'visible';
+}
+function reportPresence(visible) {
+  const v = (visible === undefined) ? pwaVisible() : !!visible;
+  try {
+    fetch(`${BRAIN}/presence`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({visible: v}),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (_) { /* ignore */ }
+}
+function wirePresence() {
+  reportPresence();
+  document.addEventListener('visibilitychange', () => reportPresence());
+  window.addEventListener('pageshow', () => reportPresence(true));
+  window.addEventListener('pagehide', () => reportPresence(false));
+  document.addEventListener('freeze', () => reportPresence(false));
+  document.addEventListener('resume', () => reportPresence());
+  setInterval(() => { if (pwaVisible()) reportPresence(true); }, 15000);
 }
 
 // ── Per-model accent ──────────────────────────────────────────────────
@@ -421,7 +559,8 @@ async function loadModels() {
     try { L = await fetchJson('/layout') || {}; } catch {}
     let saved = L.lastModel || null;
     // Prefer gkActive; migrate old ccActive layout key → off (different product).
-    state.gkActive = !!L.gkActive;
+    // Default ON: talking to Grok must not llama-swap. Explicit false in layout stays off.
+    state.gkActive = L.gkActive !== false;
     // Migration: if Grok was saved as the dropdown pick, treat as "GK on".
     if (saved === GK_MODEL) { state.gkActive = true; saved = L.lastLocalModel || null; }
     // Also migrate legacy claude-code saved pick → local model (CC button is gone).
@@ -436,11 +575,133 @@ async function loadModels() {
     applyModelAccent(activeModel());
     renderModelSelect();
     renderModelList();
-    updateGkToggle();
+    await loadRoster();
   } catch (e) {
     modelSelect.innerHTML = `<option>Brain unavailable</option>`;
     brainDot.classList.add('down');
   }
+}
+
+function inviteableModels() {
+  return (state.models || []).filter(m =>
+    m.id && m.id !== 'claude-code' && !String(m.id).startsWith('z-'));
+}
+
+async function loadRoster() {
+  try {
+    const cid = state.conversationId || 'default';
+    const conv = await fetchJson(`${BRAIN}/conversations/${encodeURIComponent(cid)}`);
+    state.participants = conv.participants || [];
+    state.addressed = conv.addressed || [];
+    if (!state.participants.length) {
+      // Prefer Grok (or last GK session) — never seed a local GPU model just
+      // because it's ARGUS_DEFAULT. That evicts whatever is on the card.
+      // Default empty rooms to Grok (cloud) so we never llama-swap-evict on load.
+      state.participants = [GK_MODEL];
+      state.addressed = [GK_MODEL];
+    }
+    if (!state.addressed.length && state.participants.length) {
+      const last = state.participants.includes(GK_MODEL) ? GK_MODEL : state.participants[0];
+      state.addressed = [last];
+    }
+    // If the thread was auto-addressed to a local model but GK is on, stay on Grok.
+    // Old default-thread infer stuffed every historical model into the bar.
+    if (state.participants.length > 6) {
+      const ok = new Set(inviteableModels().map(m => m.id));
+      const keep = [];
+      for (const id of [...state.participants].reverse()) {
+        if (ok.has(id) && !keep.includes(id)) keep.unshift(id);
+        if (keep.length >= 4) break;
+      }
+      if (!keep.includes(GK_MODEL)) keep.unshift(GK_MODEL);
+      state.participants = keep;
+    }
+    if (state.gkActive) {
+      if (!state.participants.includes(GK_MODEL)) state.participants = [GK_MODEL, ...state.participants];
+      state.addressed = [GK_MODEL];
+    }
+  } catch {
+    if (!state.participants.length) {
+      state.participants = [GK_MODEL];
+      state.addressed = [GK_MODEL];
+    }
+  }
+  renderParticipants();
+  updateGkToggle();
+  applyModelAccent(activeModel());
+}
+
+async function patchRoster(body) {
+  const cid = state.conversationId || 'default';
+  try {
+    const conv = await fetch(`${BRAIN}/conversations/${encodeURIComponent(cid)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    if (conv.participants) state.participants = conv.participants;
+    if (conv.addressed) state.addressed = conv.addressed;
+  } catch {}
+  renderParticipants();
+}
+
+function renderParticipants() {
+  const host = $('participant-chips');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const id of state.participants) {
+    const on = state.addressed.includes(id);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'md-chip' + (on ? ' addressed' : '');
+    btn.style.setProperty('--chip-accent', modelColor(id));
+    btn.title = on ? `Talking to ${modelLabel(id)} — tap to mute` : `Tap to address ${modelLabel(id)}`;
+    btn.innerHTML = `<span class="dot"></span><span class="lbl">${escHtml(modelLabel(id))}</span><span class="x" title="Remove">×</span>`;
+    btn.querySelector('.x').addEventListener('click', ev => {
+      ev.stopPropagation();
+      const parts = state.participants.filter(p => p !== id);
+      const addr = state.addressed.filter(p => p !== id);
+      patchRoster({ participants: parts, addressed: addr });
+    });
+    btn.addEventListener('click', () => {
+      const next = state.addressed.includes(id)
+        ? state.addressed.filter(p => p !== id)
+        : [...state.addressed, id];
+      patchRoster({ addressed: next });
+      applyModelAccent(next[0] || id);
+    });
+    host.appendChild(btn);
+  }
+}
+
+function openInviteSheet() {
+  let sheet = $('invite-sheet');
+  if (sheet) { sheet.remove(); return; }
+  sheet = document.createElement('div');
+  sheet.id = 'invite-sheet';
+  const have = new Set(state.participants);
+  for (const m of inviteableModels()) {
+    if (have.has(m.id)) continue;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = `<span class="dot" style="width:8px;height:8px;border-radius:50%;background:${modelColor(m.id)}"></span>${escHtml(m.display)}`;
+    b.addEventListener('click', () => {
+      patchRoster({ participants: [...state.participants, m.id] });
+      sheet.remove();
+    });
+    sheet.appendChild(b);
+  }
+  if (!sheet.childElementCount) {
+    sheet.innerHTML = '<div style="padding:8px 10px;color:var(--text-dim)">Everyone inviteable is already in the room.</div>';
+  }
+  document.getElementById('top-bar').appendChild(sheet);
+  const closer = ev => {
+    if (!sheet.contains(ev.target) && ev.target.id !== 'participant-add') {
+      sheet.remove();
+      document.removeEventListener('click', closer, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closer, true), 0);
 }
 
 // Reflect GK-toggle state on the button (active = routing to Grok) + dim the
@@ -520,26 +781,44 @@ async function loadHistory() {
 async function _pollSync() {
   if (document.visibilityState !== 'visible') return;
   if (state.pendingBubbleId) {
-    // A turn is open. Deltas within 6s = genuinely streaming -> leave it alone.
-    // Otherwise the socket died: fire the DB self-heal NOW (no manual refresh needed).
-    if (Date.now() - (state.lastDeltaTs || 0) > 6000 && state.pendingResolve) {
+    // A turn is open. Do NOT treat quiet tools as a dead socket — Grok can go
+    // minutes without a text delta while a command runs. Ask the server first.
+    try {
+      const cid = state.conversationId != null
+        ? '?conversation_id=' + encodeURIComponent(state.conversationId) : '';
+      const r = await fetch(BRAIN + '/turn_status' + cid);
+      const st = await r.json();
+      if (st && st.active) {
+        state.lastDeltaTs = Date.now();
+        if (state.statusPill && state.statusPill._heartbeat) {
+          const p = st.phase || '', d = st.detail || '';
+          const lab = p === 'tool' ? ('using ' + (d || 'a tool'))
+                    : p === 'working' ? (d || 'still working')
+                    : (d || p || 'working');
+          state.statusPill._heartbeat(lab);
+        }
+        return;   // still running — keep waiting
+      }
+    } catch (_) { /* fall through to heal only if we already look dead */ }
+    // Server says the turn is over (or we couldn't reach it) AND no recent
+    // deltas — then self-heal. 90s, not 6s: tools are quiet by design.
+    if (Date.now() - (state.lastDeltaTs || 0) > 90_000 && state.pendingResolve) {
       state._healedByPoll = true;
       const r = state.pendingResolve; state.pendingResolve = null; r();
     }
     return;
   }
-  // No active turn: repaint authoritative history only if the newest message isn't already
-  // on screen (cheap id check avoids needless full re-renders while idle).
+  // No active turn: merge newer rows by id — never wipe the thread.
   try {
-    const latest = await fetchJson(`${BRAIN}/history${_historyQuery({ limit: 1 })}`);
-    const newest = latest && latest[latest.length - 1];
-    if (newest) {
-      const el = document.querySelector(`[data-msg-id="${CSS.escape(String(newest.id))}"]`);
-      const dbHasText = (newest.content || '').trim().length > 0;
-      // Repaint if the newest message is missing OR present-but-blank (the claude-code
-      // path can finalise a bubble whose text never streamed in — the DB has it, the DOM
-      // node is empty). Guard on dbHasText so a genuinely-empty row can't thrash the poll.
-      if (!el || (dbHasText && !el.textContent.trim())) loadHistory();
+    const after = state.newestMsgId != null ? { after_id: state.newestMsgId, limit: 50 } : { limit: 1 };
+    const latest = await fetchJson(`${BRAIN}/history${_historyQuery(after)}`);
+    if (latest && latest.length) {
+      if (state.newestMsgId != null) mergeHistory(latest);
+      else {
+        const newest = latest[latest.length - 1];
+        const el = newest && document.querySelector(`[data-msg-id="${CSS.escape(String(newest.id))}"]`);
+        if (newest && !el) loadHistory();
+      }
     }
   } catch {}
 }
@@ -794,10 +1073,49 @@ function showCopySheet(text) {
   }, 60);
 }
 
-function renderHistory(msgs) {
-  messagesEl.innerHTML = '';
-  messagesEl.appendChild(_buildMessageNodes(msgs));
+function renderHistory(msgs, { wipe = true } = {}) {
+  if (wipe) {
+    messagesEl.innerHTML = '';
+    messagesEl.appendChild(_buildMessageNodes(msgs));
+  } else {
+    mergeHistory(msgs);
+  }
+  if (msgs && msgs.length) {
+    const last = msgs[msgs.length - 1];
+    if (last && last.id != null) state.newestMsgId = last.id;
+  }
   scrollBottom();
+}
+
+function mergeHistory(msgs) {
+  if (!msgs || !msgs.length) return;
+  for (const m of msgs) {
+    if (m.id == null) continue;
+    state.newestMsgId = Math.max(state.newestMsgId || 0, m.id);
+    const existing = messagesEl.querySelector(`[data-msg-id="${CSS.escape(String(m.id))}"]`);
+    if (existing) {
+      if (m.content && !existing.textContent.trim()) {
+        existing.textContent = stripCommandTags(m.content);
+      }
+      continue;
+    }
+    const el = document.createElement('div');
+    const role = m.role === 'user' ? 'user' : 'assistant';
+    el.className = `message ${role}`;
+    el.dataset.msgId = String(m.id);
+    if (m.model) {
+      el.style.setProperty('--msg-accent', modelColor(m.model));
+    }
+    el.textContent = stripCommandTags(m.content || '');
+    if (m.model || m.timestamp) {
+      const meta = document.createElement('span');
+      meta.className = 'msg-meta';
+      meta.textContent = [m.model ? modelLabel(m.model) : '', m.timestamp ? fmtTime(m.timestamp) : '']
+        .filter(Boolean).join(' · ');
+      el.appendChild(meta);
+    }
+    messagesEl.appendChild(_wrapSwipeDelete(el));
+  }
 }
 
 function prependHistory(msgs) {
@@ -1127,6 +1445,12 @@ document.getElementById('chat-input-area').addEventListener('drop', async (e) =>
 async function send() {
   const text = inputEl.value.trim();
   if ((!text && !stagedFiles.length) || !activeModel()) return;
+  if (state.sending) return;   // A: Enter + tap cannot double-POST
+  if (!sendTargets().length) {
+    showToast('Tap GK or a model chip first');
+    return;
+  }
+  const clientMsgId = (crypto.randomUUID && crypto.randomUUID()) || (Date.now() + '-' + Math.random());
   inputEl.value = '';
   autosizeInput();
 
@@ -1192,9 +1516,10 @@ async function send() {
       userEl.appendChild(card);
     }
   });
+  state.sending = true;
   const typingEl = appendMessage('assistant typing', '');
-  const statusPill = createStatusPill();
-  messagesEl.appendChild(statusPill);
+  // Both indicators: status pill (phase + timer) AND doodler canvas (rAF lines).
+  startThinkingIndicators(typingEl);
   scrollBottom();
 
   state.abortCtl = new AbortController();
@@ -1205,6 +1530,8 @@ async function send() {
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
         model:    activeModel(),
+        to:       sendTargets(),
+        client_msg_id: clientMsgId,
         message:  text,
         conversation_id: state.conversationId,
         attachments: attachments.length ? attachments : undefined,
@@ -1235,13 +1562,16 @@ async function send() {
     state.pendingBubbleId = bubbleId;
     state.pendingModel = activeModel();   // snapshot now — switching models/GK mid-turn must not relabel/recolor this bubble
     typingEl.style.setProperty('--msg-accent', modelColor(state.pendingModel));  // colour the bar while it streams
-    // Live status pill (timer + stall/crash detection) until the turn completes.
-    state.statusPill = statusPill;
     state.pendingMsgEl = typingEl;
+    state.lastDeltaTs = Date.now();
 
-    // Safety timeout: if we somehow miss the done event, release the UI.
-    // Media models (z-image-edit, z-klein, z-video) can take up to 10 minutes.
-    const _safetyMs = /^z-(image-edit|klein|video)/i.test(activeModel() || '') ? 600_000 : 90_000;
+    // Safety timeout: if we miss bubble_done, release the UI.
+    // Grok/CC tool jobs can run a long time — don't cap them at 15 min.
+    // The poller only finalises when /turn_status says the turn is no longer active.
+    const _am = activeModel() || state.pendingModel || '';
+    const _safetyMs = /^z-(image-edit|klein|video)/i.test(_am) ? 600_000
+                    : (_am === 'grok' || _am === 'claude-code') ? 4 * 3600 * 1000  // 4h
+                    : 180_000;
     await new Promise(resolve => {
       const doneTimer = setTimeout(resolve, _safetyMs);
       const onDone = () => { clearTimeout(doneTimer); resolve(); };
@@ -1309,7 +1639,7 @@ async function send() {
       appendMessage('assistant', `[Error: ${e.message}]`);
     }
   } finally {
-    if (state.statusPill) { state.statusPill._stop(); state.statusPill = null; }
+    stopThinkingIndicators();   // status pill + doodler
     state.abortCtl = null;
     state.pendingBubbleId = null;
     state.pendingMsgEl = null;
@@ -1320,6 +1650,7 @@ async function send() {
     state.pendingModel = null;
     state._healedByPoll = false;
     sendBtn.classList.remove('is-stop');
+    state.sending = false;
   }
 }
 
@@ -1602,6 +1933,11 @@ function renderVideoTags(bubble, text) {
 let globalEvents = null;
 
 function connectEvents() {
+  // Standalone (home-screen) PWA: skip EventSource. Poll is the source of truth.
+  if (isStandalonePwa()) {
+    if (window._dbgLog) window._dbgLog('SSE: skipped (standalone PWA)');
+    return;
+  }
   try {
     globalEvents = new EventSource(`${BRAIN}/events`);
     globalEvents.onopen = () => { if(window._dbgLog) window._dbgLog('SSE: connected'); brainDot.classList.remove('down');
@@ -1630,6 +1966,11 @@ function connectEvents() {
         const content = data.content || '';
         // Heartbeat: tokens are flowing -> keep the pill alive + reveal the bubble.
         if (state.statusPill) state.statusPill._activity();
+        // First real reply text → drop the doodler (save rAF); pill stays until done.
+        // Keep doodle during tool-only placeholders like "_(running `tool`…)_".
+        if (content && !/^_\(running /.test(content.trim())) {
+          stopThinkingDoodle();
+        }
         if (state.pendingMsgEl.classList.contains('typing')) {
           state.pendingMsgEl.classList.remove('typing');
           state.pendingMsgEl.classList.add('streaming');
@@ -1654,7 +1995,12 @@ function connectEvents() {
       try {
         const d = JSON.parse(e.data);
         if (d.id !== state.pendingBubbleId || !state.statusPill) return;
+        state.lastDeltaTs = Date.now();   // thinking/tools/heartbeats count as live
         const ev = d.event || {};
+        if (ev.kind === 'heartbeat') {
+          if (state.statusPill._heartbeat) state.statusPill._heartbeat(ev.text || 'still working');
+          return;
+        }
         if (ev.kind === 'done') {
           const meta = fmtDuration(ev.duration_ms);
           if (meta) { state.statusPill._dur(' ' + meta); state.pendingDurMeta = ' ' + meta; }
@@ -1782,6 +2128,7 @@ async function selectConversation(id) {
   state.conversationId = id;
   renderConversations();
   updateRtBar();
+  await loadRoster();
   await loadHistory();
   closeOverlay('conv-drawer');
   switchView('chat');
@@ -1789,16 +2136,22 @@ async function selectConversation(id) {
 
 async function newConversation() {
   try {
+    const seed = state.addressed[0] || state.currentModel;
     const c = await fetchJson(`${BRAIN}/conversations`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ title: 'New conversation' }),
+      body:    JSON.stringify({
+        title: 'New conversation',
+        participants: seed ? [seed] : [],
+        addressed: seed ? [seed] : [],
+      }),
     });
     state.conversationId = c.id || c.conversation_id || null;
   } catch {
     state.conversationId = null;  // fall back to default thread
   }
   await loadConversations();
+  await loadRoster();
   updateRtBar();
   await loadHistory();
   closeOverlay('conv-drawer');
@@ -2477,16 +2830,27 @@ function wireUI() {
   modelSelect.addEventListener('change', () => {
     state.currentModel = modelSelect.value;
     applyModelAccent(activeModel());
-    if (!state.gkActive) maybeWarmModel(state.currentModel);   // don't wake a local model while routing to GK
+    if (!state.gkActive && isLocalGpuModel(state.currentModel)) maybeWarmModel(state.currentModel);
     saveLayout();
   });
   // GK toggle — flip routing between the dropdown model and Grok (SuperGrok OAuth).
   $('gk-toggle')?.addEventListener('click', () => {
     state.gkActive = !state.gkActive;
+    if (state.gkActive) {
+      if (!state.participants.includes(GK_MODEL)) {
+        state.participants = [GK_MODEL, ...state.participants];
+      }
+      state.addressed = [GK_MODEL];
+      renderParticipants();
+    }
     updateGkToggle();
     applyModelAccent(activeModel());
-    // Turning GK off doesn't auto-wake the local model — it loads lazily on next send.
+    // GK is cloud OAuth — never warm/swap llama-swap.
     saveLayout();
+  });
+  $('participant-add')?.addEventListener('click', ev => {
+    ev.stopPropagation();
+    openInviteSheet();
   });
   // Everything below is non-critical; wrap so any single failure can't kill the rest.
   try { _wireUI_rest(); } catch (e) {
@@ -2671,6 +3035,8 @@ const THEME_LABELS = { default: 'Default', ocean: 'Ocean', ember: 'Ember', matri
     const p = s.phase || '', d = s.detail || '';
     if (p === 'tool')     return 'using ' + (d || 'a tool');
     if (p === 'writing')  return 'writing reply';
+    if (p === 'thinking') return 'thinking';
+    if (p === 'working')  return d || 'still working';
     if (p === 'loop')     return 'retrying';
     if (p === 'starting') return 'starting up';
     return d || p || 'thinking';
@@ -2693,6 +3059,13 @@ const THEME_LABELS = { default: 'Default', ocean: 'Ocean', ember: 'Ember', matri
         ? '?conversation_id=' + encodeURIComponent(state.conversationId) : '';
       const r = await fetch(BRAIN + '/turn_status' + cid);
       st = await r.json(); stAt = performance.now();
+      // Keep the in-chat status pill alive when SSE drops (iOS backgrounding)
+      // or when only thinking/tool events fire without text tokens.
+      if (st && st.active && state.statusPill && state.statusPill._heartbeat) {
+        if (!st.bubble_id || st.bubble_id === state.pendingBubbleId) {
+          state.statusPill._heartbeat(label(st));
+        }
+      }
     } catch (_) { /* keep ticking from last-known on a blip */ }
     render();
   }

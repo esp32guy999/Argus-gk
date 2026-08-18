@@ -30,6 +30,22 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+# When the user talks about glassgarden / media stack, pin these providers so
+# top-k cannot drop *arr / media_fs in favor of unrelated shell/web tools.
+# (Qwen was trying ssh because shell won rank and ssh is allowlist-blocked.)
+_GG_CONTEXT_RX = (
+    "glassgarden", " unraid", "unraid ", " gg ", " gg,", "/gg ",
+    "sonarr", "radarr", "lidarr", "prowlarr", "readarr", "qbittorrent", "qbit",
+    "navidrome", "jellyfin", "audiobook", "torrent", "movies", " tv ",
+    "media library", "media stack",
+)
+_GG_PROVIDERS = frozenset({
+    "openapi", "arr_acquire", "media_fs", "media_health", "media_remonitor",
+    "media_acquire", "navidrome", "audiobook", "radarr", "sonarr", "lidarr",
+    "prowlarr", "readarr",
+})
+
+
 class SemanticSelector:
     """Embeds tool docs once (lazily), then ranks them against each query.
 
@@ -56,6 +72,10 @@ class SemanticSelector:
         if self._vecs is None:
             self._vecs = self.embed_fn([self._doc(t) for t in self.tools])
 
+    def _wants_glassgarden(self, context: str) -> bool:
+        c = f" {(context or '').lower()} "
+        return any(k in c for k in _GG_CONTEXT_RX)
+
     def rank(self, context: str) -> list:
         """All tools ordered by similarity to context (most similar first).
         Raises on embedding failure so Registry.select() can fall back."""
@@ -68,9 +88,21 @@ class SemanticSelector:
         return [t for t, _ in scored]
 
     def select(self, context: str) -> list:
-        """always-include tools + the top_k most similar others (deduped,
-        rank order preserved)."""
+        """always-include tools + context-pinned media tools + top_k others."""
         ranked = self.rank(context)
-        pinned = [t for t in ranked if t.name in self.always]
-        rest = [t for t in ranked if t.name not in self.always]
-        return pinned + rest[:self.top_k]
+        always_set = set(self.always)
+        pinned = [t for t in ranked if t.name in always_set]
+        # Glassgarden / *arr: pin provider tools so Qwen can reach gg without ssh
+        if self._wants_glassgarden(context):
+            for t in ranked:
+                prov = getattr(t, "provider", None) or ""
+                name = t.name or ""
+                if t in pinned:
+                    continue
+                if prov in _GG_PROVIDERS or name.split("_", 1)[0] in _GG_PROVIDERS:
+                    pinned.append(t)
+        pinned_names = {t.name for t in pinned}
+        rest = [t for t in ranked if t.name not in pinned_names]
+        # More headroom when media-pinned so shell doesn't crowd out *arr
+        k = self.top_k + (6 if self._wants_glassgarden(context) else 0)
+        return pinned + rest[:k]

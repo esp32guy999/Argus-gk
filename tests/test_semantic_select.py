@@ -28,18 +28,30 @@ def main() -> int:
         Tool("turn_on_light", "Turn on a light in the home", ["home"], f),
         Tool("list_movies", "List movies in the media library", ["media"], f),
         Tool("get_time", "Get the current time on the clock", ["time"], f),
+        Tool("sonarr_getSystemStatus", "Sonarr status on glassgarden", ["media", "sonarr"],
+             f, provider="sonarr"),
+        Tool("run_command", "Local shell (no ssh)", ["shell"], f, provider="shell"),
     ]
 
     # 1. ranking picks the relevant tool
-    sel = SemanticSelector(tools, embed_fn=fake_embed, top_k=1)
+    sel = SemanticSelector(tools, embed_fn=fake_embed, top_k=1, always=())
     assert sel.select("please turn on the light")[0].name == "turn_on_light"
-    assert sel.select("what movies do I have")[0].name == "list_movies"
+    # "movies" also pins glassgarden media tools — relevant tool still present
+    movie_names = [t.name for t in sel.select("what movies do I have")]
+    assert "list_movies" in movie_names, movie_names
     assert sel.select("what time is it")[0].name == "get_time"
     print("PASS: semantic ranking picks the relevant tool")
 
+    # 1b. glassgarden / sonarr context pins *arr tools (so models don't reach for ssh)
+    sel2 = SemanticSelector(tools, embed_fn=fake_embed, top_k=1, always=())
+    names = [t.name for t in sel2.select("is sonarr up on glassgarden")]
+    assert "sonarr_getSystemStatus" in names, names
+    assert names.index("sonarr_getSystemStatus") < names.index("run_command"), names
+    print("PASS: glassgarden context pins sonarr tools ahead of shell")
+
     # 2. registry.select delegates to the semantic selector
     r = Registry(); r.add_provider(tools)
-    r.semantic = SemanticSelector(tools, embed_fn=fake_embed, top_k=1)
+    r.semantic = SemanticSelector(tools, embed_fn=fake_embed, top_k=1, always=())
     sub = r.select("turn on the light")
     assert len(sub) == 1 and sub[0].name == "turn_on_light", [t.name for t in sub]
     print("PASS: registry.select() delegates to semantic")

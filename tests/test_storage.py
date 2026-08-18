@@ -85,6 +85,55 @@ def main() -> int:
         assert s.get_messages("c1") == [] and len(s.get_messages("c2")) == 1, "cleared c1 only"
         print("PASS: delete_message + clear(thread)")
 
+        # 8. client_msg_id is idempotent per conversation
+        first = s.add_message("c3", "user", "once", None, client_msg_id="abc")
+        again = s.add_message("c3", "user", "twice", None, client_msg_id="abc")
+        assert first["id"] == again["id"], (first, again)
+        assert len(s.get_messages("c3")) == 1
+        other = s.add_message("c4", "user", "other room", None, client_msg_id="abc")
+        assert other["id"] != first["id"]
+        print("PASS: client_msg_id idempotent per conversation")
+
+        # 9. after_id pages newer rows oldest-first
+        a = s.add_message("c5", "user", "a")
+        b = s.add_message("c5", "assistant", "b", "m1")
+        c = s.add_message("c5", "user", "c")
+        newer = s.get_messages("c5", after_id=a["id"])
+        assert [r["content"] for r in newer] == ["b", "c"], newer
+        none = s.get_messages("c5", after_id=c["id"])
+        assert none == []
+        print("PASS: after_id paging")
+
+        # 10. roster + infer + resolve_chat_send
+        s.ensure_conversation("c6", participants=["m1"], addressed=["m1"])
+        u = s.add_message("c6", "user", "hi", None, client_msg_id="u1")
+        s.add_message("c6", "assistant", "yo", "m1")
+        conv = s.get_conversation("c6")
+        assert conv["participants"] == ["m1"] and conv["addressed"] == ["m1"], conv
+        listed = {x["id"]: x for x in s.list_conversations()}
+        assert listed["c6"]["participants"] == ["m1"], listed["c6"]
+        # infer when no roster
+        s.add_message("c7", "user", "hey")
+        s.add_message("c7", "assistant", "ok", "gemma4-26b")
+        s.add_message("c7", "assistant", "ok2", "grok")
+        infer = s.get_conversation("c7")
+        assert infer["participants"] == ["gemma4-26b", "grok"], infer
+        # idempotency table
+        r_new = s.resolve_chat_send("c6", None, ["m1"])
+        assert r_new["action"] == "new" and r_new["missing"] == ["m1"]
+        r_act = s.resolve_chat_send("c6", "u1", ["m1"], turn_active=True,
+                                    turn_client_msg_id="u1")
+        assert r_act["action"] == "replay_active" and r_act["user"]["id"] == u["id"]
+        r_done = s.resolve_chat_send("c6", "u1", ["m1"])
+        assert r_done["action"] == "replay_done"
+        r_res = s.resolve_chat_send("c6", "u1", ["m1", "grok"])
+        assert r_res["action"] == "resume" and r_res["missing"] == ["grok"], r_res
+        # remove participant drops addressed
+        s.add_participants("c6", ["grok"], addressed=["m1", "grok"])
+        patched = s.update_conversation("c6", participants=["grok"])
+        assert patched["participants"] == ["grok"] and patched["addressed"] == ["grok"], patched
+        print("PASS: roster + resolve_chat_send")
+
         print("\nALL STORAGE CONTRACT TESTS PASSED")
         return 0
     finally:

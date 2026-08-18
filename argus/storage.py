@@ -37,9 +37,23 @@ CREATE TABLE IF NOT EXISTS messages (
     ts              REAL NOT NULL,
     role            TEXT NOT NULL,   -- 'user' | 'assistant'
     model           TEXT,            -- model id for assistant rows, NULL for user
-    content         TEXT NOT NULL
+    content         TEXT NOT NULL,
+    client_msg_id   TEXT             -- PWA idempotency key; unique per conversation
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, id);
+-- idx_messages_client_msg is created in _migrate() AFTER the column exists
+-- on old DBs (CREATE TABLE IF NOT EXISTS won't add client_msg_id).
+
+-- Per-thread roster (specs/chat-client.md). Messages stay the history;
+-- this is who is IN the room and who the next send is addressed to.
+CREATE TABLE IF NOT EXISTS conversations (
+    id              TEXT PRIMARY KEY,
+    title           TEXT,
+    participants    TEXT NOT NULL DEFAULT '[]',  -- JSON [model_id, ...]
+    addressed       TEXT NOT NULL DEFAULT '[]',  -- JSON [model_id, ...]
+    created_ts      REAL NOT NULL,
+    updated_ts      REAL NOT NULL
+);
 
 -- The Work Ledger: durable state for every long-running thing in flight, so it
 -- survives session resets and the reconciler can advance/notify without a human
@@ -214,21 +228,118 @@ class Store:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memcand_importance "
                 "ON memory_candidates(importance, ts)")
+        have_msg = {r[1] for r in self._conn.execute("PRAGMA table_info(messages)")}
+        if "client_msg_id" not in have_msg:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN client_msg_id TEXT")
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_msg "
+            "ON messages(conversation_id, client_msg_id) "
+            "WHERE client_msg_id IS NOT NULL")
+        # conversations table is CREATE IF NOT EXISTS in _SCHEMA.
+
+    def _fmt_msg(self, r) -> dict:
+        d = dict(r)
+        d["timestamp"] = round(d["ts"] * 1000)
+        return d
+
+    @staticmethod
+    def _json_ids(raw) -> list[str]:
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(x) for x in raw if x]
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [str(x) for x in data if x]
 
     # --- writes -----------------------------------------------------------
     def add_message(self, conversation_id: str, role: str, content: str,
-                    model: str | None = None) -> dict:
+                    model: str | None = None,
+                    client_msg_id: str | None = None) -> dict:
+        if client_msg_id:
+            existing = self.get_by_client_msg_id(conversation_id, client_msg_id)
+            if existing:
+                return existing
         ts = time.time()
         with self._lock:
-            cur = self._conn.execute(
-                "INSERT INTO messages (conversation_id, ts, role, model, content) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (conversation_id, ts, role, model, content),
-            )
-            self._conn.commit()
-            mid = cur.lastrowid
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO messages (conversation_id, ts, role, model, content, client_msg_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (conversation_id, ts, role, model, content, client_msg_id),
+                )
+                self._conn.commit()
+                mid = cur.lastrowid
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                r = self._conn.execute(
+                    "SELECT * FROM messages WHERE conversation_id = ? AND client_msg_id = ?",
+                    (conversation_id, client_msg_id),
+                ).fetchone()
+                if r:
+                    return self._fmt_msg(r)
+                raise
         return {"id": mid, "conversation_id": conversation_id, "ts": ts,
-                "role": role, "model": model, "content": content}
+                "role": role, "model": model, "content": content,
+                "client_msg_id": client_msg_id, "timestamp": round(ts * 1000)}
+
+    def get_by_client_msg_id(self, conversation_id: str, client_msg_id: str) -> dict | None:
+        """User row stamped with this PWA idempotency key, or None."""
+        if not client_msg_id:
+            return None
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM messages WHERE conversation_id = ? AND client_msg_id = ?",
+                (conversation_id, client_msg_id),
+            ).fetchone()
+        return self._fmt_msg(r) if r else None
+
+    def replies_for_user(self, conversation_id: str, user_id: int) -> list[dict]:
+        """Assistant rows after this user message, until the next user row."""
+        with self._lock:
+            nxt = self._conn.execute(
+                "SELECT MIN(id) n FROM messages WHERE conversation_id = ? "
+                "AND role = 'user' AND id > ?",
+                (conversation_id, user_id),
+            ).fetchone()
+            q = ("SELECT * FROM messages WHERE conversation_id = ? "
+                 "AND role = 'assistant' AND id > ?")
+            args: list = [conversation_id, user_id]
+            if nxt and nxt["n"] is not None:
+                q += " AND id < ?"
+                args.append(nxt["n"])
+            q += " ORDER BY id ASC"
+            rows = self._conn.execute(q, args).fetchall()
+        return [self._fmt_msg(r) for r in rows]
+
+    def resolve_chat_send(self, conversation_id: str, client_msg_id: str | None,
+                          to: list[str], *, turn_active: bool = False,
+                          turn_client_msg_id: str | None = None) -> dict:
+        """Idempotency table from specs/chat-client.md.
+
+        action:
+          new           — persist a user row and generate every `to` model
+          replay_active — same id, turn still running; do not persist or generate
+          replay_done   — same id, every `to` model already replied
+          resume        — user row exists; generate only `missing` models
+        """
+        targets = [m for m in to if m]
+        if not client_msg_id:
+            return {"action": "new", "user": None, "missing": targets}
+        user = self.get_by_client_msg_id(conversation_id, client_msg_id)
+        if not user:
+            return {"action": "new", "user": None, "missing": targets}
+        if turn_active and turn_client_msg_id == client_msg_id:
+            return {"action": "replay_active", "user": user, "missing": []}
+        have = {r.get("model") for r in self.replies_for_user(conversation_id, user["id"])}
+        missing = [m for m in targets if m not in have]
+        if not missing:
+            return {"action": "replay_done", "user": user, "missing": []}
+        return {"action": "resume", "user": user, "missing": missing}
 
     def add_memory_candidate(self, kind: str, summary: str, *,
                              conversation_id: str | None = None,
@@ -388,51 +499,239 @@ class Store:
         with self._lock:
             if conversation_id is None:
                 self._conn.execute("DELETE FROM messages")
+                self._conn.execute("DELETE FROM conversations")
             else:
                 self._conn.execute(
                     "DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+                self._conn.execute(
+                    "DELETE FROM conversations WHERE id = ?", (conversation_id,))
             self._conn.commit()
 
     # --- reads ------------------------------------------------------------
     def get_messages(self, conversation_id: str, limit: int = 100,
-                     before_id: int | None = None) -> list[dict]:
-        """Newest `limit` rows (optionally older than before_id), returned
-        OLDEST-first to match the frontend's render order."""
+                     before_id: int | None = None,
+                     after_id: int | None = None) -> list[dict]:
+        """Page of rows, returned OLDEST-first.
+
+        `before_id` pages older (newest `limit` rows with id < before_id).
+        `after_id` pages newer (oldest `limit` rows with id > after_id).
+        Both can be combined as a range.
+        """
         q = "SELECT * FROM messages WHERE conversation_id = ?"
         args: list = [conversation_id]
+        if after_id is not None:
+            q += " AND id > ?"
+            args.append(after_id)
         if before_id is not None:
             q += " AND id < ?"
             args.append(before_id)
+        if after_id is not None:
+            q += " ORDER BY id ASC LIMIT ?"
+            args.append(limit)
+            with self._lock:
+                rows = self._conn.execute(q, args).fetchall()
+            return [self._fmt_msg(r) for r in rows]
         q += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
         with self._lock:
             rows = self._conn.execute(q, args).fetchall()
-        out = []
-        for r in reversed(rows):
-            d = dict(r)
-            # Frontend reads `timestamp` and does new Date(...), which wants ms.
-            d["timestamp"] = round(d["ts"] * 1000)
-            out.append(d)
-        return out
+        return [self._fmt_msg(r) for r in reversed(rows)]
+
+    def _infer_participants(self, conversation_id: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT model FROM messages WHERE conversation_id = ? "
+            "AND role = 'assistant' AND model IS NOT NULL AND model != '' "
+            "GROUP BY model ORDER BY MIN(id)",
+            (conversation_id,),
+        ).fetchall()
+        from argus.chat_client import is_inviteable
+        return [r["model"] for r in rows if r["model"] and is_inviteable(r["model"])]
+
+    def _last_assistant_model(self, conversation_id: str) -> str | None:
+        r = self._conn.execute(
+            "SELECT model FROM messages WHERE conversation_id = ? "
+            "AND role = 'assistant' AND model IS NOT NULL AND model != '' "
+            "ORDER BY id DESC LIMIT 1",
+            (conversation_id,),
+        ).fetchone()
+        return r["model"] if r else None
+
+    def _fmt_conversation(self, cid: str, *, title: str | None, count: int,
+                          last_ts: float | None, participants: list[str],
+                          addressed: list[str]) -> dict:
+        return {
+            "id": cid,
+            "title": title or cid,
+            "count": count,
+            "last_ts": last_ts,
+            "participants": list(participants),
+            "addressed": list(addressed),
+        }
+
+    def get_conversation(self, conversation_id: str) -> dict | None:
+        """One thread + roster. Infers participants from assistant models if
+        the thread has no roster row yet."""
+        with self._lock:
+            stats = self._conn.execute(
+                "SELECT COUNT(*) n, MAX(ts) last_ts FROM messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            first = self._conn.execute(
+                "SELECT content FROM messages WHERE conversation_id = ? AND role='user' "
+                "ORDER BY id ASC LIMIT 1",
+                (conversation_id,),
+            ).fetchone()
+            roster = self._conn.execute(
+                "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+            inferred = self._infer_participants(conversation_id)
+            last_asst = self._last_assistant_model(conversation_id)
+        count = int(stats["n"] or 0) if stats else 0
+        last_ts = stats["last_ts"] if stats else None
+        if roster is None and count == 0:
+            return None
+        title = None
+        participants: list[str] = []
+        addressed: list[str] = []
+        if roster is not None:
+            title = roster["title"]
+            participants = self._json_ids(roster["participants"])
+            addressed = self._json_ids(roster["addressed"])
+            if last_ts is None:
+                last_ts = roster["updated_ts"]
+        if first and first["content"]:
+            title = first["content"][:60]
+        if not participants:
+            participants = inferred
+        if not addressed:
+            # Last speaker, not first-ever — otherwise an old 80B reply
+            # hijacks the room and llama-swap evicts whatever was loaded.
+            if last_asst and last_asst in (participants or inferred or [last_asst]):
+                addressed = [last_asst]
+            else:
+                addressed = list(participants[:1])
+        return self._fmt_conversation(
+            conversation_id, title=title, count=count, last_ts=last_ts,
+            participants=participants, addressed=addressed)
+
+    def ensure_conversation(self, conversation_id: str, *, title: str | None = None,
+                            participants: list[str] | None = None,
+                            addressed: list[str] | None = None) -> dict:
+        """Insert a roster row if missing; optionally seed title/roster."""
+        now = time.time()
+        parts = list(participants or [])
+        addr = list(addressed or [])
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT id FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+            if existing is None:
+                self._conn.execute(
+                    "INSERT INTO conversations "
+                    "(id, title, participants, addressed, created_ts, updated_ts) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (conversation_id, title, json.dumps(parts), json.dumps(addr), now, now),
+                )
+                self._conn.commit()
+        if participants is not None or addressed is not None or title is not None:
+            if existing is not None:
+                return self.update_conversation(
+                    conversation_id, title=title, participants=participants,
+                    addressed=addressed)
+        got = self.get_conversation(conversation_id)
+        return got or self._fmt_conversation(
+            conversation_id, title=title, count=0, last_ts=now,
+            participants=parts, addressed=addr)
+
+    def update_conversation(self, conversation_id: str, *, title: str | None = None,
+                            participants: list[str] | None = None,
+                            addressed: list[str] | None = None) -> dict:
+        """Patch roster. Removing a participant drops them from addressed."""
+        self.ensure_conversation(conversation_id)
+        cur = self.get_conversation(conversation_id) or {
+            "title": None, "participants": [], "addressed": [],
+        }
+        if title is not None:
+            cur["title"] = title
+        if participants is not None:
+            # de-dupe, keep order
+            seen: set[str] = set()
+            parts: list[str] = []
+            for m in participants:
+                if m and m not in seen:
+                    seen.add(m)
+                    parts.append(m)
+            cur["participants"] = parts
+            cur["addressed"] = [a for a in (addressed if addressed is not None
+                                            else cur["addressed"]) if a in seen]
+        elif addressed is not None:
+            allow = set(cur["participants"])
+            cur["addressed"] = [a for a in addressed if not allow or a in allow]
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE conversations SET title=?, participants=?, addressed=?, updated_ts=? "
+                "WHERE id=?",
+                (cur.get("title"), json.dumps(cur["participants"]),
+                 json.dumps(cur["addressed"]), now, conversation_id),
+            )
+            self._conn.commit()
+        return self.get_conversation(conversation_id) or cur
+
+    def add_participants(self, conversation_id: str, models: list[str],
+                         *, addressed: list[str] | None = None) -> dict:
+        """Join models to the room. Optionally replace the addressee list."""
+        conv = self.ensure_conversation(conversation_id)
+        parts = list(conv["participants"])
+        for m in models:
+            if m and m not in parts:
+                parts.append(m)
+        return self.update_conversation(
+            conversation_id, participants=parts, addressed=addressed)
 
     def list_conversations(self) -> list[dict]:
         """One entry per conversation: id, a title from the first user message,
-        message count, and last-activity ts — newest first."""
+        message count, last-activity ts, plus roster — newest first."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT conversation_id, COUNT(*) n, MAX(ts) last_ts "
                 "FROM messages GROUP BY conversation_id ORDER BY last_ts DESC"
             ).fetchall()
-            result = []
+            firsts = {}
+            inferred = {}
             for r in rows:
+                cid = r["conversation_id"]
                 t = self._conn.execute(
                     "SELECT content FROM messages WHERE conversation_id = ? AND role='user' "
-                    "ORDER BY id ASC LIMIT 1", (r["conversation_id"],)
+                    "ORDER BY id ASC LIMIT 1", (cid,)
                 ).fetchone()
-                title = (t["content"][:60] if t else r["conversation_id"])
-                result.append({"id": r["conversation_id"], "title": title,
-                               "count": r["n"], "last_ts": r["last_ts"]})
-        return result
+                firsts[cid] = (t["content"][:60] if t else cid)
+                inferred[cid] = self._infer_participants(cid)
+            rosters = {r["id"]: r for r in self._conn.execute(
+                "SELECT * FROM conversations").fetchall()}
+
+        by_id: dict[str, dict] = {}
+        for r in rows:
+            cid = r["conversation_id"]
+            roster = rosters.get(cid)
+            parts = self._json_ids(roster["participants"]) if roster else []
+            addr = self._json_ids(roster["addressed"]) if roster else []
+            if not parts:
+                parts = inferred.get(cid) or []
+            if not addr:
+                addr = list(parts[:1])
+            by_id[cid] = self._fmt_conversation(
+                cid, title=firsts.get(cid), count=r["n"], last_ts=r["last_ts"],
+                participants=parts, addressed=addr)
+        for cid, roster in rosters.items():
+            if cid in by_id:
+                continue
+            by_id[cid] = self._fmt_conversation(
+                cid, title=roster["title"] or cid, count=0,
+                last_ts=roster["updated_ts"],
+                participants=self._json_ids(roster["participants"]),
+                addressed=self._json_ids(roster["addressed"]))
+        return sorted(by_id.values(), key=lambda c: c["last_ts"] or 0, reverse=True)
 
     def model_history(self, conversation_id: str, limit: int = 20,
                       max_tokens: int | None = None) -> list[ModelMessage]:
