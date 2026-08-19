@@ -21,6 +21,7 @@ fresh chat thread otherwise.
 |---|---|---|
 | `qwen3-next-80b` | **Agentic coding workhorse** (instruct, fast, terse) | [memo](qwen3-next-80b.md) |
 | `qwen3.6-35b-a3b` | **Fast no-think chat** + flexible reasoner (replaced GLM) | [memo](qwen3.6-35b-a3b.md) |
+| `qwen3.8-27b` | Dense 27B hybrid chat (thinking off) | [memo](qwen3.8-27b.md) |
 | `qwen3-coder-next` | ***kept for hard tasks** — coder-tuned 80B; lost to 30B on value | [memo](qwen3-coder-next.md) |
 | `qwen3-coder-30b` | ***✅ winner** — the value coder (ties on quality, ~3x faster) | [memo](qwen3-coder-30b.md) |
 | `gemma4-26b` | Default general chat (reasoning off) | — |

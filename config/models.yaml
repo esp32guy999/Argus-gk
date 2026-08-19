@@ -42,6 +42,13 @@ models:
     accent: teal
     thinking: false        # reasons on everything → sluggish chat; off = snappy
 
+  qwen3.8-27b:
+    display: "Qwen 3.8 27B"
+    accent: green
+    context: 32768         # served at -c 32768; native 262K but 16GB VRAM-bound
+    warm: true             # 13GB dense cold-load
+    thinking: false        # template defaults to xhigh thinking if omitted
+
   qwen3-coder-30b:
     accent: gold           # bake-off champion
 
