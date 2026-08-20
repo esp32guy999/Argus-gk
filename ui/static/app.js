@@ -383,33 +383,10 @@ function createThinkingCanvas() {
  *  Inserted just before `beforeEl` (usually the empty typing bubble) so the
  *  doodle sits where the reply will appear. */
 function startThinkingIndicators(beforeEl) {
-  const statusPill = createStatusPill();
-  state.statusPill = statusPill;
-
-  // Doodler while waiting / tooling. Skip if reduced-motion.
-  let canvas = null;
-  try {
-    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      canvas = createThinkingCanvas();
-      state.thinkingCanvas = canvas;
-    }
-  } catch (e) {
-    console.warn('[argus] thinking canvas failed', e);
-    state.thinkingCanvas = null;
-  }
-
-  const anchor = beforeEl || null;
-  if (anchor && anchor.parentNode === messagesEl) {
-    messagesEl.insertBefore(statusPill, anchor);
-    if (canvas) messagesEl.insertBefore(canvas, anchor);
-  } else {
-    messagesEl.appendChild(statusPill);
-    if (canvas) messagesEl.appendChild(canvas);
-  }
-  return { statusPill, canvas };
+  // Live-turn bubble in chat.js owns turn chrome.
+  return { statusPill: null, canvas: null };
 }
 
-/** Stop the doodler only (first reply token) — keep the status pill for the turn. */
 function stopThinkingDoodle() {
   if (state.thinkingCanvas) {
     try { state.thinkingCanvas._stopThinking(); } catch {}
@@ -417,7 +394,6 @@ function stopThinkingDoodle() {
   }
 }
 
-/** Tear down doodler + status pill (turn done / cancelled / error). */
 function stopThinkingIndicators() {
   stopThinkingDoodle();
   if (state.statusPill) {
@@ -2054,64 +2030,6 @@ const THEME_LABELS = { default: 'Default', ocean: 'Ocean', ember: 'Ember', matri
       btn.title = `Theme: ${next}`;
     });
   }
-})();
-
-// ── "Working…" pill ──────────────────────────────────────────────────
-// Poll-driven (NOT SSE), with a ticking clock — so a long tool-heavy turn is visibly
-// ALIVE and never looks like a stall, even when iOS drops the event stream. Polls
-// /argus/turn_status every 3s for truth; ticks the displayed timer every 1s.
-(function initWorkingPill(){
-  const pill = document.createElement('div');
-  pill.id = 'working-pill';
-  pill.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);'
-    + 'top:calc(8px + env(safe-area-inset-top));z-index:200;display:none;align-items:center;gap:8px;'
-    + 'background:rgba(20,26,44,.93);border:1px solid #34405e;color:#cfe3ff;border-radius:18px;'
-    + 'padding:7px 14px;font:600 13px system-ui;box-shadow:0 4px 16px rgba(0,0,0,.45);'
-    + 'backdrop-filter:blur(6px);max-width:92vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
-  pill.innerHTML = '<span class="wp-dot" style="flex:0 0 auto;width:8px;height:8px;border-radius:50%;'
-    + 'background:#5ad1ff;box-shadow:0 0 8px #5ad1ff"></span><span class="wp-txt"></span>';
-  (document.body || document.documentElement).appendChild(pill);
-  const txt = pill.querySelector('.wp-txt'), dot = pill.querySelector('.wp-dot');
-  let st = null, stAt = 0;
-  function label(s){
-    const p = s.phase || '', d = s.detail || '';
-    if (p === 'tool')     return 'using ' + (d || 'a tool');
-    if (p === 'writing')  return 'writing reply';
-    if (p === 'thinking') return 'thinking';
-    if (p === 'working')  return d || 'still working';
-    if (p === 'loop')     return 'retrying';
-    if (p === 'starting') return 'starting up';
-    return d || p || 'thinking';
-  }
-  function render(){
-    if (!st || !st.active) { pill.style.display = 'none'; return; }
-    const drift = Math.floor((performance.now() - stAt) / 1000);
-    const elapsed = (st.elapsed || 0) + drift;
-    const since   = (st.since_activity || 0) + drift;
-    let s = '🧠 ' + label(st) + ' · ' + elapsed + 's';
-    if (since > 30) s += ' · quiet ' + since + 's';   // honest stall hint — clock still ticks
-    txt.textContent = s;
-    const col = since > 30 ? '#ffd45c' : '#5ad1ff';   // amber = no recent activity, cyan = active
-    dot.style.background = col; dot.style.boxShadow = '0 0 8px ' + col;
-    pill.style.display = 'flex';
-  }
-  async function poll(){
-    try {
-      const cid = state && state.conversationId != null
-        ? '?conversation_id=' + encodeURIComponent(state.conversationId) : '';
-      const r = await fetch(BRAIN + '/turn_status' + cid);
-      st = await r.json(); stAt = performance.now();
-      // Keep the in-chat status pill alive when SSE drops (iOS backgrounding)
-      // or when only thinking/tool events fire without text tokens.
-      if (st && st.active && state.statusPill && state.statusPill._heartbeat) {
-        state.statusPill._heartbeat(label(st));
-      }
-    } catch (_) { /* keep ticking from last-known on a blip */ }
-    render();
-  }
-  setInterval(poll, 3000);
-  setInterval(render, 1000);
-  poll();
 })();
 
 // ── Boot ─────────────────────────────────────────────────────────────

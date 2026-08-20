@@ -88,6 +88,11 @@ assistant row. The inbox never paints live tokens — no row means a ghost
 bubble. Tool-only / crashed Grok turns persist a wrap-up or `[Error: …]`,
 never an empty skip.
 
+While `active`, the PWA shows **one** live bubble (`data-live-turn`) from
+`turn_status`: model, verb, elapsed, seconds since last signal, and `tail`
+(last 4 activity lines). No doodle, no second pill, no stall color. On
+`active: false` that node is removed and history is merged by id.
+
 ### Conversations
 
 `GET /argus/conversations` includes `participants` and `addressed`

@@ -21,6 +21,8 @@ const ArgusChat = (() => {
   let wired = false;
   let lastTurnActive = false;
   let follow = true;
+  let liveSnap = null;
+  let liveTick = null;
 
   function messagesHost() {
     return (typeof messagesEl !== 'undefined' && messagesEl) || document.getElementById('chat-messages');
@@ -493,27 +495,91 @@ const ArgusChat = (() => {
     }
   }
 
-  // ── turn chrome ────────────────────────────────────────────────────
+  // ── live turn bubble (one node; turn_status is the only writer) ────
 
-  function heartbeatPill(st) {
-    if (!st || !st.active) return;
-    if (typeof state === 'undefined' || !state.statusPill || !state.statusPill._heartbeat) return;
+  function fmtElapsed(sec) {
+    sec = Math.max(0, Math.floor(Number(sec) || 0));
+    if (sec < 60) return sec + 's';
+    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  }
+
+  function liveVerb(st) {
     const p = st.phase || '', d = st.detail || '';
-    const lab = p === 'tool' ? ('using ' + (d || 'a tool'))
-              : p === 'working' ? (d || 'still working')
-              : p === 'writing' ? 'writing reply'
-              : (d || p || 'working');
-    state.statusPill._heartbeat(lab);
+    if (p === 'tool') return 'using ' + (d || 'a tool');
+    if (p === 'writing') return 'writing';
+    if (p === 'working') return d || 'still working';
+    if (p === 'thinking') return 'thinking';
+    if (p === 'starting') return 'starting';
+    if (p === 'loop') return 'retrying';
+    return d || p || 'working';
+  }
+
+  function paintLiveTurn(el) {
+    if (!liveSnap || !el) return;
+    const st = liveSnap.st;
+    const drift = (performance.now() - liveSnap.at) / 1000;
+    const elapsed = (st.elapsed || 0) + drift;
+    const since = (st.since_activity || 0) + drift;
+    const who = (typeof modelLabel === 'function' && st.model) ? modelLabel(st.model) : (st.model || 'model');
+    const head = who + ' · ' + liveVerb(st) + ' · ' + fmtElapsed(elapsed) + ' · ' + fmtElapsed(since) + ' ago';
+    const ht = el.querySelector('.live-head-txt');
+    if (ht) ht.textContent = head;
+    const tail = el.querySelector('.live-tail');
+    if (!tail) return;
+    const lines = Array.isArray(st.tail) ? st.tail : [];
+    tail.textContent = '';
+    lines.forEach(line => {
+      const d = document.createElement('div');
+      d.className = 'live-line';
+      d.textContent = String(line).slice(0, 80);
+      tail.appendChild(d);
+    });
+    tail.hidden = !lines.length;
+  }
+
+  function renderLiveTurn(st) {
+    const host = messagesHost();
+    if (!host) return;
+    let el = host.querySelector('[data-live-turn]');
+    if (!st || !st.active) {
+      if (el) el.remove();
+      if (liveTick) { clearInterval(liveTick); liveTick = null; }
+      liveSnap = null;
+      if (typeof stopThinkingIndicators === 'function') stopThinkingIndicators();
+      return;
+    }
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'live-turn message assistant';
+      el.dataset.liveTurn = '1';
+      el.innerHTML = '<div class="live-head"><span class="sp-dot"></span><span class="live-head-txt"></span></div><div class="live-tail"></div>';
+      host.appendChild(el);
+      if (follow) scrollBottom();
+    }
+    if (st.model && typeof modelColor === 'function') {
+      el.style.setProperty('--msg-accent', modelColor(st.model));
+    }
+    liveSnap = { st: st, at: performance.now() };
+    paintLiveTurn(el);
+    if (!liveTick) {
+      liveTick = setInterval(() => {
+        const n = messagesHost() && messagesHost().querySelector('[data-live-turn]');
+        if (n && liveSnap) paintLiveTurn(n);
+        else if (liveTick) { clearInterval(liveTick); liveTick = null; }
+      }, 1000);
+    }
   }
 
   function ensureThinking() {
-    if (typeof state === 'undefined') return;
-    if (state.statusPill) return;
-    if (typeof startThinkingIndicators === 'function') startThinkingIndicators(null);
+    const who = (typeof activeModel === 'function' && activeModel()) || '';
+    renderLiveTurn({
+      active: true, model: who, phase: 'starting', detail: '',
+      elapsed: 0, since_activity: 0, tail: ['starting'],
+    });
   }
 
   function clearThinking() {
-    if (typeof stopThinkingIndicators === 'function') stopThinkingIndicators();
+    renderLiveTurn({ active: false });
   }
 
   function setStopMode(on) {
@@ -537,13 +603,12 @@ const ArgusChat = (() => {
     const active = !!(st && st.active);
     if (active) {
       state.pendingBubbleId = st.bubble_id || state.pendingBubbleId;
-      ensureThinking();
-      heartbeatPill(st);
+      renderLiveTurn(st);
       setStopMode(true);
     } else {
       if (lastTurnActive) {
-        await mergeAfter();
         clearThinking();
+        await mergeAfter();
       }
       if (!state.sending) {
         state.pendingBubbleId = null;
@@ -616,7 +681,7 @@ const ArgusChat = (() => {
         continue;
       }
       if (!st.active) return st;
-      heartbeatPill(st);
+      renderLiveTurn(st);
       if (st.bubble_id) state.pendingBubbleId = st.bubble_id;
       await sleep(STATUS_MS);
     }

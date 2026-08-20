@@ -14,6 +14,7 @@ from argus import loop, metrics, model_config
 from argus.storage import get_store
 from argus.chat_client import (
     is_inviteable, normalize_to, normalize_client_msg_id, assistant_persist_text,
+    push_turn_tail,
 )
 from prometheus_client import make_asgi_app
 import httpx
@@ -192,7 +193,8 @@ def _turn_begin(cid, bubble_id, model_name: str | None = None, base_url: str | N
                         "model": model_name,
                         "user_id": user_id if user_id is not None else prev.get("user_id"),
                         "client_msg_id": client_msg_id if client_msg_id is not None
-                        else prev.get("client_msg_id")}
+                        else prev.get("client_msg_id"),
+                        "tail": push_turn_tail([], "starting", model_name or "")}
 def _turn_touch(cid, phase=None, detail=None):
     s = TURN_STATUS.get(cid)
     if not s:
@@ -202,6 +204,7 @@ def _turn_touch(cid, phase=None, detail=None):
         s["phase"] = phase
     if detail is not None:
         s["detail"] = detail
+    s["tail"] = push_turn_tail(s.get("tail"), s.get("phase"), s.get("detail"))
 
 def _turn_end(cid):
     s = TURN_STATUS.get(cid)
@@ -693,6 +696,7 @@ async def turn_status(conversation_id: str | None = None):
         "user_id": s.get("user_id"),
         "client_msg_id": s.get("client_msg_id"),
         "model": s.get("model"),
+        "tail": list(s.get("tail") or []),
     })
 
 @app.post("/api/cancel/{bubble_id}")

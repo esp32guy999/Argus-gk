@@ -86,3 +86,35 @@ def assistant_persist_text(
     if n_tools:
         return f"_(Finished {n_tools} tool call(s) with no wrap-up.)_"
     return "[No reply]"
+
+
+def format_turn_line(phase: str | None, detail: str | None) -> str:
+    """One activity line for the live-turn tail. Not a stall verdict."""
+    p = (phase or "").strip().lower()
+    d = " ".join(str(detail or "").split())[:72]
+    if p == "tool":
+        return f"using {d or 'a tool'}"[:80]
+    if p == "working":
+        return (d or "still working")[:80]
+    if p == "writing":
+        return "writing"
+    if p == "thinking":
+        return ("thinking: " + d if d else "thinking")[:80]
+    if p == "starting":
+        return (d or "starting")[:80]
+    if p == "loop":
+        return ("retrying " + d if d else "retrying")[:80]
+    return (d or p or "working")[:80]
+
+
+def push_turn_tail(tail: list | None, phase: str | None, detail: str | None,
+                   *, n: int = 4) -> list[str]:
+    """Keep the last n distinct consecutive activity lines."""
+    line = format_turn_line(phase, detail)
+    out = [str(x) for x in (tail or []) if str(x).strip()]
+    if not line:
+        return out[-n:]
+    if out and out[-1] == line:
+        return out[-n:]
+    out.append(line)
+    return out[-n:]

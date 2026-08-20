@@ -1503,6 +1503,31 @@ body {
   #canvas-body .panel-header { cursor: default; }
 }
 
+/* Live-turn bubble: one grounded status in the thread (turn_status only). */
+.live-turn {
+  align-self: flex-start;
+  max-width: 92%;
+  margin: 4px 0 8px 0;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  border-left: 3px solid var(--msg-accent, var(--accent));
+}
+.live-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.live-tail {
+  margin-top: 6px;
+  font-size: 11.5px; line-height: 1.4;
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.live-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#working-pill { display: none !important; }
+
 /* ── Status pill: live thinking/working indicator (pairs with doodler canvas) ── */
 .status-pill {
   display: inline-flex; align-items: center; gap: 7px;
