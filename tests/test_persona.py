@@ -14,6 +14,7 @@ def main() -> int:
     ids = {p["id"] for p in persona.list_personas()}
     assert "argus" in ids, ids
     assert "loki" in ids, ids
+    assert "README" not in ids and "readme" not in ids, ids
     print("PASS: argus + loki listed")
 
     assert persona.normalize(None) == "argus"

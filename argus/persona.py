@@ -69,7 +69,7 @@ def list_personas() -> list[dict]:
         if not fn.endswith(".md"):
             continue
         pid = fn[:-3]
-        if pid == DEFAULT or not _ID_OK.match(pid):
+        if pid == DEFAULT or pid.lower() == "readme" or not _ID_OK.match(pid):
             continue
         text = _read(os.path.join(_DIR, fn))
         out.append({"id": pid, "display": _display_from(pid, text)})
