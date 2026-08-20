@@ -13,7 +13,7 @@ def main() -> int:
 
     required = ["TOOL_CALLS", "TOOL_LATENCY", "TOOL_ERRORS", "TOOL_RETRY",
                 "AGENT_TURNS", "LOOP_DETECTED", "NO_PROGRESS", "TASK_DURATION",
-                "TOOLS_SELECTED", "CC_TURNS", "CC_DURATION", "SS_DECISIONS"]
+                "TOOLS_SELECTED", "CC_TURNS", "CC_DURATION"]
     missing = [m for m in required if not hasattr(metrics, m)]
     assert not missing, f"missing metrics: {missing}"
     print(f"PASS: all {len(required)} sensors defined")
@@ -23,7 +23,6 @@ def main() -> int:
     metrics.TOOL_ERRORS.labels("prov", "tool", "ValueError")
     metrics.AGENT_TURNS.labels("ok")
     metrics.CC_TURNS.labels("error")
-    metrics.SS_DECISIONS.labels("NO_OP", "rules")
     print("PASS: labeled sensors accept their labels")
 
     assert callable(metrics.serve), "metrics.serve missing"

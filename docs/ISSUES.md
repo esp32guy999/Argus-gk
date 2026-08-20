@@ -23,18 +23,11 @@ still open:        HA notify on high-importance only (F3); nightly consolidation
 
 ### Watchdog loop-nudges can crash the whole run via tool max_retries
 ```
+status:            resolved 2026-08-20
 found:             2026-07-05, ornith eval (restraint-danger task)
-symptom:           watchdog raises ModelRetry on repeated calls; those count toward
-                   the TOOL's max_retries=2 (registry.as_pydantic_tool) — a third
-                   repeat escalates to "Tool 'list_dir' exceeded max retries" which
-                   propagates as an exception and kills the run with a raw error
-                   instead of a graceful give-up.
-blast radius:      Medium — any model that triple-repeats a call gets a crash, not
-                   an answer. UI shows an error bubble.
-fix candidate:     catch UnexpectedModelBehavior in the loop driver and return
-                   _budget_summary-style text ("stopped: repeated list_dir 3x"), or
-                   have the watchdog short-circuit the run itself after N nudges.
-                   Add an eval task that forces a triple-repeat to lock the fix.
+fix:               loop.run / run_async / stream_run catch UnexpectedModelBehavior
+                   and return _tool_retry_summary (a sentence) instead of raising.
+                   tests/test_anti_stall.py covers the summary text.
 ```
 
 ### MCP-lane tool descriptions embed poorly for semantic select()
@@ -74,20 +67,9 @@ notes:             audiobookbay.lu is REACHABLE from anvil (fetch returns ~34KB)
 
 ### z-engineer (image-manipulation model) shows in the chat model selector
 ```
-category:          Observation
-severity:          Low
-status:            open
-blast_radius:      Low
-component:         ui/static/app.js (renderModelSelect / renderModelList) or ui/server.py /argus/models
-discovered_during: Theme-per-model design (2026-06-23)
-notes:             z-engineer is an image-manipulation model, not a chat model, so it
-                   shouldn't appear in the model dropdown. app.js already special-cases
-                   other media models by id regex (/^z-(image-edit|klein|video)/i and
-                   /^z-(image|klein|video)/i) for timeouts/handling, but z-engineer isn't
-                   caught by those and isn't filtered out. Fix options: (a) filter media
-                   models out of the chat selector client-side, or (b) tag them in the
-                   backend model cfg (e.g. cfg.kind="media") and filter on that — cleaner
-                   and avoids brittle id-regex matching. Prefer (b).
+status:            resolved 2026-08-18
+fix:               chat dropdown isDropdownModel() excludes z-* and grok. GK is the
+                   Grok overlay. Media models are not chat participants.
 ```
 
 ### Image attach: follow-ups after the claude-code wiring — largely SUPERSEDED (2026-08-03)

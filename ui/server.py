@@ -191,17 +191,6 @@ def _turn_begin(cid, bubble_id, model_name: str | None = None, base_url: str | N
                         "user_id": user_id if user_id is not None else prev.get("user_id"),
                         "client_msg_id": client_msg_id if client_msg_id is not None
                         else prev.get("client_msg_id")}
-    # SS generation pulse — every seated model, including Grok / CC / externals.
-    try:
-        from argus.ss.sensors import begin_turn
-        url = base_url
-        if not url and model_name:
-            ext = model_config.external(model_name)
-            url = (ext or {}).get("base_url") if ext else MODEL_URL
-        begin_turn(model_name or "", base_url=url or MODEL_URL)
-    except Exception:
-        pass
-
 def _turn_touch(cid, phase=None, detail=None):
     s = TURN_STATUS.get(cid)
     if not s:
@@ -211,21 +200,11 @@ def _turn_touch(cid, phase=None, detail=None):
         s["phase"] = phase
     if detail is not None:
         s["detail"] = detail
-    try:
-        from argus.ss.sensors import mark_activity
-        mark_activity()
-    except Exception:
-        pass
 
 def _turn_end(cid):
     s = TURN_STATUS.get(cid)
     if s:
         s["active"] = False
-    try:
-        from argus.ss.sensors import end_turn
-        end_turn()
-    except Exception:
-        pass
 
 app = FastAPI()
 # Expose harness metrics on the LIVE server (the CLI path called metrics.serve(); the
@@ -319,6 +298,8 @@ async def chat(request: Request):
     body = await request.json()
     from argus.chat_client import normalize_to, normalize_client_msg_id
     model_name = body.get("model") or _default_model()
+    from argus import persona as persona_mod
+    persona = persona_mod.normalize(body.get("persona"))
     message = body.get("message", "")
     raw_attachments = body.get("attachments") or []
     conversation_id = _cid(body.get("conversation_id"))
@@ -344,6 +325,7 @@ async def chat(request: Request):
         })
     # Join addressed models to the room (does not wipe history).
     await asyncio.to_thread(store.add_participants, conversation_id, to, addressed=to)
+    await asyncio.to_thread(store.update_conversation, conversation_id, persona=persona)
     generate_models = decision["missing"] or to
 
     # Materialise every attachment to disk — never silently drop. Hard failures
@@ -410,13 +392,16 @@ async def chat(request: Request):
                             f"[Attached file on disk: {a.path} ({a.filename})]"
                             for a in non_img)
                         cc_text = (cc_text + "\n" + extra).strip() if cc_text else extra
-                source = claude_code.send(conversation_id, cc_text, attachments=cc_atts)
+                source = claude_code.send(
+                    conversation_id, persona_mod.wrap_user_text(persona, cc_text),
+                    attachments=cc_atts)
             elif model_name == "grok":
                 # SuperGrok OAuth via Grok Build CLI — multimodal via --prompt-json.
                 # S4: inject SEE worker brief when a supervised task is active.
                 from argus import grok_code
                 from argus.see import api as see_api
                 grok_msg = see_api.prepare_worker_prompt(conversation_id, message)
+                grok_msg = persona_mod.wrap_user_text(persona, grok_msg)
                 source = grok_code.send(conversation_id, grok_msg, attachments=mats or None)
             else:
                 # Local / external: enriched text (OCR + paths) already in model_message.
@@ -441,7 +426,7 @@ async def chat(request: Request):
                     api_key=(model_config.external_api_key(model_name) if ext else "none"),
                     turn_budget=8, message_history=history, on_event=on_event_local,
                     enable_thinking=_thinking_for_turn(model_name, model_message),
-                    conversation_id=conversation_id)
+                    conversation_id=conversation_id, persona=persona)
             async for content in source:
                 if isinstance(content, tuple) and content[0] == "__event__":
                     ev = content[1]
@@ -720,7 +705,8 @@ async def get_models():
         # new model is described (and coloured) without touching server.py or app.js.
         return {"display": model_config.display(mid) or mid, "backend": backend,
                 "vision": _is_vision(mid), "warm_on_select": _warm_on_select(mid),
-                "accent": model_config.accent(mid)}
+                "accent": model_config.accent(mid),
+                "group": model_config.group(mid)}
     entries = []
     try:
         async with httpx.AsyncClient(timeout=2) as c:
@@ -738,6 +724,12 @@ async def get_models():
     # threads but is no longer offered in the picker (swapped for GK).
     entries.append(["grok", _cfg("grok", backend="grok")])
     return JSONResponse(entries)
+
+
+@app.get("/argus/personas")
+async def get_personas():
+    from argus import persona as persona_mod
+    return JSONResponse(persona_mod.list_personas())
 
 
 async def _model_ready(model_name: str) -> bool:
@@ -1049,7 +1041,8 @@ async def patch_conversation(cid: str, request: Request):
         store.update_conversation, _cid(cid),
         title=body.get("title"),
         participants=body.get("participants"),
-        addressed=body.get("addressed"))
+        addressed=body.get("addressed"),
+        persona=body.get("persona"))
     return JSONResponse(conv)
 
 @app.get("/argus/audiobook/search")

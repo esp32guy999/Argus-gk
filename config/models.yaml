@@ -13,12 +13,12 @@
 # Match is EXACT first, then substring (like the lane gates) — so a served id that
 # embeds a short key still resolves. Hot-reloaded (re-read when the file changes).
 #
-# Fields: display, accent (an ACCENTS palette name), vision (bool), thinking
-# (true/false/null=server default), context (tokens), warm (bool, pre-load on
-# select), external ({base_url, model_id, api_key_env?} for non-llama-swap
-# backends — api_key_env names an env var resolved at request time, never a
-# secret in this file), grant ([extra dangerous lanes this model is born
-# cleared for]).
+# Fields: display, accent (an ACCENTS palette name), group (picker optgroup:
+# Chat/Coder/Small/CPU), vision (bool), thinking (true/false/null=server default),
+# context (tokens), warm (bool, pre-load on select), external ({base_url, model_id,
+# api_key_env?} for non-llama-swap backends — api_key_env names an env var resolved
+# at request time, never a secret in this file), grant ([extra dangerous lanes this
+# model is born cleared for]). Persona (voice) is NOT a model field — see personas/.
 
 defaults:
   context: 8192
@@ -27,48 +27,76 @@ models:
   qwen3-next-80b:
     display: "Argus (local 80B)"
     accent: violet
+    group: Chat
     context: 8192          # served at -c 8192, VRAM-bound → history must fit
     warm: true             # slow cold-load (MoE offload) → warm on select
     thinking: null
 
-  ornith-35b-uncensored:   # Loki
-    display: Loki
+  ornith-35b-uncensored:   # model id stays ornith-*; Loki is a *persona* now
+    display: "Ornith 35B uncensored"
     accent: emerald
+    group: Chat
     context: 131072        # A3B KV is tiny; 131k costs little VRAM
     warm: true
     thinking: false        # unbounded think runs the budget dry with empty content
 
+  ornith-35b:
+    display: "Ornith 35B"
+    group: Chat
+    context: 131072
+    thinking: false
+
   qwen3.6-35b-a3b:
+    display: "Qwen 3.6 35B"
     accent: teal
+    group: Chat
     thinking: false        # reasons on everything → sluggish chat; off = snappy
 
   qwen3.8-27b:
     display: "Qwen 3.8 27B"
     accent: green
+    group: Chat
     context: 32768         # served at -c 32768; native 262K but 16GB VRAM-bound
     warm: true             # 13GB dense cold-load
     thinking: false        # template defaults to xhigh thinking if omitted
 
   qwen3-coder-30b:
+    display: "Coder 30B"
     accent: gold           # bake-off champion
+    group: Coder
 
   qwen3-coder-next:
-    {}                     # accent intentionally unmapped (falls back to grey)
+    display: "Coder Next 80B"
+    group: Coder           # accent intentionally unmapped (falls back to grey)
 
   gemma4-26b:
+    display: "Gemma 4 26B"
     accent: pink
+    group: Chat
 
   gemma4-12b:
+    display: "Gemma 4 12B"
     accent: green
+    group: Chat
 
   gpt-oss-20b:
+    display: "gpt-oss 20B"
     accent: yellow
+    group: Chat
 
   bonsai-8b:
+    display: "Bonsai 8B"
     accent: blue
+    group: Small
 
   lfm2.5-8b:
+    display: "LFM 2.5 8B"
     accent: red
+    group: Small
+
+  ornith-9b:
+    display: "Ornith 9B"
+    group: Small
 
   # SuperGrok OAuth via Grok Build CLI (`grok -p` / --prompt-json) — the GK toggle path.
   # Uses ~/.grok/auth.json (run `grok login`); does NOT use XAI_API_KEY /
@@ -95,6 +123,7 @@ models:
   # External backend (not llama-swap): CPU Gemma on its own ollama, never on the GPU.
   gemma4-cpu:
     display: "Gemma 4 E2B (CPU)"
+    group: CPU
     external:
       base_url: "http://localhost:11435/v1"
       model_id: "gemma4e2b"

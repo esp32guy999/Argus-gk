@@ -1,6 +1,8 @@
 # Design: The Reflections Loop (Argus reads its own exhaust and proposes)
 
-Status: **proposal** (2026-06-27). Author: Argus pairing session.
+Status: **historical / not shipped** (proposal 2026-06-27). Not a live loop.
+Do not implement as a fourth supervisor. SEE owns `/task`. The harness loop
+owns one generate-call. Author: Argus pairing session.
 Lineage: steals the "pattern-watch over time, flag without gotcha" idea from a shared
 doc of three system-prompts, and bakes in "simple, directional — guidance not truth."
 Builds directly on the [[work-ledger]], the proven stop-hook loop, and the proposal queue.

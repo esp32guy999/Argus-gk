@@ -13,7 +13,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
 from . import metrics, watchdog
 from .registry import Registry
@@ -159,10 +159,12 @@ def _cockpit_briefing(registry, model_name: str) -> str:
     return "\n".join(lines)
 
 
-def _system_prompt(model_name: str = "", registry=None) -> str:
-    """Operating rules + the soul (voice) + any per-model overlay + the cockpit
-    briefing. The soul shapes tone only; the rules win on behavior."""
-    soul = _load_soul()
+def _system_prompt(model_name: str = "", registry=None, persona: str | None = None) -> str:
+    """Operating rules + the selected voice + any per-model overlay + the cockpit
+    briefing. Voice is the persona (default Argus/`soul.md`); the rules win on behavior.
+    Model overlays in soul.d/ stay capability notes, not names."""
+    from . import persona as persona_mod
+    soul = persona_mod.voice(persona)
     out = SYSTEM_PROMPT + ("\n\n# Your voice\n" + soul if soul else "")
     overlay = _load_soul_overlay(model_name)
     if overlay:
@@ -584,28 +586,19 @@ def _budget_summary(turn_budget: int, called: list[str]) -> str:
     )
 
 
-def _ss_begin(model_name: str, base_url: str) -> None:
-    try:
-        from argus.ss.sensors import begin_turn
-        begin_turn(model_name, backend="openai", base_url=base_url)
-    except Exception:
-        pass
+def _tool_retry_summary(exc: BaseException, called: list[str]) -> str:
+    """Watchdog ModelRetry can exhaust the tool's max_retries and crash the turn.
 
-
-def _ss_mark() -> None:
-    try:
-        from argus.ss.sensors import mark_activity
-        mark_activity()
-    except Exception:
-        pass
-
-
-def _ss_end() -> None:
-    try:
-        from argus.ss.sensors import end_turn
-        end_turn()
-    except Exception:
-        pass
+    Return a progress sentence instead of a raw exception bubble.
+    """
+    msg = str(exc)
+    m = re.search(r"Tool '([^']+)' exceeded max retries", msg)
+    tool = (m.group(1) if m else (called[-1] if called else "a tool"))
+    steps = " → ".join(dict.fromkeys(called)) if called else "no tool calls completed"
+    return (
+        f"Stopped: {tool} was repeated until the harness cut it off. "
+        f"Progress so far: {steps}. Change approach rather than retrying the same call."
+    )
 
 
 def _make_sink(called: list[str], on_event=None, *, conversation_id: str | None = None):
@@ -677,7 +670,7 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
                      turn_budget: int = 8,
                      message_history=None, on_event=None,
                      enable_thinking: bool | None = None, anti_stall: bool = True,
-                     conversation_id: str | None = None):
+                     conversation_id: str | None = None, persona: str | None = None):
     """Async generator yielding CUMULATIVE assistant text as it streams.
 
     Same setup as run() (tool selection + watchdog + turn budget) but uses Pydantic
@@ -696,14 +689,13 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
     agent = Agent(
         make_model(model_name, base_url, api_key=api_key),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(model_name, registry),
+        system_prompt=_system_prompt(model_name, registry, persona=persona),
         capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()
     limits = UsageLimits(request_limit=turn_budget)
     settings = _thinking_settings(enable_thinking)
     final = ""
-    _ss_begin(model_name, base_url)
     # If this conversation has an active SEE task, prepend worker brief once.
     see_prefix = ""
     if conversation_id:
@@ -723,7 +715,6 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
         ) as result:
             async for text in result.stream_text():   # cumulative text-so-far
                 final = text
-                _ss_mark()
                 yield text
         if anti_stall and _looks_unfinished(final, len(called)):
             metrics.ANNOUNCE_NUDGES.inc()
@@ -746,7 +737,6 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
                         final = first + "\n\n" + text
                     else:
                         final = text
-                    _ss_mark()
                     yield final
         # Turn contract: empty → one retry → BLOCKED; NO_REPLY → silent strip.
         retried_empty = False
@@ -761,7 +751,6 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
             ) as result3:
                 async for text in result3.stream_text():
                     final = text
-                    _ss_mark()
                     yield final
             if classify_turn(final, len(called)) != "EMPTY":
                 try:
@@ -801,11 +790,14 @@ async def stream_run(registry: Registry, prompt: str, *, model_name: str = "loca
         metrics.NO_PROGRESS.inc()
         sink("exhausted", None, 0)
         yield _budget_summary(turn_budget, called)
+    except UnexpectedModelBehavior as e:
+        metrics.AGENT_TURNS.labels("blocked").inc()
+        sink("blocked", "repeated_tool", 0)
+        yield _tool_retry_summary(e, called)
     except Exception:
         metrics.AGENT_TURNS.labels("error").inc()
         raise
     finally:
-        _ss_end()
         metrics.TASK_DURATION.observe(time.perf_counter() - start)
 
 
@@ -923,7 +915,7 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
         base_url: str = "http://localhost:4000/v1", api_key: str = "none",
         turn_budget: int = 8,
         message_history=None, enable_thinking: bool | None = None,
-        on_event=None, anti_stall: bool = True) -> str:
+        on_event=None, anti_stall: bool = True, persona: str | None = None) -> str:
     selected = _gate_tools(registry.select(prompt), model_name, message_history)
     metrics.TOOLS_SELECTED.observe(len(selected))
     called: list[str] = []
@@ -931,13 +923,12 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
     agent = Agent(
         make_model(model_name, base_url, api_key=api_key),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(model_name, registry),
+        system_prompt=_system_prompt(model_name, registry, persona=persona),
         capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()
     limits = UsageLimits(request_limit=turn_budget)
     settings = _thinking_settings(enable_thinking)
-    _ss_begin(model_name, base_url)
     try:
         result = agent.run_sync(prompt, message_history=message_history,
                                 usage_limits=limits, model_settings=settings)
@@ -954,11 +945,14 @@ def run(registry: Registry, prompt: str, *, model_name: str = "local",
         metrics.NO_PROGRESS.inc()
         sink("exhausted", None, 0)
         return _budget_summary(turn_budget, called)
+    except UnexpectedModelBehavior as e:
+        metrics.AGENT_TURNS.labels("blocked").inc()
+        sink("blocked", "repeated_tool", 0)
+        return _tool_retry_summary(e, called)
     except Exception:
         metrics.AGENT_TURNS.labels("error").inc()
         raise
     finally:
-        _ss_end()
         metrics.TASK_DURATION.observe(time.perf_counter() - start)
 
 
@@ -966,7 +960,8 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
                     base_url: str = "http://localhost:4000/v1", api_key: str = "none",
                     turn_budget: int = 12,
                     message_history=None, on_event=None,
-                    enable_thinking: bool | None = None, anti_stall: bool = True) -> str:
+                    enable_thinking: bool | None = None, anti_stall: bool = True,
+                    persona: str | None = None) -> str:
     """Non-streaming async run — for the background task runner. Same tool selection
     + watchdog + budget as run(), returns the final text. Higher default budget since
     background jobs are expected to be multi-step."""
@@ -977,13 +972,12 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
     agent = Agent(
         make_model(model_name, base_url, api_key=api_key),
         tools=[t.as_pydantic_tool() for t in selected],
-        system_prompt=_system_prompt(model_name, registry),
+        system_prompt=_system_prompt(model_name, registry, persona=persona),
         capabilities=[watchdog.make_capability(on_event=sink)],
     )
     start = time.perf_counter()
     limits = UsageLimits(request_limit=turn_budget)
     settings = _thinking_settings(enable_thinking)
-    _ss_begin(model_name, base_url)
     try:
         result = await agent.run(prompt, message_history=message_history,
                                  usage_limits=limits, model_settings=settings)
@@ -999,9 +993,12 @@ async def run_async(registry: Registry, prompt: str, *, model_name: str = "local
         metrics.NO_PROGRESS.inc()
         sink("exhausted", None, 0)
         return _budget_summary(turn_budget, called)
+    except UnexpectedModelBehavior as e:
+        metrics.AGENT_TURNS.labels("blocked").inc()
+        sink("blocked", "repeated_tool", 0)
+        return _tool_retry_summary(e, called)
     except Exception:
         metrics.AGENT_TURNS.labels("error").inc()
         raise
     finally:
-        _ss_end()
         metrics.TASK_DURATION.observe(time.perf_counter() - start)

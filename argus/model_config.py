@@ -30,6 +30,7 @@ _DEFAULTS = {
     "warm": False,
     "external": None,    # {base_url, model_id} for non-llama-swap backends
     "grant": [],         # extra dangerous lanes this model is born cleared for
+    "group": None,       # picker optgroup: Chat / Coder / Small / CPU
 }
 
 
@@ -112,6 +113,12 @@ def external_api_key(model_id: str) -> str:
         val = os.environ.get(env_name)
         return val if val is not None else ""
     return ext.get("api_key") or "none"
+
+
+def group(model_id: str) -> str | None:
+    """Picker optgroup label, or None → UI buckets as Other."""
+    g = _resolve(model_id).get("group")
+    return str(g) if g else None
 
 
 def grants(model_id: str) -> list[str]:

@@ -1,6 +1,4 @@
-// ── Claude Desktop Next — frontend ───────────────────────────────────
-// Chat via SSE through /argus/events, widget canvas ported from the legacy
-// desktop app, overlays + conversations drawer borrowed from forge.
+// ── Argus shell — canvas, roster, views. Chat lives in chat.js. ──
 
 const BRAIN = '/argus';
 
@@ -8,31 +6,26 @@ const BRAIN = '/argus';
 const HISTORY_PAGE = 100;
 
 const state = {
-  models:         [],       // [{name, params, size, family, cfg}]
-  modelCfg:       {},       // {model_id: cfg_from_brain}
+  models:         [],
+  modelCfg:       {},
   currentModel:   null,
   conversationId: null,
   conversations: [],
-  sending:        false,     // send lock — Enter + tap cannot double-POST
-  participants:   [],        // models in this room
-  addressed:      [],        // who this send goes to
-  newestMsgId:    null,      // last merged history id (poll after_id)
-  gkActive:       false,     // legacy overlay; Grok is a participant now
-  rtTo:           'both',    // Roundtable addressee: gemma | claude | both
-  rtBubbles:      {},        // Roundtable: bubbleId -> {el, speaker, target} (parallel to pending path)
+  sending:        false,
+  participants:   [],
+  addressed:      [],
+  newestMsgId:    null,
+  gkActive:       false,
+  persona:        'argus',
+  personas:       [{id: 'argus', display: 'Argus'}],
+  rtTo:           'both',
   currentView:    'chat',
-  abortCtl:       null,     // AbortController for active chat
-  pendingBubbleId:null,     // SSE id we're listening for
-  pendingMsgEl:   null,     // current streaming message DOM node
-  statusPill:     null,     // live status pill (phase + elapsed timer), killed on done
-  thinkingCanvas: null,     // doodler animation (runs alongside status pill until turn ends)
-  pendingDbId:    null,     // DB id of the assistant message after save
-  pendingUserId:  null,     // DB id of the user message that prompted it
-  pendingDurMeta: null,     // " · 12s" turn time from the CC done event, appended to bubble meta
-  pendingModel:   null,     // model that produced the in-flight turn (snapshot at send; colors the bubble + meta)
-  oldestMsgId:    null,     // id of earliest-loaded message, for lazy paging
-  historyExhausted:false,   // true once we've fetched everything older
-  historyLoading: false,    // in-flight older-page fetch
+  pendingBubbleId:null,     // cancel id only — never a render source
+  statusPill:     null,
+  thinkingCanvas: null,
+  oldestMsgId:    null,
+  historyExhausted:false,
+  historyLoading: false,
 };
 
 // ── DOM refs ─────────────────────────────────────────────────────────
@@ -41,6 +34,7 @@ const messagesEl   = $('chat-messages');
 const inputEl      = $('chat-input');
 const sendBtn      = $('chat-send');
 const modelSelect  = $('model-select');
+const personaSelect = $('persona-select');
 const sideToggle   = $('side-toggle');
 const sideNav      = $('side-nav');
 const mainEl       = $('main');
@@ -85,9 +79,9 @@ function isLocalGpuModel(id) {
             && !(state.modelCfg[id] && state.modelCfg[id].external));
 }
 function sendTargets() {
-  // GK overlay talks to Grok only — never touches llama-swap / VRAM.
+  // GK is the only way to pick Grok. The dropdown is the only way to pick a local.
+  // Chips / roster must not override that — leftover addressed=[grok] made GK a no-op.
   if (state.gkActive) return [GK_MODEL];
-  if (state.addressed && state.addressed.length) return state.addressed.slice();
   return state.currentModel ? [state.currentModel] : [];
 }
 function activeModel() {
@@ -438,7 +432,7 @@ async function init() {
   await loadConversations();
   await loadHistory();
   await loadLayout();
-  connectEvents();
+  if (window.ArgusChat) ArgusChat.startPolling();
   wireUI();
   wirePresence();
   // Kick off view-specific polls lazily; they'll hydrate on tab switch too.
@@ -566,15 +560,15 @@ async function loadModels() {
     // Also migrate legacy claude-code saved pick → local model (CC button is gone).
     if (saved === 'claude-code') { saved = L.lastLocalModel || null; }
     // OAuth agents (GK toggle + legacy claude-code) are not dropdown locals.
-    const isLocal = id => id && id !== GK_MODEL && id !== 'claude-code';
-    const localModels = state.models.filter(m => isLocal(m.id));
-    state.currentModel = (saved && state.modelCfg[saved] && isLocal(saved))
+    const localModels = state.models.filter(m => isDropdownModel(m.id));
+    state.currentModel = (saved && state.modelCfg[saved] && isDropdownModel(saved))
       ? saved
       : (localModels[0]?.id || null);
 
     applyModelAccent(activeModel());
     renderModelSelect();
     renderModelList();
+    await loadPersonas(L);
     await loadRoster();
   } catch (e) {
     modelSelect.innerHTML = `<option>Brain unavailable</option>`;
@@ -593,6 +587,10 @@ async function loadRoster() {
     const conv = await fetchJson(`${BRAIN}/conversations/${encodeURIComponent(cid)}`);
     state.participants = conv.participants || [];
     state.addressed = conv.addressed || [];
+    if (conv.persona) {
+      state.persona = conv.persona;
+      renderPersonaSelect();
+    }
     if (!state.participants.length) {
       // Prefer Grok (or last GK session) — never seed a local GPU model just
       // because it's ARGUS_DEFAULT. That evicts whatever is on the card.
@@ -616,10 +614,8 @@ async function loadRoster() {
       if (!keep.includes(GK_MODEL)) keep.unshift(GK_MODEL);
       state.participants = keep;
     }
-    if (state.gkActive) {
-      if (!state.participants.includes(GK_MODEL)) state.participants = [GK_MODEL, ...state.participants];
-      state.addressed = [GK_MODEL];
-    }
+    // GK / dropdown own send routing. Roster is history color only — do not
+    // rewrite addressed here or turning GK off still sends to Grok.
   } catch {
     if (!state.participants.length) {
       state.participants = [GK_MODEL];
@@ -710,21 +706,74 @@ function updateGkToggle() {
   const btn = $('gk-toggle');
   if (btn) {
     btn.classList.toggle('active', state.gkActive);
+    btn.setAttribute('aria-pressed', state.gkActive ? 'true' : 'false');
     btn.title = state.gkActive
       ? 'Routing to Grok (SuperGrok). Click to return to your dropdown model.'
-      : 'Swap to Grok (SuperGrok) — keeps your dropdown model selected.';
+      : 'Talk to Grok (SuperGrok) — keeps your dropdown model selected, does not unload the GPU.';
   }
   if (typeof modelSelect !== 'undefined' && modelSelect) {
     modelSelect.style.opacity = state.gkActive ? '0.5' : '';
+    modelSelect.title = state.gkActive
+      ? 'Standby — tap a model here to leave Grok and use the local GPU'
+      : 'Local model (llama-swap)';
   }
 }
 
-function renderModelSelect() {
-  // OAuth agents are not dropdown entries — Grok is the GK toggle beside it.
-  modelSelect.innerHTML = state.models
-    .filter(m => m.id !== GK_MODEL && m.id !== 'claude-code')
-    .map(m => `<option value="${escHtml(m.id)}" ${m.id === state.currentModel ? 'selected' : ''}>${escHtml(m.display)}</option>`)
+function isDropdownModel(id) {
+  return !!(id && id !== GK_MODEL && id !== 'claude-code' && !String(id).startsWith('z-'));
+}
+
+async function loadPersonas(layout) {
+  try {
+    const list = await fetchJson(`${BRAIN}/personas`);
+    if (Array.isArray(list) && list.length) state.personas = list;
+  } catch {}
+  const ids = new Set((state.personas || []).map(p => p.id));
+  let pick = (layout && layout.lastPersona) || state.persona || 'argus';
+  if (!ids.has(pick)) pick = 'argus';
+  state.persona = pick;
+  renderPersonaSelect();
+}
+
+function renderPersonaSelect() {
+  if (!personaSelect) return;
+  const list = state.personas || [];
+  if (!list.length) {
+    personaSelect.innerHTML = '<option value="argus">Argus</option>';
+    return;
+  }
+  personaSelect.innerHTML = list
+    .map(p => `<option value="${escHtml(p.id)}" ${p.id === state.persona ? 'selected' : ''}>${escHtml(p.display || p.id)}</option>`)
     .join('');
+}
+
+function renderModelSelect() {
+  // Locals + CPU externals only. Grok is the GK button. Media z-* stay out.
+  const locals = (state.models || []).filter(m => isDropdownModel(m.id));
+  if (!locals.length) {
+    modelSelect.innerHTML = '<option value="">No local models</option>';
+    return;
+  }
+  if (!state.currentModel || !locals.some(m => m.id === state.currentModel)) {
+    state.currentModel = locals[0].id;
+  }
+  const order = ['Chat', 'Coder', 'Small', 'CPU'];
+  const buckets = {};
+  for (const m of locals) {
+    const g = (m.cfg && m.cfg.group) || 'Other';
+    (buckets[g] || (buckets[g] = [])).push(m);
+  }
+  const labels = [...order.filter(g => buckets[g] && buckets[g].length),
+                  ...Object.keys(buckets).filter(g => !order.includes(g) && buckets[g].length)];
+  const parts = [];
+  for (const g of labels) {
+    parts.push(`<optgroup label="${escHtml(g)}">`);
+    for (const m of buckets[g]) {
+      parts.push(`<option value="${escHtml(m.id)}" ${m.id === state.currentModel ? 'selected' : ''}>${escHtml(m.display)}</option>`);
+    }
+    parts.push('</optgroup>');
+  }
+  modelSelect.innerHTML = parts.join('');
 }
 
 function renderModelList() {
@@ -746,248 +795,16 @@ function renderModelList() {
   }).join('');
 }
 
-// ── History ──────────────────────────────────────────────────────────
-function _historyQuery(extra = {}) {
-  const p = new URLSearchParams();
-  if (state.conversationId != null) p.set('conversation_id', state.conversationId);
-  for (const [k, v] of Object.entries(extra)) {
-    if (v != null) p.set(k, v);
-  }
-  const qs = p.toString();
-  return qs ? `?${qs}` : '';
+// Tiny transient toast (bottom-center) for actions with no other visible result.
+function showToast(msg) {
+  let t = document.getElementById('app-toast');
+  if (!t) { t = document.createElement('div'); t.id = 'app-toast'; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => t.classList.remove('show'), 1400);
 }
 
-async function loadHistory() {
-  state.oldestMsgId = null;
-  state.historyExhausted = false;
-  state.historyLoading = false;
-  let msgs;
-  try {
-    msgs = await fetchJson(`${BRAIN}/history${_historyQuery({ limit: HISTORY_PAGE })}`);
-  } catch {
-    msgs = [];
-  }
-  renderHistory(msgs);
-  if (msgs && msgs.length) state.oldestMsgId = msgs[0].id;
-  if (!msgs || msgs.length < HISTORY_PAGE) state.historyExhausted = true;
-}
-
-// Foreground reconciler — the guarantee that replies appear even when the SSE silently
-// dies. iOS backgrounding suspends BOTH the socket and JS timers, so a turn could get
-// stuck "pending" forever (the 90s safety timer never fires) and every backfill path was
-// gated off behind !pendingBubbleId — disabling self-heal exactly when it was needed.
-// This runs on a 4s visible interval + on every foreground/reconnect, ungated, and reuses
-// send()'s already-tested DB self-heal instead of waiting on the frozen timer.
-async function _pollSync() {
-  if (document.visibilityState !== 'visible') return;
-  if (state.pendingBubbleId) {
-    // A turn is open. Do NOT treat quiet tools as a dead socket — Grok can go
-    // minutes without a text delta while a command runs. Ask the server first.
-    try {
-      const cid = state.conversationId != null
-        ? '?conversation_id=' + encodeURIComponent(state.conversationId) : '';
-      const r = await fetch(BRAIN + '/turn_status' + cid);
-      const st = await r.json();
-      if (st && st.active) {
-        state.lastDeltaTs = Date.now();
-        if (state.statusPill && state.statusPill._heartbeat) {
-          const p = st.phase || '', d = st.detail || '';
-          const lab = p === 'tool' ? ('using ' + (d || 'a tool'))
-                    : p === 'working' ? (d || 'still working')
-                    : (d || p || 'working');
-          state.statusPill._heartbeat(lab);
-        }
-        return;   // still running — keep waiting
-      }
-    } catch (_) { /* fall through to heal only if we already look dead */ }
-    // Server says the turn is over (or we couldn't reach it) AND no recent
-    // deltas — then self-heal. 90s, not 6s: tools are quiet by design.
-    if (Date.now() - (state.lastDeltaTs || 0) > 90_000 && state.pendingResolve) {
-      state._healedByPoll = true;
-      const r = state.pendingResolve; state.pendingResolve = null; r();
-    }
-    return;
-  }
-  // No active turn: merge newer rows by id — never wipe the thread.
-  try {
-    const after = state.newestMsgId != null ? { after_id: state.newestMsgId, limit: 50 } : { limit: 1 };
-    const latest = await fetchJson(`${BRAIN}/history${_historyQuery(after)}`);
-    if (latest && latest.length) {
-      if (state.newestMsgId != null) mergeHistory(latest);
-      else {
-        const newest = latest[latest.length - 1];
-        const el = newest && document.querySelector(`[data-msg-id="${CSS.escape(String(newest.id))}"]`);
-        if (newest && !el) loadHistory();
-      }
-    }
-  } catch {}
-}
-
-async function loadMoreHistory() {
-  if (state.historyLoading || state.historyExhausted || state.oldestMsgId == null) return;
-  state.historyLoading = true;
-  let msgs = [];
-  try {
-    msgs = await fetchJson(`${BRAIN}/history${_historyQuery({ limit: HISTORY_PAGE, before_id: state.oldestMsgId })}`);
-  } catch {
-    msgs = [];
-  }
-  if (!msgs || msgs.length === 0) {
-    state.historyExhausted = true;
-    state.historyLoading = false;
-    return;
-  }
-  prependHistory(msgs);
-  state.oldestMsgId = msgs[0].id;
-  if (msgs.length < HISTORY_PAGE) state.historyExhausted = true;
-  state.historyLoading = false;
-}
-
-function _buildMessageNodes(msgs) {
-  const frag = document.createDocumentFragment();
-  let lastDay = null;
-  (msgs || []).forEach(msg => {
-    const day = fmtDay(msg.timestamp);
-    if (day !== lastDay) {
-      lastDay = day;
-      const lbl = document.createElement('div');
-      lbl.className = 'timestamp-label';
-      lbl.textContent = day;
-      frag.appendChild(lbl);
-    }
-    const role = msg.role === 'user' ? 'user' : 'assistant';
-    const text = role === 'assistant' ? stripCommandTags(msg.content) : (msg.content || '');
-    const modelDisplay = RT_SPEAKER[msg.model] || state.modelCfg?.[msg.model]?.display || msg.model;
-    const meta = role === 'assistant' && msg.model
-      ? `${modelDisplay} · ${fmtTime(msg.timestamp)}`
-      : fmtTime(msg.timestamp);
-    const el = document.createElement('div');
-    el.className = `message ${role}`;
-    el.dataset.msgId = msg.id;
-    el.textContent = text;
-    if (role === 'assistant') { _renderInlineHtml(el, text); _renderLinks(el, text); _renderChoices(el, text); }
-    if (role === 'assistant' && msg.model)   // colour the side-bars by the model that produced this reply
-      el.style.setProperty('--msg-accent', modelColor(msg.model));
-    if (meta) {
-      const m = document.createElement('span');
-      m.className = 'msg-meta';
-      m.textContent = meta;
-      el.appendChild(m);
-    }
-    if (role === 'assistant') {
-      renderImageTags(el, msg.content);
-      renderVideoTags(el, msg.content);
-    }
-    // Wrap in swipe-to-delete row, then append the wrapper (swipe is the only delete)
-    const row = _wrapSwipeDelete(el);
-    frag.appendChild(row);
-  });
-  return frag;
-}
-
-// Swipe-left-to-delete on touch devices.  Wraps a message element in a
-// .swipe-row container with a red "Delete" zone behind it.
-// Reads msgEl.dataset.msgId at swipe-time so late-bound IDs work.
-function _wrapSwipeDelete(msgEl) {
-  const row = document.createElement('div');
-  row.className = 'swipe-row';
-  const quoteBg = document.createElement('div');   // revealed on RIGHT swipe
-  quoteBg.className = 'swipe-quote-bg';
-  quoteBg.textContent = '⧉ Copy';
-  const bg = document.createElement('div');         // revealed on LEFT swipe
-  bg.className = 'swipe-delete-bg';
-  bg.textContent = 'Delete';
-  row.appendChild(quoteBg);
-  row.appendChild(bg);
-  // Transfer the message into the wrapper
-  msgEl.parentNode?.insertBefore(row, msgEl);
-  row.appendChild(msgEl);
-
-  let startX = 0, startY = 0, dx = 0, tracking = false, capturedSel = '';
-  const THRESHOLD = 0.30; // 30% of row width
-
-  row.addEventListener('touchstart', e => {
-    const t = e.touches[0];
-    startX = t.clientX;
-    startY = t.clientY;
-    dx = 0;
-    tracking = true;
-    // Capture any active text selection inside THIS bubble NOW — iOS clears it
-    // the moment a swipe begins, so we can't read it at touchend.
-    capturedSel = '';
-    const sel = window.getSelection();
-    if (sel && !sel.isCollapsed && sel.toString().trim()
-        && msgEl.contains(sel.anchorNode) && msgEl.contains(sel.focusNode)) {
-      capturedSel = sel.toString().trim();
-    }
-    row.classList.add('swiping');
-  }, { passive: true });
-
-  row.addEventListener('touchmove', e => {
-    if (!tracking) return;
-    const t = e.touches[0];
-    const deltaX = t.clientX - startX;
-    const deltaY = t.clientY - startY;
-    // If vertical scroll dominates, bail out
-    if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(dx) < 10) {
-      tracking = false;
-      row.classList.remove('swiping');
-      msgEl.style.transform = '';
-      return;
-    }
-    dx = deltaX; // both directions: left = delete, right = quote
-    if (Math.abs(dx) > 4) e.preventDefault(); // prevent scroll while swiping
-    msgEl.style.transform = `translateX(${dx}px)`;
-  }, { passive: false });
-
-  row.addEventListener('touchend', () => {
-    if (!tracking) return;
-    tracking = false;
-    row.classList.remove('swiping');
-    const pct = Math.abs(dx) / row.offsetWidth;
-    const id = msgEl.dataset.msgId;
-    if (pct >= THRESHOLD && dx < 0 && id) {
-      // LEFT swipe -> delete: animate out then DELETE from the store
-      msgEl.style.transition = 'transform 0.2s ease';
-      msgEl.style.transform = `translateX(-${row.offsetWidth}px)`;
-      msgEl.addEventListener('transitionend', async () => {
-        try {
-          await fetch(`${BRAIN}/history/${encodeURIComponent(id)}`, { method: 'DELETE' });
-        } catch {}
-        row.remove();
-      }, { once: true });
-    } else if (pct >= THRESHOLD && dx > 0) {
-      // RIGHT swipe -> open a copy sheet with the bubble's content (captured
-      // selection, else whole bubble). The sheet uses native iOS selection, which
-      // works where the programmatic clipboard API doesn't over plain http.
-      showCopySheet(capturedSel || _bubbleText(msgEl));
-      msgEl.style.transition = 'transform 0.2s ease';
-      msgEl.style.transform = '';
-    } else {
-      msgEl.style.transform = '';
-    }
-  }, { passive: true });
-
-  row.addEventListener('touchcancel', () => {
-    tracking = false;
-    row.classList.remove('swiping');
-    msgEl.style.transform = '';
-  }, { passive: true });
-
-  return row;
-}
-
-// The bubble's message text, minus the meta line (model · time).
-function _bubbleText(msgEl) {
-  const clone = msgEl.cloneNode(true);
-  clone.querySelectorAll('.msg-meta').forEach(e => e.remove());
-  return clone.textContent.trim();
-}
-
-// Copy text to the clipboard. navigator.clipboard requires a secure context
-// (https/localhost); the Forge UI is served plain-http on the LAN, so on iOS it
-// falls back to the legacy textarea+execCommand path (works inside the swipe's
-// touch gesture, which counts as user activation).
 function copyToClipboard(text) {
   if (!text) return false;
   if (navigator.clipboard && window.isSecureContext) {
@@ -1000,7 +817,6 @@ function copyToClipboard(text) {
 function _legacyCopy(text) {
   const ta = document.createElement('textarea');
   ta.value = text;
-  // iOS needs an editable, on-screen-ish, ≥16px element to allow a copy.
   ta.contentEditable = 'true';
   ta.readOnly = false;
   ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;font-size:16px;background:transparent;';
@@ -1009,7 +825,6 @@ function _legacyCopy(text) {
   const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   if (isIOS) {
-    // iOS won't copy from a plain .select(); it needs a real Range selection.
     const range = document.createRange();
     range.selectNodeContents(ta);
     const sel = window.getSelection();
@@ -1024,16 +839,6 @@ function _legacyCopy(text) {
   try { window.getSelection().removeAllRanges(); } catch {}
   ta.remove();
   return ok;
-}
-
-// Tiny transient toast (bottom-center) for actions with no other visible result.
-function showToast(msg) {
-  let t = document.getElementById('app-toast');
-  if (!t) { t = document.createElement('div'); t.id = 'app-toast'; document.body.appendChild(t); }
-  t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => t.classList.remove('show'), 1400);
 }
 
 // Copy sheet — present the text pre-selected so iOS's NATIVE copy (the selection
@@ -1071,80 +876,6 @@ function showCopySheet(text) {
     ta.focus();
     try { ta.setSelectionRange(0, text.length); } catch {}
   }, 60);
-}
-
-function renderHistory(msgs, { wipe = true } = {}) {
-  if (wipe) {
-    messagesEl.innerHTML = '';
-    messagesEl.appendChild(_buildMessageNodes(msgs));
-  } else {
-    mergeHistory(msgs);
-  }
-  if (msgs && msgs.length) {
-    const last = msgs[msgs.length - 1];
-    if (last && last.id != null) state.newestMsgId = last.id;
-  }
-  scrollBottom();
-}
-
-function mergeHistory(msgs) {
-  if (!msgs || !msgs.length) return;
-  for (const m of msgs) {
-    if (m.id == null) continue;
-    state.newestMsgId = Math.max(state.newestMsgId || 0, m.id);
-    const existing = messagesEl.querySelector(`[data-msg-id="${CSS.escape(String(m.id))}"]`);
-    if (existing) {
-      if (m.content && !existing.textContent.trim()) {
-        existing.textContent = stripCommandTags(m.content);
-      }
-      continue;
-    }
-    const el = document.createElement('div');
-    const role = m.role === 'user' ? 'user' : 'assistant';
-    el.className = `message ${role}`;
-    el.dataset.msgId = String(m.id);
-    if (m.model) {
-      el.style.setProperty('--msg-accent', modelColor(m.model));
-    }
-    el.textContent = stripCommandTags(m.content || '');
-    if (m.model || m.timestamp) {
-      const meta = document.createElement('span');
-      meta.className = 'msg-meta';
-      meta.textContent = [m.model ? modelLabel(m.model) : '', m.timestamp ? fmtTime(m.timestamp) : '']
-        .filter(Boolean).join(' · ');
-      el.appendChild(meta);
-    }
-    messagesEl.appendChild(_wrapSwipeDelete(el));
-  }
-}
-
-function prependHistory(msgs) {
-  const prevHeight = messagesEl.scrollHeight;
-  const prevTop    = messagesEl.scrollTop;
-  messagesEl.insertBefore(_buildMessageNodes(msgs), messagesEl.firstChild);
-  // Preserve viewport position — keep the same message under the user's eye.
-  messagesEl.scrollTop = prevTop + (messagesEl.scrollHeight - prevHeight);
-}
-
-function appendMessage(role, text, { streaming = false, meta = '' } = {}) {
-  const el = document.createElement('div');
-  el.className = `message ${role}${streaming ? ' streaming' : ''}`;
-  el.textContent = text;
-  if (meta) {
-    const m = document.createElement('span');
-    m.className = 'msg-meta';
-    m.textContent = meta;
-    el.appendChild(m);
-  }
-  // Wrap in swipe row (reads dataset.msgId at swipe time)
-  const row = _wrapSwipeDelete(el);
-  messagesEl.appendChild(row);
-  scrollBottom();
-  return el;
-}
-
-function scrollBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 // ── File staging (paperclip / paste / drop)
@@ -1208,6 +939,7 @@ function _renderStaging() {
     wrap.appendChild(x);
     bar.appendChild(wrap);
   });
+  if (window.ArgusChat) ArgusChat.refreshSendBtn();
 }
 
 async function _stageBlob(blob, filename) {
@@ -1258,15 +990,9 @@ function updateAttachAffordances() {
   const btn = attachBtn || document.getElementById('chat-attach');
   const input = attachInput || document.getElementById('chat-attach-input');
   if (!btn || !input) return;
-  const blocked = typeof isRoundtable === 'function' && isRoundtable();
-  btn.classList.toggle('attach-disabled', blocked);
-  btn.title = blocked
-    ? 'Attachments not supported in Roundtable — switch to normal chat or GK'
-    : 'Attach files or photos (or paste / drag). GK sees images natively; local models get OCR + file paths.';
-  input.disabled = !!blocked;
-  if (blocked && stagedFiles.length) {
-    // Don't wipe silently — user may switch rooms; just leave staged and block send via send().
-  }
+  btn.classList.remove('attach-disabled');
+  btn.title = 'Attach files or photos (or paste / drag). GK sees images natively; local models get OCR + file paths.';
+  input.disabled = false;
 }
 
 if (attachBtn && attachInput) {
@@ -1307,17 +1033,8 @@ if (attachBtn && attachInput) {
   }
   window.addEventListener('focus', _onReturnFromPicker);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { _onReturnFromPicker(); _resurfaceLastMessage();
-      // Returning to foreground = the moment a manual close/reopen used to fix. iOS often
-      // kills the SSE while backgrounded; if it's dead, revive it; otherwise backfill any
-      // messages that arrived while we were away. Skip mid-stream to avoid clobbering.
-      if (globalEvents && globalEvents.readyState === 2) { globalEvents = null; connectEvents(); }
-      _pollSync();   // foreground: heal a stuck turn or backfill missed messages (ungated by pending state)
-    }
+    if (document.visibilityState === 'visible') _onReturnFromPicker();
   });
-  // Hard guarantee: a low-cost reconcile every 4s while the app is on screen. Even if the
-  // SSE dies silently and timers freeze, replies surface within seconds with no refresh.
-  if (!window._forgeResyncTimer) window._forgeResyncTimer = setInterval(_pollSync, 4000);
 }
 
 // Returning to the app (e.g. after the phone screen slept): make sure the latest
@@ -1330,86 +1047,6 @@ function _resurfaceLastMessage() {
   last.classList.remove('resurfaced');
   void last.offsetWidth;            // restart the flash animation
   last.classList.add('resurfaced');
-}
-
-// PROTOTYPE: render ```html blocks in an assistant reply as a SANDBOXED, auto-resizing
-// iframe inline in the bubble. ON by default during the prototype; disable per-device with:
-//   localStorage.setItem('argus_html_inline','0')   (and reload)
-// sandbox="allow-scripts" (no allow-same-origin) => embedded HTML can't reach our
-// origin, cookies, or HA token. The injected reporter postMessages its height out.
-function _renderInlineHtml(bubble, text) {
-  if (localStorage.getItem('argus_html_inline') === '0') return;
-  const blocks = [];
-  const stripped = text.replace(/```html\s*\n([\s\S]*?)```/g, (_, h) => { blocks.push(h); return ''; });
-  if (!blocks.length) return;
-  bubble.textContent = stripped.trim();
-  for (const html of blocks) {
-    const id = 'h' + Math.random().toString(36).slice(2);
-    const f = document.createElement('iframe');
-    f.className = 'html-embed';
-    f.dataset.hid = id;
-    f.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox');
-    f.setAttribute('srcdoc',
-      '<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">'
-      + '<style>body{margin:0;color:#e8e8ea;font:14px system-ui,sans-serif;background:transparent}</style>'
-      + html
-      + "<script>function R(){parent.postMessage({hid:'" + id + "',h:document.documentElement.scrollHeight},'*')}"
-      + 'new ResizeObserver(R).observe(document.documentElement);addEventListener("load",R);R()</script>');
-    bubble.appendChild(f);
-  }
-}
-
-// Render [[LINKS: Label | url ;; Label | url]] as NATIVE tappable buttons in the chat
-// DOM (not inside the sandboxed iframe — iOS standalone PWAs block iframe-opened tabs).
-function _renderLinks(bubble, text) {
-  const m = text.match(/\[\[LINKS:([\s\S]*?)\]\]/);
-  if (!m) return;
-  bubble.textContent = text.replace(m[0], '').trim();
-  const wrap = document.createElement('div');
-  wrap.className = 'chat-links';
-  for (const pair of m[1].split(';;')) {
-    const [label, url] = pair.split('|').map(s => s.trim());
-    if (!url || !/^https?:\/\//.test(url)) continue;
-    const a = document.createElement('a');
-    a.className = 'chat-link';
-    a.href = url; a.target = '_blank'; a.rel = 'noopener';
-    a.textContent = label || url;
-    wrap.appendChild(a);
-  }
-  bubble.appendChild(wrap);
-}
-
-// Render [[CHOICES: Option A ;; Option B ;; Option C]] as tappable buttons that SEND
-// the chosen text as the user's next message — multiple-choice quick replies. Keep
-// choices plain (no [[LINKS]]/inline HTML in the same bubble).
-function _renderChoices(bubble, text) {
-  const m = text.match(/\[\[CHOICES:([\s\S]*?)\]\]/);
-  if (!m) return;
-  bubble.textContent = text.replace(m[0], '').trim();
-  const wrap = document.createElement('div');
-  wrap.className = 'chat-links';                 // reuse the tappable-button styling
-  for (const raw of m[1].split(';;')) {
-    const label = raw.trim();
-    if (!label) continue;
-    const b = document.createElement('button');
-    b.className = 'chat-link';
-    b.type = 'button';
-    b.textContent = label;
-    b.addEventListener('click', () => {
-      if (typeof inputEl !== 'undefined' && inputEl) { inputEl.value = label; send(); }
-    });
-    wrap.appendChild(b);
-  }
-  bubble.appendChild(wrap);
-}
-if (!window._htmlEmbedWired) {
-  window._htmlEmbedWired = true;
-  window.addEventListener('message', (e) => {
-    const d = e.data;
-    if (!d || !d.hid || !d.h) return;
-    const f = document.querySelector('iframe.html-embed[data-hid="' + d.hid + '"]');
-    if (f) f.style.height = Math.min(d.h + 6, 2000) + 'px';
-  });
 }
 
 // Paste images directly into the input (most common for screenshots)
@@ -1441,426 +1078,17 @@ document.getElementById('chat-input-area').addEventListener('drop', async (e) =>
   }
 });
 
-// ── Send ─────────────────────────────────────────────────────────────
-async function send() {
-  const text = inputEl.value.trim();
-  if ((!text && !stagedFiles.length) || !activeModel()) return;
-  if (state.sending) return;   // A: Enter + tap cannot double-POST
-  if (!sendTargets().length) {
-    showToast('Tap GK or a model chip first');
-    return;
-  }
-  const clientMsgId = (crypto.randomUUID && crypto.randomUUID()) || (Date.now() + '-' + Math.random());
-  inputEl.value = '';
-  autosizeInput();
-
-  // @doc: prefix → RAG query, streams text chunks
-  if (text.startsWith('@doc:')) {
-    return sendDocQuery(text);
-  }
-
-  // /make → export a code block to an installed desktop app on anvil (human-gated
-  // promotion of code). Syntax: /make <Name> [:: description]  + a ```code``` block.
-  if (text.startsWith('/make')) {
-    return handleMake(text);
-  }
-
-  // /task → Supervisory Execution Engine (SEE) planner + control
-  if (/^\/task\b/i.test(text)) {
-    return handleTask(text);
-  }
-
-  // Roundtable room → three-way orchestration (Shane · Gemma · Claude).
-  // Attachments are NOT supported here (no vision path to either peer) — refuse
-  // visibly instead of the old silent drop (specs/vision_lane.md).
-  if (isRoundtable()) {
-    if (stagedFiles.length) {
-      appendMessage('assistant',
-        '📎 Attachments are not supported in the Roundtable yet (Gemma/Claude peers have no vision path). '
-        + 'Switch to a normal chat (or turn on **GK**) to send files and photos.');
-      scrollBottom();
-      return;
-    }
-    return sendRoundtable(text);
-  }
-
-  // Build attachments array with base64 data for staged files.
-  // Server materialises every item to disk — never silently strips
-  // (vision agents get native images; local models get OCR + paths).
-  const attachments = stagedFiles
-    .filter(s => s.dataUrl)
-    .map(s => ({ filename: s.filename, isImage: s.isImage, dataUrl: s.dataUrl }));
-  if (stagedFiles.some(s => !s.dataUrl)) {
-    appendMessage('assistant',
-      '📎 One or more staged files failed to load into memory (empty data). Re-attach and try again.');
-    scrollBottom();
-    return;
-  }
-  // Snapshot for the user bubble; then clear staging.
-  const sentFiles = stagedFiles.slice();
-  stagedFiles.length = 0;
-  _renderStaging();
-
-  // Show user bubble: text + thumbnails for images / icon cards for other files.
-  const userEl = appendMessage('user', text || (sentFiles.length === 1 ? sentFiles[0].filename : `(${sentFiles.length} files)`));
-  sentFiles.forEach(s => {
-    if (s.isImage && s.dataUrl) {
-      const img = document.createElement('img');
-      img.src = s.dataUrl;
-      img.style.cssText = 'display:block;margin-top:6px;max-width:240px;max-height:240px;border-radius:6px;border:1px solid #444;';
-      userEl.appendChild(img);
-    } else {
-      const card = document.createElement('div');
-      card.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-top:6px;padding:6px 10px;background:#2a2a2a;border:1px solid #444;border-radius:6px;font-size:0.85em;color:#ddd;max-width:240px;';
-      card.innerHTML = `<span style="font-size:1.4em;">${_fileIcon(s.filename)}</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${s.filename}</span>`;
-      userEl.appendChild(card);
-    }
-  });
-  state.sending = true;
-  const typingEl = appendMessage('assistant typing', '');
-  // Both indicators: status pill (phase + timer) AND doodler canvas (rAF lines).
-  startThinkingIndicators(typingEl);
-  scrollBottom();
-
-  state.abortCtl = new AbortController();
-  sendBtn.classList.add('is-stop');
-  try {
-    const res = await fetch(`${BRAIN}/chat`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        model:    activeModel(),
-        to:       sendTargets(),
-        client_msg_id: clientMsgId,
-        message:  text,
-        conversation_id: state.conversationId,
-        attachments: attachments.length ? attachments : undefined,
-      }),
-      signal: state.abortCtl.signal,
-    });
-    if (!res.ok) {
-      let detail = '';
-      try {
-        const errBody = await res.json();
-        detail = errBody.detail || errBody.error || JSON.stringify(errBody);
-      } catch {
-        try { detail = await res.text(); } catch { detail = ''; }
-      }
-      typingEl.textContent = detail
-        ? `[Error ${res.status}] ${detail}`
-        : `[Error ${res.status}]`;
-      typingEl.classList.remove('typing');
-      // Put files back so the user can retry after fixing (e.g. size limit).
-      if (sentFiles.length && !stagedFiles.length) {
-        sentFiles.forEach(s => stagedFiles.push(s));
-        _renderStaging();
-      }
-      return;
-    }
-    const { id: bubbleId } = await res.json();
-    console.log('[DBG] chat sent, bubbleId:', bubbleId);
-    state.pendingBubbleId = bubbleId;
-    state.pendingModel = activeModel();   // snapshot now — switching models/GK mid-turn must not relabel/recolor this bubble
-    typingEl.style.setProperty('--msg-accent', modelColor(state.pendingModel));  // colour the bar while it streams
-    state.pendingMsgEl = typingEl;
-    state.lastDeltaTs = Date.now();
-
-    // Safety timeout: if we miss bubble_done, release the UI.
-    // Grok/CC tool jobs can run a long time — don't cap them at 15 min.
-    // The poller only finalises when /turn_status says the turn is no longer active.
-    const _am = activeModel() || state.pendingModel || '';
-    const _safetyMs = /^z-(image-edit|klein|video)/i.test(_am) ? 600_000
-                    : (_am === 'grok' || _am === 'claude-code') ? 4 * 3600 * 1000  // 4h
-                    : 180_000;
-    await new Promise(resolve => {
-      const doneTimer = setTimeout(resolve, _safetyMs);
-      const onDone = () => { clearTimeout(doneTimer); resolve(); };
-      state.pendingResolve = onDone;
-    });
-
-    // Finalise the bubble
-    if (state.pendingMsgEl) {
-      state.pendingMsgEl.classList.remove('streaming');
-      let raw = state.pendingMsgEl.textContent;
-
-      // The SSE connection can drop mid-turn (mobile backgrounding, keepalive timeout),
-      // losing the streamed content — even when bubble_done still delivered the db_id.
-      // For ANY model: if the bubble came out empty, fetch the authoritative reply from
-      // the DB. (Media models additionally refetch when the [[IMAGE/VIDEO]] tag is missing.)
-      // This is what made text replies need a manual refresh; now they self-heal.
-      const _isMedia = /^z-(image|klein|video)/i.test((state.pendingModel || activeModel()) || '');
-      // Empty bubble, OR the reconciler healed a dead-socket turn (no bubble_done arrived,
-      // so the streamed text may be partial) -> pull the authoritative reply from the DB.
-      const _needsDb = !raw.trim() || state._healedByPoll || (_isMedia && !/\[\[(IMAGE|VIDEO):/.test(raw));
-      if (_needsDb) {
-        try {
-          const qs = state.conversationId != null
-            ? `?conversation_id=${state.conversationId}&limit=8`
-            : '?limit=8';
-          const msgs = await fetchJson(`${BRAIN}/history${qs}`);
-          // Prefer the exact message bubble_done identified; else the newest assistant reply.
-          const saved = state.pendingDbId
-            ? msgs?.find(m => m.id === state.pendingDbId)
-            : [...(msgs || [])].reverse().find(m => m.role === 'assistant'
-                && (!_isMedia || /\[\[(IMAGE|VIDEO):/.test(m.content || '')));
-          if (saved?.content) {
-            raw = saved.content;
-            if (!state.pendingDbId) state.pendingDbId = saved.id;
-          }
-        } catch (e) {
-          console.error('[forge] SSE-drop DB fallback failed', e);
-        }
-      }
-
-      state.pendingMsgEl.textContent = stripCommandTags(raw);
-      // Pass RAW (not stripped) — these renderers extract their own [[...]] markers and
-      // reset the bubble text. stripCommandTags eats [[CHOICES]]/[[LINKS]] before they
-      // can see them, which is why buttons never rendered on streamed (claude-code) replies.
-      _renderInlineHtml(state.pendingMsgEl, raw);   // inline sandboxed HTML (flagged)
-      _renderLinks(state.pendingMsgEl, raw);        // native tappable links
-      _renderChoices(state.pendingMsgEl, raw);      // multiple-choice quick replies
-      addMeta(state.pendingMsgEl, `${modelLabel(state.pendingModel)} · ${fmtTime(new Date())}${state.pendingDurMeta || ''}`);
-      processCommandTags(raw, state.pendingMsgEl);
-      // dataset.msgId is what swipe-to-delete reads (the only delete affordance now).
-      if (state.pendingDbId) {
-        state.pendingMsgEl.dataset.msgId = state.pendingDbId;
-      }
-      // Also tag the matching user bubble (the previous user-role sibling) so it can be swiped too.
-      if (state.pendingUserId) {
-        let prev = state.pendingMsgEl.previousElementSibling;
-        while (prev && !prev.classList.contains('user')) prev = prev.previousElementSibling;
-        if (prev && !prev.dataset.msgId) {
-          prev.dataset.msgId = state.pendingUserId;
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name !== 'AbortError') {
-      appendMessage('assistant', `[Error: ${e.message}]`);
-    }
-  } finally {
-    stopThinkingIndicators();   // status pill + doodler
-    state.abortCtl = null;
-    state.pendingBubbleId = null;
-    state.pendingMsgEl = null;
-    state.pendingResolve = null;
-    state.pendingDbId = null;
-    state.pendingUserId = null;
-    state.pendingDurMeta = null;
-    state.pendingModel = null;
-    state._healedByPoll = false;
-    sendBtn.classList.remove('is-stop');
-    state.sending = false;
-  }
-}
-
-// ── Roundtable send / room ──────────────────────────────────────────────────
-async function sendRoundtable(text) {
-  appendMessage('user', text);          // Shane's turn (right-aligned like normal)
-  scrollBottom();
-  let data;
-  try {
-    const res = await fetch(`${BRAIN}/roundtable`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ message: text, to: state.rtTo,
-                                conversation_id: RT_CID }),
-    });
-    if (!res.ok) { appendMessage('assistant', `[Roundtable error ${res.status}]`); return; }
-    data = await res.json();
-  } catch (e) {
-    appendMessage('assistant', `[Roundtable error: ${e.message}]`);
-    return;
-  }
-  // One placeholder bubble per addressed speaker; SSE fills them by id (sequentially).
-  (data.bubbles || []).forEach(b => {
-    const el = appendMessage('assistant typing', '');
-    el.style.setProperty('--msg-accent', modelColor(b.model));
-    state.rtBubbles[b.id] = { el, speaker: b.speaker, model: b.model };
-  });
-  scrollBottom();
-}
-
-async function openRoundtable() {
-  state.conversationId = RT_CID;
-  renderConversations();
-  updateRtBar();
-  await loadHistory();
-  closeOverlay('conv-drawer');
-  switchView('chat');
-  inputEl.focus();
-}
-
-// Show the To: bar only in the Roundtable room; reflect the current addressee.
+// Roundtable is a normal room now — no special send path. The To: bar stays hidden.
 function updateRtBar() {
   const bar = $('rt-bar');
-  if (!bar) return;
-  bar.classList.toggle('hidden', !isRoundtable());
-  bar.querySelectorAll('.rt-to').forEach(b =>
-    b.classList.toggle('active', b.dataset.to === state.rtTo));
+  if (bar) bar.classList.add('hidden');
   updateAttachAffordances();
 }
-
-function addMeta(el, text) {
-  const m = document.createElement('span');
-  m.className = 'msg-meta';
-  m.textContent = text;
-  el.appendChild(m);
+async function openRoundtable() {
+  await selectConversation(RT_CID);
 }
 
-const MAKE_HELP_HTML = `
-<b>/make</b> — promote a code block into an installed app on anvil's Desktop.<br>
-<br>
-<b>Usage</b><br>
-<code>/make &lt;Name&gt; [:: description] [flags]</code><br>
-…then a fenced <code>\`\`\`</code> code block. If you omit the block, it grabs the
-<b>last code block</b> in the conversation (so after a model or <code>run_code</code>
-writes something, just <code>/make Name</code>).<br>
-<br>
-<b>Language</b> — inferred from the fence: <code>\`\`\`python</code> (default) or
-<code>\`\`\`bash</code>. Or force with <code>--bash</code>.<br>
-<br>
-<b>Flags</b><br>
-• <code>--ai-icon</code> — generate the icon with Lumen (Krea 2). Nicer, but briefly
-evicts the chat model off the GPU. Default is an instant programmatic icon.<br>
-• <code>--no-terminal</code> — launch without a terminal window (for GUI apps).
-Default opens a terminal so you see the output.<br>
-• <code>-help</code> / <code>--help</code> — this message.<br>
-<br>
-<b>Where it lands</b> — executable → <code>~/.local/share/argus-apps/</code>,
-launcher → <code>~/Desktop/&lt;name&gt;.desktop</code> (clickable, marked trusted).<br>
-<br>
-<b>Example</b><br>
-<code>/make Dice Roller :: rolls a die --ai-icon</code><br>
-<code>\`\`\`python</code><br>
-<code>import random; print("You rolled", random.randint(1,6))</code><br>
-<code>input("Enter to close…")</code><br>
-<code>\`\`\`</code>`;
-
-// /task — SEE supervised work (specs/see.md S3)
-async function handleTask(text) {
-  appendMessage('user', text);
-  const el = appendMessage('assistant typing', '');
-  scrollBottom();
-  try {
-    const res = await fetch('/argus/see/task', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text,
-        conversation_id: state.conversationId,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    el.classList.remove('typing');
-    if (!res.ok || data.ok === false) {
-      el.textContent = '⚠️ /task: ' + (data.error || res.statusText || 'failed');
-      return;
-    }
-    // Prefer markdown-ish text; simple renderer already strips tags — use plain with newlines
-    const md = data.markdown || data.brief || JSON.stringify(data, null, 2);
-    el.textContent = md;
-    // Light structure: bold markers already use ** in markdown — show as plain
-    if (typeof _renderInlineHtml === 'function') {
-      try { _renderInlineHtml(el, md); } catch {}
-    }
-    if (data.task_id) {
-      el.dataset.seeTaskId = data.task_id;
-    }
-  } catch (e) {
-    el.classList.remove('typing');
-    el.textContent = '⚠️ /task error: ' + (e.message || e);
-  }
-  scrollBottom();
-}
-
-// /make <Name> [:: description] [flags] + a fenced ```code``` block → build a desktop app.
-async function handleMake(text) {
-  appendMessage('user', text);
-  const raw = text.replace(/^\/make\b\s*/, '');
-  if (/^(-h|--help|-help|help)\s*$/i.test(raw.trim())) {
-    const h = appendMessage('assistant', ''); h.innerHTML = MAKE_HELP_HTML; return;
-  }
-  const fence = /```(\w+)?\s*\n([\s\S]*?)```/;
-  let m = text.match(fence);
-  if (!m) {  // fall back to the last code block rendered in the conversation
-    const pres = [...document.querySelectorAll('#chat-messages pre, #chat-messages code')];
-    const last = pres.reverse().find(p => (p.textContent || '').trim().length > 20);
-    if (last) m = ['', '', last.textContent];
-  }
-  let header = raw.replace(fence, '').trim();
-  const aiIcon = /(^|\s)(--ai-icon|--ai)(?=\s|$)/.test(header);
-  const noTerminal = /(^|\s)--no-terminal(?=\s|$)/.test(header);
-  const forceBash = /(^|\s)--bash(?=\s|$)/.test(header);
-  header = header.replace(/(^|\s)(--ai-icon|--ai|--no-terminal|--bash)(?=\s|$)/g, ' ').trim();
-  const [namePart, ...descParts] = header.split('::');
-  const name = (namePart || '').trim();
-  const desc = descParts.join('::').trim();
-  const code = m ? m[2] : '';
-  const language = (forceBash || (m && m[1] === 'bash')) ? 'bash' : 'python';
-  if (!name || !code.trim()) {
-    appendMessage('assistant', '⚠️ /make needs a name and a code block. Type `/make -help` for usage.');
-    return;
-  }
-  const el = appendMessage('assistant', `🔨 Building “${name}”…`);
-  try {
-    const r = await fetch('/argus/make', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, desc, code, language, ai_icon: aiIcon, terminal: !noTerminal }),
-    }).then(r => r.json());
-    if (r.error) { el.textContent = '⚠️ /make failed: ' + r.error; return; }
-    const via = r.icon_source === 'lumen' ? ' (Lumen icon)' : '';
-    el.innerHTML = `✅ Installed <b>${escHtml(r.name)}</b> on anvil’s Desktop${via} — double-click to run.`;
-    const img = document.createElement('img');
-    img.src = '/argus/make/icon?slug=' + encodeURIComponent(r.slug) + '&t=' + Date.now();
-    img.style.cssText = 'display:block;margin-top:8px;width:88px;height:88px;border-radius:18px;box-shadow:0 2px 10px rgba(0,0,0,.4)';
-    el.appendChild(img);
-  } catch (e) {
-    el.textContent = '⚠️ /make error: ' + e.message;
-  }
-}
-
-async function sendDocQuery(text) {
-  const match = text.match(/^@doc:(\S+)\s*(.*)/s);
-  if (!match) return;
-  const [, filename, question] = match;
-  appendMessage('user', text);
-  const bubble = appendMessage('assistant', '', { streaming: true });
-  try {
-    const res = await fetch(`${BRAIN}/docs/query`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ filename, question }),
-    });
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let acc = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      acc += dec.decode(value, { stream: true });
-      bubble.textContent = acc;
-      scrollBottom();
-    }
-    bubble.classList.remove('streaming');
-    addMeta(bubble, `doc:${filename} · ${fmtTime(new Date())}`);
-  } catch (e) {
-    bubble.classList.remove('streaming');
-    bubble.textContent = `[Doc query error: ${e.message}]`;
-  }
-}
-
-function stopSend() {
-  if (state.abortCtl) state.abortCtl.abort();
-  // Aborting the fetch only cancels the initial POST — the server-side
-  // generation keeps running. Tell the server to kill the in-flight bubble
-  // (it cancels the in-flight generation server-side).
-  if (state.pendingBubbleId) {
-    fetch(`/api/cancel/${state.pendingBubbleId}`, { method: 'POST' }).catch(() => {});
-  }
-}
-
-// ── Command tags ─────────────────────────────────────────────────────
+// ── Command tags (canvas side-effects only; chat.js paints the bubble) ──
 function processCommandTags(text, bubble) {
   const presetSave  = text.match(/\[\[PRESET_SAVE:([^\]]+)\]\]/);
   const presetLoad  = text.match(/\[\[PRESET_LOAD:([^\]]+)\]\]/);
@@ -1875,206 +1103,6 @@ function processCommandTags(text, bubble) {
     const prompt = widgetPrompt ? widgetPrompt[1] : 'Generated widget';
     switchView('canvas');
     createPanel('generated', { html: widgetHtml[1], prompt });
-  }
-  if (bubble) {
-    renderImageTags(bubble, text);
-    renderVideoTags(bubble, text);
-  }
-}
-
-// Render any [[IMAGE:url]] tags from `text` as <img> elements appended to `bubble`.
-// URLs starting with "/" are routed through the local server's /argus proxy.
-function renderImageTags(bubble, text) {
-  if (!bubble) return;
-  const re = /\[\[IMAGE:([^\]]+)\]\]/g;
-  let m;
-  re.lastIndex = 0;
-  while ((m = re.exec(text)) !== null) {
-    const raw = m[1].trim();
-    const src = raw.startsWith('http') ? raw
-              : raw.startsWith('/')    ? `${BRAIN}${raw}`
-                                       : raw;
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'margin-top:8px;cursor:pointer;display:inline-block;';
-    wrap.title = 'Click to open full size';
-    const img = document.createElement('img');
-    img.src = src;
-    img.style.cssText = 'max-width:512px;max-height:512px;border-radius:8px;display:block;border:1px solid #444;';
-    img.alt = 'Generated image';
-    wrap.appendChild(img);
-    wrap.addEventListener('click', () => window.open(src, '_blank'));
-    bubble.appendChild(wrap);
-  }
-}
-
-// Render any [[VIDEO:url]] tags from `text` as a <video controls> element.
-function renderVideoTags(bubble, text) {
-  if (!bubble) return;
-  const re = /\[\[VIDEO:([^\]]+)\]\]/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const raw = m[1].trim();
-    const src = raw.startsWith('http') ? raw
-              : raw.startsWith('/')    ? `${BRAIN}${raw}`
-                                       : raw;
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'margin-top:8px;display:inline-block;';
-    const vid = document.createElement('video');
-    vid.src = src;
-    vid.controls = true;
-    vid.loop = true;
-    vid.style.cssText = 'max-width:640px;max-height:640px;border-radius:8px;display:block;border:1px solid #444;background:#000;';
-    wrap.appendChild(vid);
-    bubble.appendChild(wrap);
-  }
-}
-
-// ── SSE events ───────────────────────────────────────────────────────
-let globalEvents = null;
-
-function connectEvents() {
-  // Standalone (home-screen) PWA: skip EventSource. Poll is the source of truth.
-  if (isStandalonePwa()) {
-    if (window._dbgLog) window._dbgLog('SSE: skipped (standalone PWA)');
-    return;
-  }
-  try {
-    globalEvents = new EventSource(`${BRAIN}/events`);
-    globalEvents.onopen = () => { if(window._dbgLog) window._dbgLog('SSE: connected'); brainDot.classList.remove('down');
-      // SSE has no replay: on a RE-connection (e.g. after iOS killed the socket while
-      // backgrounded), backfill messages pushed while we were disconnected. Skip while a
-      // turn is streaming so we don't clobber the live bubble.
-      if (state._sseConnectedOnce) _pollSync();   // reconnect backfill, ungated by pending (a stuck turn self-heals here)
-      state._sseConnectedOnce = true;
-    };
-    globalEvents.onmessage = () => brainDot.classList.add('up');
-    globalEvents.addEventListener('bubble_update', e => {
-      try {
-        const data = JSON.parse(e.data);
-        // Roundtable bubbles are routed by id (there can be two live at once).
-        const rt = state.rtBubbles[data.id];
-        if (rt) {
-          if (rt.el.classList.contains('typing')) {
-            rt.el.classList.remove('typing'); rt.el.classList.add('streaming');
-          }
-          rt.el.textContent = data.content || '';
-          scrollBottom();
-          return;
-        }
-        if (data.id !== state.pendingBubbleId || !state.pendingMsgEl) return;
-        state.lastDeltaTs = Date.now();   // mark the stream alive — lets the reconciler tell a live turn from a dead socket
-        const content = data.content || '';
-        // Heartbeat: tokens are flowing -> keep the pill alive + reveal the bubble.
-        if (state.statusPill) state.statusPill._activity();
-        // First real reply text → drop the doodler (save rAF); pill stays until done.
-        // Keep doodle during tool-only placeholders like "_(running `tool`…)_".
-        if (content && !/^_\(running /.test(content.trim())) {
-          stopThinkingDoodle();
-        }
-        if (state.pendingMsgEl.classList.contains('typing')) {
-          state.pendingMsgEl.classList.remove('typing');
-          state.pendingMsgEl.classList.add('streaming');
-        }
-        state.pendingMsgEl.textContent = content;
-        scrollBottom();
-      } catch {}
-    });
-    globalEvents.addEventListener('bubble_status', e => {
-      try {
-        const d = JSON.parse(e.data);
-        if (d.id !== state.pendingBubbleId || !state.statusPill) return;
-        const label = d.phase === 'tool' ? `using ${d.detail}`
-                    : d.phase === 'loop' ? `retrying (loop)`
-                    : (d.detail || d.phase);
-        state.statusPill._status(label);
-      } catch {}
-    });
-    // Rich per-turn activity for the claude-code path: thinking / tool calls /
-    // tool results feed the tap-to-expand panel; the done event carries turn duration.
-    globalEvents.addEventListener('bubble_activity', e => {
-      try {
-        const d = JSON.parse(e.data);
-        if (d.id !== state.pendingBubbleId || !state.statusPill) return;
-        state.lastDeltaTs = Date.now();   // thinking/tools/heartbeats count as live
-        const ev = d.event || {};
-        if (ev.kind === 'heartbeat') {
-          if (state.statusPill._heartbeat) state.statusPill._heartbeat(ev.text || 'still working');
-          return;
-        }
-        if (ev.kind === 'done') {
-          const meta = fmtDuration(ev.duration_ms);
-          if (meta) { state.statusPill._dur(' ' + meta); state.pendingDurMeta = ' ' + meta; }
-        } else {
-          state.statusPill._event(ev);
-        }
-      } catch {}
-    });
-    globalEvents.addEventListener('model_warm', e => {
-      try {
-        const d = JSON.parse(e.data);
-        if (d.model !== state.currentModel) return;   // only for the active model
-        const cfg = state.modelCfg && state.modelCfg[d.model];
-        const name = (cfg && cfg.display) || d.model;
-        if (d.error)      _setModelWarm('error', `${name} load failed`);
-        else if (d.ready) _setModelWarm('ready', `${name} ready${d.seconds ? ` (${d.seconds}s)` : ''}`);
-        else if (d.loading) _setModelWarm('loading', `loading ${name}…`);
-      } catch {}
-    });
-    // Live-injected message (e.g. a pushed widget) — append without a reload.
-    globalEvents.addEventListener('chat_message', e => {
-      let m; try { m = JSON.parse(e.data); } catch { return; }
-      const el = appendMessage(m.role || 'assistant', m.content || '');
-      if ((m.role || 'assistant') === 'assistant') { _renderInlineHtml(el, m.content || ''); _renderLinks(el, m.content || ''); _renderChoices(el, m.content || ''); }
-    });
-    globalEvents.addEventListener('bubble_done', e => {
-      let data;
-      try { data = JSON.parse(e.data); } catch { return; }
-      // Roundtable bubble finalises independently of the single-pending path.
-      const rt = state.rtBubbles[data.id];
-      if (rt) {
-        rt.el.classList.remove('typing', 'streaming');
-        const raw = data.error ? `[${rt.speaker} couldn't reply: ${data.error}]`
-                               : (rt.el.textContent || '');
-        rt.el.textContent = stripCommandTags(raw);
-        _renderInlineHtml(rt.el, raw); _renderLinks(rt.el, raw); _renderChoices(rt.el, raw);
-        addMeta(rt.el, `${rt.speaker} · ${fmtTime(new Date())}`);
-        if (data.db_id) rt.el.dataset.msgId = data.db_id;
-        delete state.rtBubbles[data.id];
-        scrollBottom();
-        return;
-      }
-      if(window._dbgLog) window._dbgLog('DONE: id=' + data.id + ' pending=' + state.pendingBubbleId + ' err=' + (data.error || ''));
-      if (data.id !== state.pendingBubbleId) return;
-      // Turn contract: intentional silence (NO_REPLY) — remove the empty assistant bubble.
-      if (data.silent && state.pendingMsgEl) {
-        try { state.pendingMsgEl.remove(); } catch {}
-        state.pendingMsgEl = null;
-        if (state.statusPill) state.statusPill._collapse();
-        state.pendingDbId   = data.db_id   ?? null;
-        state.pendingUserId = data.user_id ?? null;
-        state.pendingBubbleId = null;
-        if (state.pendingResolve) state.pendingResolve();
-        return;
-      }
-      // If the backend signaled an error and no content streamed, surface it in the bubble.
-      if (data.error && state.pendingMsgEl && !state.pendingMsgEl.textContent.trim()) {
-        state.pendingMsgEl.textContent = `[Error: ${data.error}]`;
-      }
-      if (data.cancelled && state.pendingMsgEl && !state.pendingMsgEl.textContent.trim()) {
-        state.pendingMsgEl.textContent = '[Cancelled]';
-      }
-      if (state.statusPill) state.statusPill._collapse();   // fold the activity panel back up
-      state.pendingDbId   = data.db_id   ?? null;
-      state.pendingUserId = data.user_id ?? null;
-      if (state.pendingResolve) state.pendingResolve();
-    });
-    globalEvents.onerror = () => { if(window._dbgLog) window._dbgLog('SSE: ERROR, reconnecting...');
-      brainDot.classList.add('down');
-      if (globalEvents) { globalEvents.close(); globalEvents = null; }
-      setTimeout(connectEvents, 3000);
-    };
-  } catch {
-    setTimeout(connectEvents, 3000);
   }
 }
 
@@ -2125,6 +1153,7 @@ function renderConversations() {
 }
 
 async function selectConversation(id) {
+  if (window.ArgusChat) ArgusChat.leaveTurn();
   state.conversationId = id;
   renderConversations();
   updateRtBar();
@@ -2586,6 +1615,7 @@ async function saveLayout() {
       panels:    [...panels.values()],
       lastModel: state.currentModel,   // the dropdown (local) model
       lastLocalModel: state.currentModel,
+      lastPersona: state.persona || 'argus',
       gkActive:  state.gkActive,       // GK toggle overlay state (SuperGrok)
       timestamp: new Date().toISOString(),
     };
@@ -2813,7 +1843,11 @@ function wireUI() {
   // === Critical-path chat wiring FIRST so a later throw never disables send ===
   // Robust send-enabling: decoupled from autosize, fired on multiple events, so
   // the button can never get stuck disabled.
-  const refreshSend = () => { sendBtn.disabled = !inputEl.value.trim(); };
+  const refreshSend = () => {
+    if (window.ArgusChat) ArgusChat.refreshSendBtn();
+    else sendBtn.disabled = !inputEl.value.trim();
+  };
+  window._refreshSend = refreshSend;
   ['input', 'keyup', 'change', 'paste'].forEach(ev => inputEl.addEventListener(ev, refreshSend));
   inputEl.addEventListener('input', autosizeInput);
   inputEl.addEventListener('keydown', e => {
@@ -2828,24 +1862,30 @@ function wireUI() {
   });
   refreshSend();
   modelSelect.addEventListener('change', () => {
+    if (!modelSelect.value) return;
     state.currentModel = modelSelect.value;
-    applyModelAccent(activeModel());
-    if (!state.gkActive && isLocalGpuModel(state.currentModel)) maybeWarmModel(state.currentModel);
+    state.gkActive = false;   // picking a local leaves Grok
+    updateGkToggle();
+    applyModelAccent(state.currentModel);
+    if (isLocalGpuModel(state.currentModel)) maybeWarmModel(state.currentModel);
     saveLayout();
   });
-  // GK toggle — flip routing between the dropdown model and Grok (SuperGrok OAuth).
+  personaSelect?.addEventListener('change', () => {
+    if (!personaSelect.value) return;
+    state.persona = personaSelect.value;
+    saveLayout();
+    const cid = state.conversationId || 'default';
+    fetch(`${BRAIN}/conversations/${encodeURIComponent(cid)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ persona: state.persona }),
+    }).catch(() => {});
+  });
+  // GK toggle — SuperGrok overlay. Does not change the dropdown pick or llama-swap.
   $('gk-toggle')?.addEventListener('click', () => {
     state.gkActive = !state.gkActive;
-    if (state.gkActive) {
-      if (!state.participants.includes(GK_MODEL)) {
-        state.participants = [GK_MODEL, ...state.participants];
-      }
-      state.addressed = [GK_MODEL];
-      renderParticipants();
-    }
     updateGkToggle();
     applyModelAccent(activeModel());
-    // GK is cloud OAuth — never warm/swap llama-swap.
     saveLayout();
   });
   $('participant-add')?.addEventListener('click', ev => {
@@ -2863,14 +1903,16 @@ function _wireUI_rest() {
   // Lazy-load older history when scrolled near top
   const scrollPill = document.getElementById('scroll-pill');
   messagesEl.addEventListener('scroll', () => {
-    if (messagesEl.scrollTop < 200) loadMoreHistory();
-    const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
-    if (scrollPill) scrollPill.classList.toggle('visible', !atBottom);
+    if (window.ArgusChat) ArgusChat.onScroll();
+    else if (messagesEl.scrollTop < 200) loadMoreHistory();
   }, { passive: true });
   if (scrollPill) {
     scrollPill.addEventListener('click', () => {
-      scrollPill.classList.remove('visible');
-      messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+      if (window.ArgusChat) ArgusChat.jumpToLatest();
+      else {
+        scrollPill.classList.remove('visible');
+        messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+      }
     });
   }
 
@@ -3062,9 +2104,7 @@ const THEME_LABELS = { default: 'Default', ocean: 'Ocean', ember: 'Ember', matri
       // Keep the in-chat status pill alive when SSE drops (iOS backgrounding)
       // or when only thinking/tool events fire without text tokens.
       if (st && st.active && state.statusPill && state.statusPill._heartbeat) {
-        if (!st.bubble_id || st.bubble_id === state.pendingBubbleId) {
-          state.statusPill._heartbeat(label(st));
-        }
+        state.statusPill._heartbeat(label(st));
       }
     } catch (_) { /* keep ticking from last-known on a blip */ }
     render();

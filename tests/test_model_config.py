@@ -19,11 +19,11 @@ def check(label, got, want):
     print(f"  ✓ {label}")
 
 print("display:")
-check("ornith→Loki", mc.display("ornith-35b-uncensored"), "Loki")
+check("ornith uncensored display", mc.display("ornith-35b-uncensored"), "Ornith 35B uncensored")
 check("80B display", mc.display("qwen3-next-80b"), "Argus (local 80B)")
 check("claude-code display", mc.display("claude-code"), "Claude Code")
 check("cpu gemma display", mc.display("gemma4-cpu"), "Gemma 4 E2B (CPU)")
-check("coder has no display", mc.display("qwen3-coder-30b"), None)
+check("coder display", mc.display("qwen3-coder-30b"), "Coder 30B")
 
 print("vision:")
 check("claude-code vision", mc.is_vision("claude-code"), True)
@@ -64,6 +64,8 @@ check("gemma26 pink", mc.accent("gemma4-26b"), "pink")
 check("qwen3.8 green", mc.accent("qwen3.8-27b"), "green")
 check("qwen3.8 display", mc.display("qwen3.8-27b"), "Qwen 3.8 27B")
 check("qwen3.8 warms", mc.warm_on_select("qwen3.8-27b"), True)
+check("qwen3.8 group Chat", mc.group("qwen3.8-27b"), "Chat")
+check("coder group", mc.group("qwen3-coder-30b"), "Coder")
 check("coder-next unmapped", mc.accent("qwen3-coder-next"), None)
 
 print("unlisted model → safe defaults:")

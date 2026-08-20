@@ -1,6 +1,9 @@
 # SUPER-SEE v1 — road to deployed
 
-> **Status:** Phase 0–1 done (2026-08-15). Code + tests committed on
+> **Status:** RETIRED 2026-08-20. SEE is the only supervisor. Do not continue this
+> roadmap. See `specs/ss.md`.
+
+> **Was:** Phase 0–1 done (2026-08-15). Code + tests committed on
 > `feature/ss-v1-shadow`. Next is Phase 2 D0 restart (Shane-approved).
 > **From:** untracked shadow code in `argus/ss/`, mixed into a dirty working tree.
 > **To:** shadow SS running inside `argus-ui` on anvil, committed and pushed.
@@ -11,8 +14,10 @@
 >   resource-failure must be able to fire on day one.
 > - **Model-agnostic worker.** SS supervises whichever model is in the harness
 >   seat (local llama-swap, Grok, Claude Code, any `models.yaml` external).
->   The judgment head (Z-Engineer) is a *separate* CPU process; it is not the
+>   The judgment head is a *separate* CPU process; it is not the
 >   worker and must never ride llama-swap.
+> - **No second SEE / no Needle-centered rewrite.** Alignment + premature-completion
+>   are shadow labels on this package. Authority stays off.
 
 ---
 

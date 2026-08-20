@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def main() -> int:
-    from argus.loop import _looks_unfinished, _nudge_prompt, _budget_summary
+    from argus.loop import _looks_unfinished, _nudge_prompt, _budget_summary, _tool_retry_summary
 
     # announce-then-stop: zero calls + trailing announcement -> nudge
     for text in ("Let me check that for you.",
@@ -36,6 +36,14 @@ def main() -> int:
     s = _budget_summary(8, [])
     assert "no tool calls" in s
     print("PASS: budget summary reports deduped progress")
+
+    r = _tool_retry_summary(
+        RuntimeError("Tool 'list_dir' exceeded max retries"),
+        ["list_dir", "read_file", "list_dir"],
+    )
+    assert "list_dir" in r and "Stopped" in r and "read_file" in r
+    assert "exception" not in r.lower()
+    print("PASS: tool retry exhaustion is a sentence, not a crash")
 
     print("OK")
     return 0

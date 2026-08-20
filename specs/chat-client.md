@@ -1,14 +1,11 @@
-# Chat client — inbox + participants
+# Chat client — inbox
 
-Anvil writes the reply. The PWA is a **room**: you and the models you
-invite. Finished messages are the source of truth. Live token SSE is a
-desktop nicety, never required.
+Anvil writes the reply. Finished messages are the source of truth.
+Live token SSE is a desktop nicety, never required.
 
-Visual language is **Argus / Material** — tonal surfaces, 8dp chips,
-colored participant tokens — not iMessage (no tails, no lock-screen
-blue/gray bubbles). Each model keeps its accent from `models.yaml`.
+Visual language is **Argus / Material** — tonal surfaces, not iMessage.
 
-This is A+B from the 2026-08-17 plan, plus a participant roster.
+This is the inbox client (`ui/static/chat.js`): send once, poll, merge by id.
 
 ## Roles
 
@@ -17,30 +14,20 @@ This is A+B from the 2026-08-17 plan, plus a participant roster.
 - **PWA** sends once, polls, renders by db id.
 - **SSE** (`/argus/events`) is optional paint. iOS standalone never
   depends on it. Turn lifecycle is `POST /chat` + `GET /history?after_id=`
-  + `GET /turn_status`.
+  + `GET /turn_status`. `turn_status.active` is the only chat heartbeat.
+  That is a different clock from SEE’s job `tick` — do not merge them.
 
-## Participants (messenger)
+## Who talks
 
-A conversation is a room.
+- **Dropdown** = local / CPU models (llama-swap + externals). Not Grok, not `z-*`.
+- **GK** = SuperGrok OAuth overlay. Does not unload the GPU. Off, or picking a
+  dropdown model, sends to that local. On sends to `grok` only.
+- **Persona** = voice file (`soul.md` default, `personas/*.md` otherwise). Any
+  voice on any model. Not a capability overlay (`soul.d/` stays model-tied).
+- Roundtable / `@doc` / `/make` are **not** separate send protocols on the PWA.
+  One `POST /argus/chat`.
 
-- **Shane** is implicit (right-aligned user bubbles). No chip.
-- **Models** are participants. Each keeps the accent from
-  `config/models.yaml` (same palette as today: Loki emerald, 80B violet,
-  coder gold, Grok blue, Gemma pink, …).
-- **Add** joins the room. **Remove** leaves the room. Their old bubbles
-  stay, still colored.
-- **Addressed** is who this send goes to — one or more chips, toggled
-  by tap. Send is disabled if the roster or the addressee list is empty.
-- Adding a model does **not** auto-address them; tap to talk to them.
-  The first model in a new room is addressed by default.
-- New chat seeds with the last-used chat model (low friction).
-- Roundtable is not a special protocol. It is the `roundtable` thread
-  with Gemma + Claude in the room. Same send path.
-- Grok is a participant you add, not a GK overlay.
-- Not inviteable: `z-*` media models, legacy `claude-code`.
-
-GPU truth is unchanged: llama-swap still seats one local model at a
-time. Addressing two locals = sequential generate (swap between).
+GPU truth: llama-swap seats one local at a time. GK must never llama-swap.
 
 ## Wire contract
 
@@ -120,8 +107,8 @@ Removing a participant drops them from `addressed`. History is untouched.
    switching conversations. Sync appends/updates `[data-msg-id]`.
 5. **iOS standalone:** do not open EventSource. Poll 3–4s + on
    foreground. Desktop may keep SSE for live tokens / inject / warm.
-6. **Participant bar** replaces the model `<select>` + GK toggle.
-   Chip color = accent. Filled = addressed. `+` invites. `×` removes.
+6. **Dropdown + GK + persona** are the send chrome. Participant chips
+   are not the send path.
 7. Working pill / status pill may stay; they read `turn_status`.
 
 ## What dies in `app.js`
@@ -129,7 +116,6 @@ Removing a participant drops them from `addressed`. History is untouched.
 - 6s `lastDeltaTs` healer that finalizes a live turn
 - `send()` with no in-flight lock
 - `_pollSync` → `loadHistory()` mid-turn (full DOM wipe)
-- Roundtable as a separate send protocol (`/argus/roundtable` may
-  linger for old clients; the PWA does not use it)
-- GK toggle as the way to talk to Grok
+- Roundtable / `@doc` / `/make` as separate send protocols
 - Treating `bubble_done` as the only way a reply appears
+- EventSource as source of truth

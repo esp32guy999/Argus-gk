@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     title           TEXT,
     participants    TEXT NOT NULL DEFAULT '[]',  -- JSON [model_id, ...]
     addressed       TEXT NOT NULL DEFAULT '[]',  -- JSON [model_id, ...]
+    persona         TEXT NOT NULL DEFAULT 'argus',
     created_ts      REAL NOT NULL,
     updated_ts      REAL NOT NULL
 );
@@ -236,6 +237,10 @@ class Store:
             "ON messages(conversation_id, client_msg_id) "
             "WHERE client_msg_id IS NOT NULL")
         # conversations table is CREATE IF NOT EXISTS in _SCHEMA.
+        have_conv = {r[1] for r in self._conn.execute("PRAGMA table_info(conversations)")}
+        if "persona" not in have_conv:
+            self._conn.execute(
+                "ALTER TABLE conversations ADD COLUMN persona TEXT NOT NULL DEFAULT 'argus'")
 
     def _fmt_msg(self, r) -> dict:
         d = dict(r)
@@ -558,7 +563,7 @@ class Store:
 
     def _fmt_conversation(self, cid: str, *, title: str | None, count: int,
                           last_ts: float | None, participants: list[str],
-                          addressed: list[str]) -> dict:
+                          addressed: list[str], persona: str = "argus") -> dict:
         return {
             "id": cid,
             "title": title or cid,
@@ -566,6 +571,7 @@ class Store:
             "last_ts": last_ts,
             "participants": list(participants),
             "addressed": list(addressed),
+            "persona": persona or "argus",
         }
 
     def get_conversation(self, conversation_id: str) -> dict | None:
@@ -593,10 +599,12 @@ class Store:
         title = None
         participants: list[str] = []
         addressed: list[str] = []
+        persona = "argus"
         if roster is not None:
             title = roster["title"]
             participants = self._json_ids(roster["participants"])
             addressed = self._json_ids(roster["addressed"])
+            persona = roster["persona"] if "persona" in roster.keys() else "argus"
             if last_ts is None:
                 last_ts = roster["updated_ts"]
         if first and first["content"]:
@@ -612,11 +620,12 @@ class Store:
                 addressed = list(participants[:1])
         return self._fmt_conversation(
             conversation_id, title=title, count=count, last_ts=last_ts,
-            participants=participants, addressed=addressed)
+            participants=participants, addressed=addressed, persona=persona or "argus")
 
     def ensure_conversation(self, conversation_id: str, *, title: str | None = None,
                             participants: list[str] | None = None,
-                            addressed: list[str] | None = None) -> dict:
+                            addressed: list[str] | None = None,
+                            persona: str | None = None) -> dict:
         """Insert a roster row if missing; optionally seed title/roster."""
         now = time.time()
         parts = list(participants or [])
@@ -628,29 +637,34 @@ class Store:
             if existing is None:
                 self._conn.execute(
                     "INSERT INTO conversations "
-                    "(id, title, participants, addressed, created_ts, updated_ts) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (conversation_id, title, json.dumps(parts), json.dumps(addr), now, now),
+                    "(id, title, participants, addressed, persona, created_ts, updated_ts) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (conversation_id, title, json.dumps(parts), json.dumps(addr),
+                     persona or "argus", now, now),
                 )
                 self._conn.commit()
-        if participants is not None or addressed is not None or title is not None:
+        if (participants is not None or addressed is not None or title is not None
+                or (persona is not None and existing is not None)):
             if existing is not None:
                 return self.update_conversation(
                     conversation_id, title=title, participants=participants,
-                    addressed=addressed)
+                    addressed=addressed, persona=persona)
         got = self.get_conversation(conversation_id)
         return got or self._fmt_conversation(
             conversation_id, title=title, count=0, last_ts=now,
-            participants=parts, addressed=addr)
+            participants=parts, addressed=addr, persona=persona or "argus")
 
     def update_conversation(self, conversation_id: str, *, title: str | None = None,
                             participants: list[str] | None = None,
-                            addressed: list[str] | None = None) -> dict:
+                            addressed: list[str] | None = None,
+                            persona: str | None = None) -> dict:
         """Patch roster. Removing a participant drops them from addressed."""
         self.ensure_conversation(conversation_id)
         cur = self.get_conversation(conversation_id) or {
-            "title": None, "participants": [], "addressed": [],
+            "title": None, "participants": [], "addressed": [], "persona": "argus",
         }
+        if persona is not None:
+            cur["persona"] = persona or "argus"
         if title is not None:
             cur["title"] = title
         if participants is not None:
@@ -670,10 +684,11 @@ class Store:
         now = time.time()
         with self._lock:
             self._conn.execute(
-                "UPDATE conversations SET title=?, participants=?, addressed=?, updated_ts=? "
-                "WHERE id=?",
+                "UPDATE conversations SET title=?, participants=?, addressed=?, persona=?, "
+                "updated_ts=? WHERE id=?",
                 (cur.get("title"), json.dumps(cur["participants"]),
-                 json.dumps(cur["addressed"]), now, conversation_id),
+                 json.dumps(cur["addressed"]), cur.get("persona") or "argus",
+                 now, conversation_id),
             )
             self._conn.commit()
         return self.get_conversation(conversation_id) or cur
@@ -720,17 +735,28 @@ class Store:
                 parts = inferred.get(cid) or []
             if not addr:
                 addr = list(parts[:1])
+            persona = "argus"
+            if roster is not None:
+                try:
+                    persona = roster["persona"] or "argus"
+                except (KeyError, IndexError):
+                    persona = "argus"
             by_id[cid] = self._fmt_conversation(
                 cid, title=firsts.get(cid), count=r["n"], last_ts=r["last_ts"],
-                participants=parts, addressed=addr)
+                participants=parts, addressed=addr, persona=persona)
         for cid, roster in rosters.items():
             if cid in by_id:
                 continue
+            try:
+                p = roster["persona"] or "argus"
+            except (KeyError, IndexError):
+                p = "argus"
             by_id[cid] = self._fmt_conversation(
                 cid, title=roster["title"] or cid, count=0,
                 last_ts=roster["updated_ts"],
                 participants=self._json_ids(roster["participants"]),
-                addressed=self._json_ids(roster["addressed"]))
+                addressed=self._json_ids(roster["addressed"]),
+                persona=p)
         return sorted(by_id.values(), key=lambda c: c["last_ts"] or 0, reverse=True)
 
     def model_history(self, conversation_id: str, limit: int = 20,

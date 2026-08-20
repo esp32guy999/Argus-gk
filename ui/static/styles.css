@@ -171,7 +171,7 @@ body {
   width: 30px; height: 30px;
 }
 
-#model-select {
+#model-select, #persona-select {
   min-width: 220px;
   max-width: 360px;
   padding: 6px 10px;
@@ -185,8 +185,12 @@ body {
   outline: none;
   cursor: pointer;
 }
-#model-select:focus { border-color: var(--accent); }
-#model-select[hidden] { display: none !important; }
+#model-select:focus, #persona-select:focus { border-color: var(--accent); }
+#model-select[hidden], #persona-select[hidden] { display: none !important; }
+#persona-select { min-width: 110px; max-width: 160px; }
+
+/* Send path is dropdown + GK. Chips stay in the DOM for later rooms, hidden. */
+#participant-bar[hidden] { display: none !important; }
 
 /* ── Participant bar (Material chips) ────────────────────────────── */
 #participant-bar {
@@ -749,6 +753,8 @@ body {
   border-radius: 4px;
   flex-shrink: 0;   /* prevent collapse in #chat-messages flex column (added 2026-05-25) */
   min-height: auto; /* override flex-default min-height:0 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 88px;
 }
 .swipe-delete-bg {
   position: absolute;
@@ -1383,11 +1389,12 @@ body {
   }
 
   /* Model select shrinks to fit */
-  #model-select {
+  #model-select, #persona-select {
     min-width: 0;
     max-width: 140px;
     font-size: 12px;
   }
+  #persona-select { max-width: 88px; }
   .toggle-text { display: none; }
   #hermes-toggle { gap: 0; }
 

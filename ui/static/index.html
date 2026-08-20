@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#1C1B1F">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=63">
+  <link rel="stylesheet" href="/static/styles.css?v=66">
   <title>Argus</title>
 </head>
 <body>
@@ -62,12 +62,13 @@
     <button id="side-toggle" class="btn-icon" title="Toggle side nav">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
     </button>
-    <div id="participant-bar" aria-label="Models in this room">
+    <div id="participant-bar" hidden aria-hidden="true">
       <div id="participant-chips"></div>
       <button type="button" id="participant-add" class="md-chip md-chip-add" title="Add a model to this room">+</button>
     </div>
-    <button id="gk-toggle" class="gk-toggle" title="Talk to Grok — does not unload the GPU">GK</button>
-    <select id="model-select" hidden aria-hidden="true"><option>Loading…</option></select>
+    <select id="model-select" aria-label="Local model"><option>Loading…</option></select>
+    <select id="persona-select" aria-label="Persona"><option value="argus">Argus</option></select>
+    <button id="gk-toggle" class="gk-toggle" type="button" aria-pressed="false" title="Talk to Grok — does not unload the GPU">GK</button>
     <span id="model-warm" class="model-warm" hidden></span>
     <span class="flex-spacer"></span>
     <!-- theme toggle moved to conv-drawer -->
@@ -301,6 +302,7 @@
   <script src="/static/widgets/permissions.js?v=1"></script>
   <!-- DISABLED 2026-05-25 — kills iOS Safari (black screen). See https://github.com/esp32guy999/claude-desktop-next   <script src="/static/widgets/ccpair.js?v=1"></script> -->
   <script src="/static/nec.js?v=2"></script>
-  <script src="/static/app.js?v=63"></script>
+  <script src="/static/chat.js?v=66"></script>
+  <script src="/static/app.js?v=66"></script>
 </body>
 </html>
