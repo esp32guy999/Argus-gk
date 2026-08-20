@@ -746,6 +746,32 @@ async def get_personas():
     return JSONResponse(persona_mod.list_personas())
 
 
+@app.get("/argus/personas/{pid}")
+async def get_one_persona(pid: str):
+    from argus import persona as persona_mod
+    spec = persona_mod.parse_persona(pid)
+    if not spec:
+        raise HTTPException(404, "unknown persona")
+    return JSONResponse(spec)
+
+
+@app.post("/argus/personas")
+async def save_persona(request: Request):
+    """Form → one markdown file. dry=1 returns markdown without writing."""
+    from argus import persona as persona_mod
+    body = await request.json()
+    dry = str(request.query_params.get("dry") or "").strip() in ("1", "true", "yes")
+    try:
+        md = persona_mod.render_markdown(body)
+        if dry:
+            return JSONResponse({"markdown": md, "id": body.get("id") or persona_mod.slugify(body.get("name") or "")})
+        saved = persona_mod.save_persona(body)
+        saved["markdown"] = md
+        return JSONResponse(saved)
+    except persona_mod.PersonaError as e:
+        raise HTTPException(400, str(e))
+
+
 async def _model_ready(model_name: str) -> bool:
     """True if llama-swap already has this model resident and ready."""
     try:

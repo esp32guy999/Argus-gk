@@ -9,4 +9,5 @@ Anything else is `<id>.md` in this directory.
   Do not put “you cannot run commands” in a persona unless every model should
   obey it.
 
-`loki.md` ships as the first extra voice. Add more by dropping a file.
+`loki.md` ships as the first extra voice. Add more by dropping a file, or use
+**Tools → Persona** (form writes one markdown file; voice only, no tools).

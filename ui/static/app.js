@@ -711,6 +711,103 @@ async function loadPersonas(layout) {
   renderPersonaSelect();
 }
 
+async function openPersonaForm() {
+  await loadPersonas();
+  const sel = $('pf-existing');
+  if (sel) {
+    sel.innerHTML = '<option value="">— new —</option>' +
+      (state.personas || []).filter(p => p.id !== 'argus')
+        .map(p => `<option value="${escHtml(p.id)}">${escHtml(p.display || p.id)}</option>`).join('');
+  }
+  $('pf-preview')?.setAttribute('hidden', '');
+  openOverlay('persona-overlay');
+}
+
+function personaFormSpec() {
+  const knobs = {};
+  for (const k of ['brevity', 'blunt', 'dry', 'warmth']) {
+    knobs[k] = Number($('pf-' + k)?.value || 50);
+  }
+  const rules = [...document.querySelectorAll('#persona-form input[name=pf-rule]:checked')]
+    .map(x => x.value);
+  return {
+    id: ($('pf-id')?.value || '').trim(),
+    name: ($('pf-name')?.value || '').trim(),
+    knobs, rules,
+    description: ($('pf-desc')?.value || '').trim(),
+  };
+}
+
+async function fillPersonaForm(id) {
+  if (!id) return;
+  const spec = await fetchJson(`${BRAIN}/personas/${encodeURIComponent(id)}`);
+  if ($('pf-name')) $('pf-name').value = spec.name || spec.display || '';
+  if ($('pf-id')) $('pf-id').value = spec.id || '';
+  if ($('pf-desc')) $('pf-desc').value = spec.description || '';
+  for (const k of ['brevity', 'blunt', 'dry', 'warmth']) {
+    const el = $('pf-' + k);
+    if (el && spec.knobs && spec.knobs[k] != null) el.value = spec.knobs[k];
+    const n = document.querySelector(`.pf-n[data-for="pf-${k}"]`);
+    if (n && el) n.textContent = el.value;
+  }
+  const chosen = new Set(spec.rules || []);
+  document.querySelectorAll('#persona-form input[name=pf-rule]').forEach(cb => {
+    cb.checked = chosen.has(cb.value);
+  });
+}
+
+function wirePersonaForm() {
+  const form = $('persona-form');
+  if (!form || form._wired) return;
+  form._wired = true;
+  form.querySelectorAll('input[type=range]').forEach(r => {
+    const n = document.querySelector(`.pf-n[data-for="${r.id}"]`);
+    r.addEventListener('input', () => { if (n) n.textContent = r.value; });
+  });
+  $('pf-existing')?.addEventListener('change', async e => {
+    const id = e.target.value;
+    if (id) { try { await fillPersonaForm(id); } catch (err) { showToast(err.message); } }
+  });
+  $('pf-name')?.addEventListener('input', () => {
+    const id = $('pf-id');
+    if (id && !id.dataset.locked) {
+      id.value = ($('pf-name').value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48);
+    }
+  });
+  $('pf-id')?.addEventListener('input', () => { $('pf-id').dataset.locked = '1'; });
+  $('pf-preview-btn')?.addEventListener('click', async () => {
+    try {
+      const r = await fetch(`${BRAIN}/personas?dry=1`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(personaFormSpec()),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || r.status);
+      const pre = $('pf-preview');
+      if (pre) { pre.hidden = false; pre.textContent = d.markdown || ''; }
+    } catch (e) { showToast(e.message || 'preview failed'); }
+  });
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      const r = await fetch(`${BRAIN}/personas`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(personaFormSpec()),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || r.status);
+      await loadPersonas();
+      if (d.id) {
+        state.persona = d.id;
+        renderPersonaSelect();
+        saveLayout();
+      }
+      showToast('Saved ' + (d.display || d.id));
+      closeOverlay('persona-overlay');
+    } catch (err) { showToast(err.message || 'save failed'); }
+  });
+}
+
 function renderPersonaSelect() {
   if (!personaSelect) return;
   const list = state.personas || [];
@@ -1787,6 +1884,7 @@ function handleToolsAction(action) {
     case 'add-widget':      openWidgetPicker(); break;
     case 'open-audiobooks': switchView('canvas'); createPanel('audiobook', {}); break;
     case 'memory-browser':  openMemoryBrowser(); break;
+    case 'persona-form':    openPersonaForm(); break;
     case 'nec-prefix':
       switchView('chat');
       inputEl.value = '/nec ';
@@ -1947,6 +2045,7 @@ function _wireUI_rest() {
   document.querySelectorAll('#tools-overlay [data-action]').forEach(b => {
     b.addEventListener('click', () => handleToolsAction(b.dataset.action));
   });
+  wirePersonaForm();
 
   // Overlay closers (X buttons + backdrops)
   document.querySelectorAll('[data-close]').forEach(b => {
@@ -1983,7 +2082,7 @@ function _wireUI_rest() {
   // Esc closes any open overlay
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
-      ['tools-overlay', 'widget-picker-overlay', 'presets-overlay', 'memory-overlay', 'conv-drawer']
+      ['tools-overlay', 'widget-picker-overlay', 'presets-overlay', 'memory-overlay', 'persona-overlay', 'conv-drawer']
         .forEach(closeOverlay);
     }
   });

@@ -1166,6 +1166,32 @@ body {
 }
 .calc-header h2 { font-size: 18px; font-weight: 700; }
 
+.persona-form {
+  padding: 16px 20px 32px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 520px;
+}
+.persona-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-dim); }
+.persona-form input[type=text], .persona-form textarea, .persona-form select {
+  padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface2); color: var(--text); font: inherit;
+}
+.pf-knobs label { flex-direction: row; align-items: center; gap: 10px; }
+.pf-knobs input[type=range] { flex: 1; }
+.pf-n { width: 2em; font-variant-numeric: tabular-nums; color: var(--text); }
+.pf-rules { display: flex; flex-wrap: wrap; gap: 10px 16px; }
+.pf-rules label { flex-direction: row; align-items: center; gap: 6px; }
+.pf-preview {
+  margin: 0; padding: 10px; max-height: 28vh; overflow: auto;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12px; white-space: pre-wrap; color: var(--text);
+}
+.pf-actions { display: flex; gap: 10px; align-items: center; }
+.pf-hint { font-size: 12px; color: var(--text-dim); margin: 0; }
+
 .tools-grid {
   padding: 18px;
   overflow-y: auto;

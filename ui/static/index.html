@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#1C1B1F">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=68">
+  <link rel="stylesheet" href="/static/styles.css?v=69">
   <title>Argus</title>
 </head>
 <body>
@@ -200,6 +200,11 @@
         <span class="tools-card-label">Clear history</span>
         <span class="tools-card-desc">Wipe all stored messages</span>
       </button>
+      <button class="tools-card" data-action="persona-form">
+        <span class="tools-card-icon">P</span>
+        <span class="tools-card-label">Persona</span>
+        <span class="tools-card-desc">Create or edit a voice file</span>
+      </button>
 
       <div class="tools-section-label">Canvas</div>
       <button class="tools-card" data-action="save-layout">
@@ -274,6 +279,48 @@
     <div class="tools-grid" id="presets-list"></div>
   </div>
 
+  <!-- ── Persona generator (writes one markdown file) ───────────── -->
+  <div id="persona-overlay" class="calc-overlay hidden">
+    <div class="calc-header">
+      <h2>Persona</h2>
+      <button class="btn-icon" data-close="persona-overlay">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <form id="persona-form" class="persona-form">
+      <label>Existing
+        <select id="pf-existing"><option value="">— new —</option></select>
+      </label>
+      <label>Name
+        <input id="pf-name" type="text" maxlength="48" placeholder="Loki" autocomplete="off">
+      </label>
+      <label>Slug
+        <input id="pf-id" type="text" maxlength="48" placeholder="loki" autocomplete="off">
+      </label>
+      <div class="pf-knobs">
+        <label>Brevity <input id="pf-brevity" type="range" min="0" max="100" value="70"><span class="pf-n" data-for="pf-brevity">70</span></label>
+        <label>Blunt <input id="pf-blunt" type="range" min="0" max="100" value="60"><span class="pf-n" data-for="pf-blunt">60</span></label>
+        <label>Dry / sarcasm <input id="pf-dry" type="range" min="0" max="100" value="40"><span class="pf-n" data-for="pf-dry">40</span></label>
+        <label>Warmth <input id="pf-warmth" type="range" min="0" max="100" value="20"><span class="pf-n" data-for="pf-warmth">20</span></label>
+      </div>
+      <div class="pf-rules">
+        <label><input type="checkbox" name="pf-rule" value="no_brochure" checked> No brochure</label>
+        <label><input type="checkbox" name="pf-rule" value="no_gush" checked> No gush</label>
+        <label><input type="checkbox" name="pf-rule" value="own_uncertainty" checked> Own uncertainty</label>
+        <label><input type="checkbox" name="pf-rule" value="unfiltered"> Unfiltered</label>
+      </div>
+      <label>Description
+        <textarea id="pf-desc" rows="3" placeholder="shop voice, impatient, hates filler"></textarea>
+      </label>
+      <pre id="pf-preview" class="pf-preview" hidden></pre>
+      <div class="pf-actions">
+        <button type="button" id="pf-preview-btn" class="btn-icon">Preview</button>
+        <button type="submit" id="pf-save" class="btn-primary">Save</button>
+      </div>
+      <p class="pf-hint">Writes <code>personas/&lt;slug&gt;.md</code>. Voice only — no tools, no GPU.</p>
+    </form>
+  </div>
+
   <!-- ── Memory Modal ────────────────────────────────────────────── -->
   <div id="memory-overlay" class="calc-overlay hidden">
     <div class="calc-header">
@@ -302,7 +349,7 @@
   <script src="/static/widgets/permissions.js?v=1"></script>
   <!-- DISABLED 2026-05-25 — kills iOS Safari (black screen). See https://github.com/esp32guy999/claude-desktop-next   <script src="/static/widgets/ccpair.js?v=1"></script> -->
   <script src="/static/nec.js?v=2"></script>
-  <script src="/static/chat.js?v=68"></script>
-  <script src="/static/app.js?v=68"></script>
+  <script src="/static/chat.js?v=69"></script>
+  <script src="/static/app.js?v=69"></script>
 </body>
 </html>

@@ -60,6 +60,35 @@ def main() -> int:
         assert any(p["id"] == "reviewer" for p in persona.list_personas())
         assert "Be terse and picky" in persona.voice("reviewer")
         print("PASS: drop-in personas/*.md is picked up")
+
+        spec = {
+            "id": "shop-rat", "name": "Shop rat",
+            "knobs": {"brevity": 90, "blunt": 80, "dry": 20, "warmth": 10},
+            "rules": ["no_gush", "own_uncertainty"],
+            "description": "impatient shop voice",
+        }
+        md = persona.render_markdown(spec)
+        assert md.startswith("---") and "# Shop rat" in md
+        assert "Brevity is respect" in md
+        assert "Don't reach for sarcasm" in md or "Earnest" in md
+        saved = persona.save_persona(spec)
+        assert saved["id"] == "shop-rat"
+        parsed = persona.parse_persona("shop-rat")
+        assert parsed and parsed["knobs"]["brevity"] == 90
+        assert "shop-rat" in {p["id"] for p in persona.list_personas()}
+        print("PASS: form render/save/parse")
+
+        try:
+            persona.render_markdown({"name": "X", "description": "you cannot run shell"})
+            raise SystemExit("FAIL: forbidden description accepted")
+        except persona.PersonaError:
+            print("PASS: description cannot grant shell")
+        try:
+            persona.render_markdown({"name": "Argus", "id": "argus"})
+            raise SystemExit("FAIL: argus id accepted")
+        except persona.PersonaError:
+            print("PASS: cannot overwrite default Argus id")
+
         persona._DIR = old
         persona._cache.clear()
     finally:
