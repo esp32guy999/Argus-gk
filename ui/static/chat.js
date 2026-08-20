@@ -626,6 +626,16 @@ const ArgusChat = (() => {
     return new Promise(r => setTimeout(r, ms));
   }
 
+  function replyAfterUser(userId) {
+    const host = messagesHost();
+    if (!host || userId == null) return false;
+    const assistants = [...host.querySelectorAll('.message.assistant[data-msg-id]')];
+    return assistants.some(el => {
+      const id = Number(el.dataset.msgId);
+      return id > Number(userId) && (el.textContent || '').trim();
+    });
+  }
+
   async function send() {
     const text = (typeof inputEl !== 'undefined' && inputEl) ? inputEl.value.trim() : '';
     const targets = (typeof sendTargets === 'function') ? sendTargets() : [];
@@ -725,7 +735,12 @@ const ArgusChat = (() => {
       state.sending = false;
       return;
     }
-    await mergeAfter();
+    const userId = data.user_id;
+    for (let i = 0; i < 5; i++) {
+      await mergeAfter();
+      if (replyAfterUser(userId)) break;
+      await sleep(400);
+    }
     state.sending = false;
     state.pendingBubbleId = null;
     clearThinking();

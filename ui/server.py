@@ -12,7 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from argus.main import build_registry
 from argus import loop, metrics, model_config
 from argus.storage import get_store
-from argus.chat_client import is_inviteable, normalize_to, normalize_client_msg_id
+from argus.chat_client import (
+    is_inviteable, normalize_to, normalize_client_msg_id, assistant_persist_text,
+)
 from prometheus_client import make_asgi_app
 import httpx
 import relogin
@@ -476,36 +478,44 @@ async def chat(request: Request):
             payload = loop.public_turn_payload(final, n_tools)
             if payload.get("silent"):
                 turn_flags["silent"] = True
-            if turn_flags["silent"]:
-                final = ""
-                publish("bubble_update", {"id": bubble_id, "content": ""})
-            else:
-                final = payload["text"] if payload.get("kind") != "EMPTY" else (final or "")
+            visible = "" if (turn_flags["silent"] and n_tools == 0) else (payload.get("text") or final or "")
+            body = assistant_persist_text(visible, n_tools=n_tools)
             terminal = "NO_REPLY" if turn_flags["silent"] else (
                 "BLOCKED" if turn_flags["blocked"] else payload.get("kind")
             )
             row = await asyncio.to_thread(
-                store.add_message, conversation_id, "assistant", final, model_name)
+                store.add_message, conversation_id, "assistant", body, model_name)
             publish("bubble_done", {
                 "id": bubble_id,
                 "db_id": row["id"],
                 "user_id": user_row["id"],
                 "conversation_id": conversation_id,
-                "silent": turn_flags["silent"],
+                "silent": False,
                 "terminal": terminal,
             })
-            if final and not turn_flags["silent"]:
-                await asyncio.to_thread(_notify_reply, final)
+            await asyncio.to_thread(_notify_reply, body)
           # end for generate_models
         except asyncio.CancelledError:
-            if final:  # persist whatever streamed before cancel so memory stays consistent
-                await asyncio.to_thread(
-                    store.add_message, conversation_id, "assistant", final, model_name)
-            publish("bubble_done", {"id": bubble_id, "cancelled": True})
+            n_tools = len(tools_for_policy)
+            body = assistant_persist_text(final, cancelled=True, n_tools=n_tools)
+            row = await asyncio.to_thread(
+                store.add_message, conversation_id, "assistant", body, model_name)
+            publish("bubble_done", {
+                "id": bubble_id, "cancelled": True, "db_id": row["id"],
+                "user_id": user_row["id"], "conversation_id": conversation_id,
+            })
         except Exception as e:
             if model_name in ("claude-code", "grok"):
                 metrics.CC_TURNS.labels("error").inc()
-            publish("bubble_done", {"id": bubble_id, "error": str(e)})
+            n_tools = len(tools_for_policy)
+            body = assistant_persist_text(final, error=str(e), n_tools=n_tools)
+            row = await asyncio.to_thread(
+                store.add_message, conversation_id, "assistant", body, model_name)
+            publish("bubble_done", {
+                "id": bubble_id, "error": str(e), "db_id": row["id"],
+                "user_id": user_row["id"], "conversation_id": conversation_id,
+            })
+            await asyncio.to_thread(_notify_reply, body)
         finally:
             _turn_end(conversation_id)
 

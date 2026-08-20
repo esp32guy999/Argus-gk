@@ -10,7 +10,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def main() -> int:
-    from argus.chat_client import is_inviteable, normalize_to, normalize_client_msg_id
+    from argus.chat_client import (
+        is_inviteable, normalize_to, normalize_client_msg_id, assistant_persist_text,
+    )
 
     assert is_inviteable("grok")
     assert is_inviteable("gemma4-26b")
@@ -38,6 +40,15 @@ def main() -> int:
     assert normalize_client_msg_id("  ") is None
     assert normalize_client_msg_id("abc") == "abc"
     print("PASS: client_msg_id normalize")
+
+    assert assistant_persist_text("Hello") == "Hello"
+    assert assistant_persist_text("_(running `edit_file`…)_", n_tools=3).startswith("_(Finished 3")
+    assert "Error" in assistant_persist_text("partial", error="boom")
+    assert assistant_persist_text("", error="boom") == "[Error: boom]"
+    assert assistant_persist_text("", cancelled=True) == "[Cancelled]"
+    assert assistant_persist_text("", n_tools=2).startswith("_(Finished 2")
+    assert assistant_persist_text("") == "[No reply]"
+    print("PASS: assistant_persist_text never returns empty")
 
     print("\nALL CHAT CLIENT HELPER TESTS PASSED")
     return 0

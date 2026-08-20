@@ -83,6 +83,11 @@ Existing `before_id` (page older) plus:
 
 `active` is the only “is it done?” signal. Token silence is not a stall.
 
+When the turn ends (success, cancel, or error) Anvil **always** writes an
+assistant row. The inbox never paints live tokens — no row means a ghost
+bubble. Tool-only / crashed Grok turns persist a wrap-up or `[Error: …]`,
+never an empty skip.
+
 ### Conversations
 
 `GET /argus/conversations` includes `participants` and `addressed`
